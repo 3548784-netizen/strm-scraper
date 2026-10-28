@@ -1,5 +1,8 @@
 # strm-scraper
 
+[![构建镜像](https://github.com/3548784-netizen/strm-scraper/actions/workflows/docker.yml/badge.svg)](https://github.com/3548784-netizen/strm-scraper/actions/workflows/docker.yml)
+[![镜像](https://img.shields.io/badge/镜像-ghcr.io-2496ED)](https://github.com/3548784-netizen/strm-scraper/pkgs/container/strm-scraper)
+
 给 115 / LitePan 生成的 `.strm` 文件补上海报、背景图和 NFO 的刮削器，跑在 Docker 里，手机和电脑都能通过网页控制台操作。
 
 **Emby 和 Jellyfin 同时支持**：产物命名和图片比例按两家的规范来，同一份文件两边都能识别，不需要为谁单独复制一套。
@@ -63,7 +66,44 @@
 
 ## 快速开始
 
-需要 Docker 和 docker compose。
+镜像已经发布在 GitHub 容器仓库，可以直接拉，不用本地构建：
+
+```
+ghcr.io/3548784-netizen/strm-scraper:latest
+```
+
+### 方式一：拉现成镜像（推荐）
+
+建个目录放配置，把下面内容存成 `docker-compose.yml`：
+
+```bash
+mkdir -p /vol1/1000/docker/strm-scraper && cd /vol1/1000/docker/strm-scraper
+```
+
+```yaml
+services:
+  strm-scraper:
+    image: ghcr.io/3548784-netizen/strm-scraper:latest
+    container_name: strm-scraper
+    restart: unless-stopped
+    ports:
+      - "6666:6666"
+    volumes:
+      - /vol1/1000/LitePan/strm:/media   # ← 改成你的 strm 目录
+      - ./config:/config
+    environment:
+      TZ: Asia/Shanghai
+```
+
+```bash
+docker compose up -d
+```
+
+飞牛 / 群晖这类有图形界面的 NAS，直接在 Docker 应用的「项目」里粘贴同样的内容启动即可。完整步骤见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
+### 方式二：从源码构建
+
+改代码或者想自己打镜像时用这条。镜像在 `main` 每次推送后自动重建，源码构建和拉取的效果一致。
 
 ```bash
 git clone https://github.com/3548784-netizen/strm-scraper.git
@@ -83,6 +123,8 @@ volumes:
 ```bash
 docker compose up -d --build
 ```
+
+### 打开控制台
 
 浏览器打开 `http://你的NAS地址:6666`，点「增量刮削」。
 

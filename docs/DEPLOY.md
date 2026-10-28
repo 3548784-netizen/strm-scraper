@@ -13,7 +13,59 @@ ls /vol1/1000/LitePan/strm
 
 如果是通过网盘挂载工具（LitePan、CloudDrive2、alist 等）挂载出来的，注意挂载点必须在容器启动**之前**就存在，否则容器会看到一个空目录。
 
-## 2. 放置项目
+## 2. 拉取现成镜像（方式 A，推荐）
+
+镜像已经发布在 GitHub 容器仓库，不需要在 NAS 上构建：
+
+```
+ghcr.io/3548784-netizen/strm-scraper:latest
+```
+
+压缩后约 217 MB，飞牛上拉取视网络情况 1~5 分钟。
+
+### 飞牛 Docker 界面操作
+
+1. 打开「Docker」应用 → 左侧「镜像」→ 右上角「添加镜像」
+2. 仓库地址选 `ghcr.io`，镜像名填 `3548784-netizen/strm-scraper`，标签填 `latest`
+   （也可以在搜索框里直接粘整串 `ghcr.io/3548784-netizen/strm-scraper:latest`）
+3. 点确定，等进度条走完，镜像列表里出现 `strm-scraper` 就拉好了
+
+拉到之后建容器。建议用「项目」而不是「容器」，以后改配置方便：
+
+「Docker」→「项目」→「新建」→ 把下面内容整段粘进去 → 保存并启动：
+
+```yaml
+services:
+  strm-scraper:
+    image: ghcr.io/3548784-netizen/strm-scraper:latest
+    container_name: strm-scraper
+    restart: unless-stopped
+    ports:
+      - "6666:6666"
+    volumes:
+      - /vol1/1000/LitePan/strm:/media   # ← 改成你的 strm 目录
+      - ./config:/config
+    environment:
+      TZ: Asia/Shanghai
+```
+
+这段和仓库根目录的 `docker-compose.pull.yml` 完全一致，改完挂载路径直接粘即可。
+
+### 命令行等价操作
+
+```bash
+docker pull ghcr.io/3548784-netizen/strm-scraper:latest
+```
+
+挂载和端口的注意事项见下面「方式 B」的说明，两者一样：挂载路径要换成本机的、`./config` 必须留着、6666 被占就改映射左边。
+
+镜像在 `main` 分支每次推送后自动重建，所以 `latest` 始终是最新代码。想固定版本可以用提交哈希标签，比如 `sha-dc42b0e`。
+
+## 3. 从源码构建（方式 B）
+
+不想用现成镜像、想自己改代码的话走这条。首次构建要装 ffmpeg 和 Python 依赖，2~5 分钟。
+
+### 放置项目
 
 SSH 登录飞牛，挑一个数据盘目录，比如 `/vol1/1000/docker`：
 
@@ -25,7 +77,7 @@ cd strm-scraper
 
 没有 git 的话，也可以在自己电脑上下载 zip，通过飞牛的文件管理器上传解压。
 
-## 3. 改挂载路径
+### 改挂载路径
 
 编辑 `docker-compose.yml`：
 
@@ -51,7 +103,7 @@ services:
 - 端口 6666 被占用就换，比如 `"16666:6666"`；只改左边，右边和 `config.yaml` 里的 `web.port` 保持一致就行
 - 从旧版本升级上来的，`config/config.yaml` 里 `web.port` 可能还是 8080。要么把它改成 6666，要么删掉这个文件让容器重新生成一份，否则端口对不上，浏览器打不开
 
-## 4. 启动
+### 启动
 
 ```bash
 docker compose up -d --build
@@ -75,7 +127,7 @@ docker compose logs -f
 19:28:23 INFO    [main        ] 网页控制台：http://0.0.0.0:6666
 ```
 
-## 5. 打开控制台
+## 4. 打开控制台
 
 浏览器访问 `http://飞牛局域网IP:6666`。
 
@@ -83,7 +135,7 @@ docker compose logs -f
 
 点「增量刮削」可以手动触发。
 
-## 6. 配置媒体服务器（Emby / Jellyfin）
+## 5. 配置媒体服务器（Emby / Jellyfin）
 
 编辑 `config/config.yaml`，在 `servers` 段加机器（可以多台，Emby 和 Jellyfin 混合也行）：
 
@@ -104,7 +156,7 @@ servers:
 
 后续刮削会自动触发刷新；如果界面上海报还是没出来，点**补齐缺图**，它会把已刮削过的文件全部提交一次图片重建。
 
-## 7. 验证产物
+## 6. 验证产物
 
 随便挑一部片子看目录：
 
@@ -116,7 +168,7 @@ ls -la "/vol1/1000/LitePan/strm/115影片AV/某个目录"
 
 然后在媒体服务器里对那个库做一次「扫描媒体库文件」。Jellyfin 还必须刷新图片缓存，用上面的「补齐缺图」或开启 `servers[].refresh_after` 自动做。
 
-## 8. 看日志
+## 7. 看日志
 
 日志在 `config/logs/` 下（容器内 `/config/logs`）：
 
@@ -136,7 +188,7 @@ tail -f ./config/logs/errors-strm-scraper.log # 只看异常
 docker exec strm-scraper python -m scraper.main --doctor
 ```
 
-## 9. 用飞牛 Docker 界面管理（可选）
+## 8. 用飞牛 Docker 界面管理（可选）
 
 如果不想用命令行，飞牛的 Docker 应用里可以：
 

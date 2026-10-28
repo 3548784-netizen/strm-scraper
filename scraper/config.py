@@ -18,7 +18,7 @@ import logging
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any, get_origin, get_type_hints
 
 from . import specs
 
@@ -316,6 +316,15 @@ class Config:
             notes.append(f"overwrite={self.scrape.overwrite} 不认识，已回退为 missing")
             self.scrape.overwrite = "missing"
 
+        if not self.scan.roots:
+            notes.append("scan.roots 为空，已改成 /media")
+            self.scan.roots = ["/media"]
+        if not self.scan.extensions:
+            notes.append("scan.extensions 为空，已改成 .strm")
+            self.scan.extensions = [".strm"]
+        if not self.scrape.frame_positions:
+            self.scrape.frame_positions = [0.15, 0.30, 0.45, 0.60, 0.75]
+
         mode = str(self.scan.mode).lower()
         if mode not in ("auto", "full", "incremental", "manual"):
             notes.append(f"scan.mode={self.scan.mode} 不认识，已回退为 auto")
@@ -340,7 +349,10 @@ class Config:
         # 服务器：补齐名字、去重、校验必填项
         seen: set[str] = set()
         cleaned: list[ServerConfig] = []
-        for index, server in enumerate(self.servers):
+        for index, server in enumerate(self.servers or []):
+            if not isinstance(server, ServerConfig):  # 防御：手改坏了的条目直接跳过
+                log.warning("servers[%s] 不是有效配置，已忽略", index)
+                continue
             if not server.name:
                 server.name = f"{server.type or 'server'}-{index + 1}"
             if server.name in seen:
@@ -362,7 +374,7 @@ class Config:
         return notes
 
     def enabled_servers(self) -> list[ServerConfig]:
-        return [server for server in self.servers if server.enabled]
+        return [server for server in (self.servers or []) if server.enabled]
 
     def as_dict(self) -> dict[str, Any]:
         return _to_dict(self)
@@ -437,13 +449,28 @@ def _from_dict(cls, data: dict) -> Any:
         value = data[f.name]
         ftype = hints.get(f.name, f.type)
 
+        # YAML 里写 ``servers:`` 或 ``roots:`` 后面只跟注释时会被解析成 None。
+        # 这种情况当作“没写”，直接用 dataclass 的默认值，不能让 None 流进去。
+        if value is None:
+            continue
+
         if is_dataclass(ftype) and isinstance(value, dict):
             kwargs[f.name] = _from_dict(ftype, value)
-        elif f.name == "servers" and isinstance(value, list):
-            kwargs[f.name] = [
-                _from_dict(ServerConfig, item) if isinstance(item, dict) else item
-                for item in value
-            ]
+        elif f.name == "servers":
+            if not isinstance(value, list):
+                value = [value]
+            items: list[ServerConfig] = []
+            for item in value:
+                if isinstance(item, dict):
+                    items.append(_from_dict(ServerConfig, item))
+                elif isinstance(item, ServerConfig):
+                    items.append(item)
+                else:
+                    log.warning("servers 里有一项不是字典，已忽略：%r", item)
+            kwargs[f.name] = items
+        elif get_origin(ftype) is list and not isinstance(value, list):
+            # roots: /media 这种单值写法也接受
+            kwargs[f.name] = [value]
         else:
             kwargs[f.name] = value
     return cls(**kwargs)

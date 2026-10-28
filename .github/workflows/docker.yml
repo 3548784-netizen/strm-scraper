@@ -9,6 +9,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Docker Hub 上的仓库名固定为 strm-scraper
+  HUB_REPO: strm-scraper
 
 jobs:
   build:
@@ -30,8 +32,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 生成标签
-        id: meta
+      # Docker Hub 没配 secrets 时这一步会失败，但不影响 GHCR 照常发布
+      - name: 登录 Docker Hub
+        id: hub
+        continue-on-error: true
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成 GHCR 标签
+        id: ghcr
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}
@@ -40,13 +51,36 @@ jobs:
             type=ref,event=tag
             type=sha,format=short
 
-      - name: 构建并推送
+      - name: 生成 Docker Hub 标签
+        id: hubmeta
+        if: steps.hub.outcome == 'success'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.HUB_REPO }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: 构建并推送到 GHCR
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.ghcr.outputs.tags }}
+          labels: ${{ steps.ghcr.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 第二步复用上面的 gha 缓存，实际只花几秒
+      - name: 构建并推送到 Docker Hub
+        if: steps.hub.outcome == 'success'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.hubmeta.outputs.tags }}
+          labels: ${{ steps.hubmeta.outputs.labels }}
+          cache-from: type=gha

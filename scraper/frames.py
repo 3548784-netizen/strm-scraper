@@ -14,8 +14,8 @@ from .probe import find_binary
 
 log = logging.getLogger(__name__)
 
-# 单帧低于这个字节数基本是纯黑/损坏帧
-MIN_FRAME_BYTES = 4096
+# 单帧低于这个字节数基本是空文件；黑屏另由亮度判断筛掉
+MIN_FRAME_BYTES = 512
 # 平均亮度低于此值视为黑屏（0~255）
 MIN_BRIGHTNESS = 12.0
 
@@ -25,21 +25,30 @@ class FrameError(RuntimeError):
 
 
 def capture(source: str, seconds: float, output: Path, timeout: int = 60,
-            fast_seek: bool = True) -> bool:
+            fast_seek: bool = True, width: int = 0,
+            min_bytes: int | None = None) -> bool:
     """按秒抓一帧。
 
     Args:
         fast_seek: True 时把 ``-ss`` 放在 ``-i`` 前（关键帧跳转，网络源上快 10 倍以上）；
             网络源不支持 Range 时跳到错误位置，可置 False 改为解码定位。
+        width: 大于 0 时缩放输出宽度（高度按比例），网页缩略图用，能省不少流量。
+        min_bytes: 判定“成功”的最小字节数，缩放后的小图门槛要放低。
     """
     ffmpeg = find_binary("ffmpeg")
     seek = ["-ss", f"{max(0.0, seconds):.3f}"]
-    tail = ["-frames:v", "1", "-q:v", "2", "-y", str(output)]
+    tail = ["-frames:v", "1"]
+    if width > 0:
+        tail += ["-vf", f"scale={int(width)}:-2"]
+    tail += ["-q:v", "2", "-y", str(output)]
     prefix = [ffmpeg, "-hide_banner", "-loglevel", "error"]
     # -ss 在 -i 前是快速跳转，在 -i 后是解码定位
     cmd = prefix + seek + ["-i", source] + tail if fast_seek \
         else prefix + ["-i", source] + seek + tail
 
+    # 缩略图本来就小（纯色画面只有几百字节），门槛得跟着宽度放低
+    floor = min_bytes if min_bytes is not None else (
+        MIN_FRAME_BYTES if width <= 0 else 128)
     creation = 0x08000000 if os.name == "nt" else 0
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
@@ -51,10 +60,24 @@ def capture(source: str, seconds: float, output: Path, timeout: int = 60,
     except FileNotFoundError as exc:
         raise FrameError("ffmpeg 未安装或不可执行") from exc
 
-    if proc.returncode != 0 or not _valid(output):
+    if proc.returncode != 0 or not _valid(output, floor):
         _drop(output)
         return False
     return True
+
+
+def capture_at(source: str, seconds: float, output: Path, timeout: int = 60,
+               width: int = 0) -> bool:
+    """抓指定时间点的一帧：先试快速跳转，不行再退化解码定位。
+
+    手动选帧走这条路，用户点了哪一秒就要哪一秒，不能像自动选帧那样悄悄
+    换到别的位置。
+    """
+    if capture(source, seconds, output, timeout=timeout, fast_seek=True, width=width):
+        return True
+    if seconds <= 1.0:
+        return False
+    return capture(source, seconds, output, timeout=timeout, fast_seek=False, width=width)
 
 
 def capture_best(source: str, duration: float, positions: list[float],
@@ -227,9 +250,22 @@ def _vignette(canvas: Image.Image, strength: float = 0.3) -> Image.Image:
     return Image.composite(dark, canvas, levels)
 
 
-def _valid(path: Path) -> bool:
+def _valid(path: Path, min_bytes: int = MIN_FRAME_BYTES) -> bool:
+    """判断这张图是不是真的写完了。
+
+    光看大小不可靠：纯色画面或小尺寸缩略图本来就只有一两 KB，会被误判成
+    失败。所以再看一眼 JPEG 的头尾标记——ffmpeg 正常收尾才会写 EOI。
+    """
     try:
-        return path.is_file() and path.stat().st_size >= MIN_FRAME_BYTES
+        if not path.is_file():
+            return False
+        if path.stat().st_size < min_bytes:
+            return False
+        with path.open("rb") as handle:
+            head = handle.read(2)
+            handle.seek(-2, os.SEEK_END)
+            tail = handle.read(2)
+        return head == b"\xff\xd8" and tail == b"\xff\xd9"
     except OSError:
         return False
 

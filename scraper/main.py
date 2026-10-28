@@ -234,22 +234,23 @@ def main(argv: list[str] | None = None) -> int:
         store.close()
         return 0
 
-    # 首次/按配置自动跑一轮
+    # 默认不自动开跑：打开网页点「开始任务」才开始。要开机就跑就把
+    # scan.autostart 设为 true（定时任务 interval_minutes>0 时也会自动跑）。
     interval = max(0, cfg.scan.interval_minutes)
-    auto_start = cfg.scan.mode.lower() != "manual" or args.full
+    auto_start = args.full or args.once or (
+        cfg.scan.autostart and cfg.scan.mode.lower() != "manual"
+    )
     if auto_start:
         full = args.full or decide_full(cfg, store)
-        log.info("启动首轮刮削（%s）", "全量" if full else "增量")
+        log.info("按配置自动开始首轮刮削（%s）", "全量" if full else "增量")
         runner.start(full=full)
         if args.once:
             wait_idle(runner)
             store.set_meta("first_run_done", "1")
             store.close()
             return 0
-    elif args.once:
-        log.info("mode=manual 且未指定 --full，无事可做")
-        store.close()
-        return 0
+    else:
+        log.info("未自动开始刮削，打开网页控制台点「开始任务」即可（scan.autostart=false）")
 
     if interval <= 0 and not auto_start:
         log.warning("未启用定时任务（scan.interval_minutes=0），只能通过网页手动触发")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -12,10 +14,13 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from .auth import (COOKIE_NAME, AuthStore, LoginThrottle, validate_password,
                    validate_username)
+from . import frames, probe
 from .config import Config
 from .logs import LogFiles, RingLogHandler, tail_file
-from .media import build_target, artifacts
+from .media import IGNORED_NAMES, artifacts, build_target, signature
 from .mediaserver import ServerPool
+from .nfo import display_title
+from .picker import FramePicker
 from .state import StateStore
 from .worker import Runner
 
@@ -26,12 +31,30 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 # 不需要登录就能访问的路径
 PUBLIC_PATHS = {"/login", "/api/login", "/api/auth-info", "/api/health", "/favicon.ico"}
 
+_KIND_NAMES = {"poster": "海报", "fanart": "背景图", "thumb": "缩略图"}
+
 
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _count_strm(directory: Path, wanted: set[str]) -> int:
+    """数一下这个目录里直接有几个 strm，文件管理页用来提示。"""
+    count = 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file() and Path(entry.name).suffix.lower() in wanted:
+                        count += 1
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return count
 
 
 def create_app(cfg: Config, store: StateStore, runner: Runner,
@@ -43,6 +66,8 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
     log_files = log_files or LogFiles()
     auth = auth or AuthStore(cfg.web.auth.file, cfg.web.auth.session_hours)
     throttle = LoginThrottle()
+    # 选帧缓存放在 state.db 旁边，跟着 /config 一起持久化
+    picker = FramePicker(cfg, Path(cfg.storage.state_db).parent / "framecache")
     manual_refresh: dict = {"running": False, "done": 0, "total": 0, "message": ""}
 
     def _set_session(response, username: str):
@@ -208,6 +233,9 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         snapshot["servers"] = pool.snapshot()
         snapshot["roots"] = cfg.scan.roots
         snapshot["overwrite"] = cfg.scrape.overwrite
+        snapshot["autostart"] = cfg.scan.autostart
+        snapshot["mode_config"] = cfg.scan.mode
+        snapshot["interval"] = cfg.scan.interval_minutes
         snapshot["timestamp"] = int(time.time())
         snapshot["images"] = {
             "poster": [cfg.scrape.poster.width, cfg.scrape.poster.height],
@@ -232,17 +260,19 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         return {
             "page": page,
             "size": size,
-            "total": store.count(status_filter) if not keyword else len(rows),
+            "total": store.count(status_filter, keyword),
             "items": [
                 {
                     "path": row.path,
                     "name": row.name,
+                    "size": row.size,
                     "status": row.status,
                     "reason": row.reason,
                     "title": row.title,
                     "duration": round(row.duration, 1),
                     "attempts": row.attempts,
                     "updated": int(row.updated),
+                    "frame_at": round(row.frame_at, 2),
                     "artifacts": artifacts(build_target(Path(row.path))),
                 }
                 for row in rows
@@ -251,18 +281,43 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     # ---------- 任务控制 ----------
 
+    @app.post("/api/task/start")
+    def task_start(full: bool = Query(False)):
+        if runner.busy():
+            return JSONResponse({"ok": False, "message": "任务正在运行，先暂停或取消"},
+                                status_code=409)
+        started = runner.start(full=full)
+        message = "已开始全量重刮" if full else "已开始刮削（增量）"
+        return {"ok": started, "message": message if started else "任务已在运行"}
+
+    @app.post("/api/task/pause")
+    def task_pause():
+        if runner.pause():
+            return {"ok": True, "message": "已暂停，进行中的任务会跑完后停住"}
+        return JSONResponse({"ok": False, "message": "当前没有可暂停的任务"},
+                            status_code=409)
+
+    @app.post("/api/task/resume")
+    def task_resume():
+        if runner.resume():
+            return {"ok": True, "message": "已继续执行"}
+        return JSONResponse({"ok": False, "message": "任务没有处于暂停状态"},
+                            status_code=409)
+
+    @app.post("/api/task/cancel")
+    def task_cancel():
+        if runner.cancel():
+            return {"ok": True, "message": "已取消，进行中的结果作废并退回待处理"}
+        return JSONResponse({"ok": False, "message": "当前没有正在运行的任务"},
+                            status_code=409)
+
     @app.post("/api/scan")
     def scan(full: bool = Query(False)):
-        if runner.busy():
-            return JSONResponse({"ok": False, "message": "任务正在运行中"}, status_code=409)
-        started = runner.start(full=full)
-        message = "已开始全量刮削" if full else "已开始增量刮削"
-        return {"ok": started, "message": message if started else "任务已在运行"}
+        return task_start(full=full)
 
     @app.post("/api/stop")
     def stop():
-        runner.stop()
-        return {"ok": True, "message": "已发送停止请求，等待进行中的任务收尾"}
+        return task_cancel()
 
     @app.post("/api/retry-failed")
     def retry_failed():
@@ -284,6 +339,319 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         log.info("手动重刮：%s", target)
         runner.start(full=False)
         return {"ok": True, "message": "已加入队列"}
+
+    # ---------- 文件管理 ----------
+
+    def _roots() -> list[Path]:
+        found: list[Path] = []
+        for root in cfg.scan.roots:
+            path = Path(root)
+            if path.is_dir():
+                found.append(path.resolve())
+        return found
+
+    def _within_roots(raw: str) -> Path:
+        """只允许操作扫描目录里面的路径，挡住 ../ 之类的越界。"""
+        text = (raw or "").strip()
+        if not text:
+            raise HTTPException(400, "缺少路径参数")
+        path = Path(text)
+        if not path.is_absolute():
+            raise HTTPException(400, "路径必须是绝对路径")
+        target = path.resolve()
+        for root in _roots():
+            if target == root or root in target.parents:
+                return target
+        raise HTTPException(403, "该路径不在扫描目录内，已拒绝")
+
+    def _skip_dir(name: str) -> bool:
+        return name.startswith(".") or name in (
+            "@eaDir", "__pycache__", "node_modules", "$RECYCLE.BIN", "#recycle",
+        )
+
+    @app.get("/api/files")
+    def list_files(path: str = Query(""), q: str = Query(""),
+                   limit: int = Query(500, ge=1, le=2000)):
+        roots = _roots()
+        if not roots:
+            return {
+                "ok": False, "path": "", "parent": None, "roots": [],
+                "breadcrumb": [], "dirs": [], "files": [], "truncated": False,
+                "message": "扫描目录都不存在，检查 docker volume 挂载",
+            }
+
+        if path.strip():
+            current = _within_roots(path)
+            if not current.is_dir():
+                raise HTTPException(404, "目录不存在")
+        else:
+            current = roots[0]
+
+        # 面包屑：从命中的扫描根往下拼
+        breadcrumb: list[dict] = []
+        parent = None
+        for root in roots:
+            try:
+                rel = current.relative_to(root)
+            except ValueError:
+                continue
+            breadcrumb.append({"name": root.name or str(root), "path": str(root)})
+            cursor = root
+            for part in rel.parts:
+                cursor = cursor / part
+                breadcrumb.append({"name": part, "path": str(cursor)})
+            break
+        if breadcrumb:
+            parent = str(current.parent) if len(breadcrumb) > 1 else None
+
+        wanted = {e.lower() if e.startswith(".") else f".{e.lower()}"
+                  for e in cfg.scan.extensions}
+        keyword = q.strip().lower()
+        dirs: list[dict] = []
+        file_rows: list[dict] = []
+        truncated = False
+
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        except OSError as exc:
+            raise HTTPException(500, f"读取目录失败：{exc}") from exc
+
+        for entry in entries:
+            name = entry.name
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if _skip_dir(name):
+                    continue
+                if keyword and keyword not in name.lower():
+                    continue
+                dirs.append({"name": name, "path": str(entry), "count": _count_strm(entry, wanted)})
+                continue
+
+            if name.lower() in IGNORED_NAMES or entry.suffix.lower() not in wanted:
+                continue
+            if keyword and keyword not in name.lower():
+                continue
+            if len(file_rows) >= limit:
+                truncated = True
+                break
+            try:
+                stat = entry.stat()
+                size, mtime = stat.st_size, round(stat.st_mtime, 1)
+            except OSError:
+                size, mtime = 0, 0.0
+            file_rows.append({
+                "path": str(entry), "name": name, "size": size, "mtime": mtime,
+            })
+
+        status_map = store.get_many(row["path"] for row in file_rows)
+        for row in file_rows:
+            item = status_map.get(row["path"])
+            row["status"] = item.status if item else "new"
+            row["reason"] = item.reason if item else ""
+            row["title"] = item.title if item else ""
+            row["duration"] = round(item.duration, 1) if item else 0.0
+            row["frame_at"] = round(item.frame_at, 2) if item else 0.0
+            row["artifacts"] = artifacts(build_target(Path(row["path"])))
+
+        return {
+            "ok": True, "path": str(current), "parent": parent,
+            "roots": [str(root) for root in roots], "breadcrumb": breadcrumb,
+            "dirs": dirs, "files": file_rows, "truncated": truncated,
+        }
+
+    @app.get("/api/files/image")
+    def file_image(path: str = Query(...), kind: str = Query("poster")):
+        source = _within_roots(path)
+        target = build_target(source)
+        picked = {"poster": target.poster, "fanart": target.fanart,
+                  "thumb": target.thumb}.get(kind)
+        if not picked or not picked.is_file():
+            raise HTTPException(404, "图片还没生成")
+        return FileResponse(picked, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=60"})
+
+    @app.post("/api/files/delete")
+    def files_delete(payload: dict):
+        data = payload or {}
+        paths = [str(p).strip() for p in (data.get("paths") or []) if str(p).strip()]
+        kinds = [k for k in (data.get("what") or ["poster", "fanart", "thumb", "nfo"])
+                 if k in ("poster", "fanart", "thumb", "nfo")]
+        reset = bool(data.get("reset", True))
+        if not paths:
+            raise HTTPException(400, "没有选中文件")
+        if not kinds:
+            raise HTTPException(400, "没有选中要删除的产物类型")
+
+        removed = 0
+        touched = 0
+        errors: list[str] = []
+        for raw in paths:
+            try:
+                source = _within_roots(raw)
+            except HTTPException as exc:
+                errors.append(f"{raw}：{exc.detail}")
+                continue
+            target = build_target(source)
+            for kind in kinds:
+                path = getattr(target, kind)
+                try:
+                    if path.is_file():
+                        path.unlink()
+                        removed += 1
+                except OSError as exc:
+                    errors.append(f"{path.name}：{exc}")
+            if reset:
+                store.reset_one(str(source))
+                touched += 1
+
+        log.info("文件管理：删除 %s 个产物，重置 %s 条记录", removed, touched)
+        message = f"已删除 {removed} 个产物文件"
+        if reset and touched:
+            message += f"，{touched} 条记录已重置，下次开始任务会重新生成"
+        if not removed and not errors:
+            message = "选中的文件本来就没有这些产物"
+        return {"ok": not errors, "message": message, "removed": removed,
+                "reset": touched, "errors": errors[:5]}
+
+    @app.post("/api/files/scrape")
+    def files_scrape(payload: dict):
+        data = payload or {}
+        paths = [str(p).strip() for p in (data.get("paths") or []) if str(p).strip()]
+        if not paths:
+            raise HTTPException(400, "没有选中文件")
+        queued: list[str] = []
+        for raw in paths:
+            try:
+                source = _within_roots(raw)
+            except HTTPException:
+                continue
+            if source.is_file():
+                store.reset_one(str(source))
+                queued.append(str(source))
+        if not queued:
+            raise HTTPException(400, "没有可刮削的文件")
+
+        if runner.busy():
+            paused = runner.snapshot().get("paused")
+            tail = "任务已暂停，点「继续任务」后处理" if paused else "当前任务会顺带处理"
+            return {"ok": True, "started": False,
+                    "message": f"已加入队列 {len(queued)} 个，{tail}"}
+        runner.start(full=False)
+        return {"ok": True, "started": True,
+                "message": f"已开始刮削 {len(queued)} 个文件"}
+
+    # ---------- 手动选帧 ----------
+
+    def _pickable(raw: str) -> Path:
+        source = _within_roots(raw)
+        if not source.is_file():
+            raise HTTPException(404, "文件不存在")
+        return source
+
+    @app.get("/api/frames/plan")
+    def frames_plan(path: str = Query(""), count: int = Query(12, ge=4, le=24)):
+        """读时长、给出候选时间点，顺便把已有海报和手选记录带上。"""
+        source = _pickable(path)
+        target = build_target(source)
+        item = store.get(str(source))
+        try:
+            data = picker.plan(target, count)
+        except (probe.ProbeError, frames.FrameError) as exc:
+            raise HTTPException(400, f"读不到视频信息：{exc}") from exc
+        data.update({
+            "status": item.status if item else "new",
+            "title": item.title if item else "",
+            "frame_at": round(item.frame_at, 2) if item else 0.0,
+            "artifacts": artifacts(target),
+        })
+        return data
+
+    @app.get("/api/frames/frame")
+    def frames_frame(path: str = Query(...), t: float = Query(0, ge=0),
+                     width: int = Query(0, ge=0, le=1920)):
+        """按时间点抓一帧返回 JPEG；同参数第二次直接走缓存。"""
+        source = _pickable(path)
+        try:
+            image = picker.frame(source, t, width)
+        except frames.FrameError as exc:
+            raise HTTPException(504, str(exc)) from exc
+        except probe.ProbeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return FileResponse(image, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=1800"})
+
+    @app.post("/api/frames/apply")
+    def frames_apply(payload: dict):
+        """用选中的这一帧重出图，并记住位置（之后重刮也用它）。"""
+        data = payload or {}
+        source = _pickable(str(data.get("path") or ""))
+        try:
+            seconds = float(data.get("seconds"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "时间点不合法") from None
+        if seconds < 0:
+            raise HTTPException(400, "时间点不合法")
+
+        raw_kinds = data.get("kinds")
+        if raw_kinds is None:
+            kinds = ["poster", "fanart"]
+        else:
+            kinds = [k for k in raw_kinds if k in ("poster", "fanart", "thumb")]
+        if not kinds:
+            raise HTTPException(400, "至少选一种图片（海报 / 背景图 / 缩略图）")
+
+        target = build_target(source)
+        item = store.get(str(source))
+        if item is None:
+            store.ensure([(str(source), *signature(source))])
+        try:
+            made = picker.apply(target, seconds, kinds)
+        except frames.FrameError as exc:
+            raise HTTPException(504, str(exc)) from exc
+        except probe.ProbeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        title = (item.title if item and item.title
+                 else display_title(source.stem))
+        store.mark_ok(str(source), title, made["duration"])
+        store.set_frame_at(str(source), seconds)
+        store.touch_signature(str(source), *signature(source))
+
+        # 媒体服务器刷新比较慢，丢后台去做，别让按钮一直转圈
+        refreshed = False
+        if data.get("refresh", True) and pool.servers():
+            refreshed = True
+
+            def _refresh():
+                try:
+                    pool.refresh([str(source)])
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("选帧后刷新媒体服务器失败：%s", exc)
+
+            threading.Thread(target=_refresh, daemon=True, name="ws-pick-refresh").start()
+
+        log.info("手动选帧完成：%s → %s", source.name, made["label"])
+        return {
+            "ok": True,
+            "message": f"已用 {made['label']} 这一帧生成"
+                       f"{'、'.join(_KIND_NAMES[k] for k in kinds)}"
+                       + ("，正在通知媒体服务器刷新" if refreshed else ""),
+            "seconds": made["seconds"],
+            "label": made["label"],
+            "artifacts": made["artifacts"],
+        }
+
+    @app.post("/api/frames/auto")
+    def frames_auto(payload: dict):
+        """恢复自动选帧：清掉手选记录，重刮时按原来的采样策略挑最清晰的一帧。"""
+        source = _pickable(str((payload or {}).get("path") or ""))
+        store.set_frame_at(str(source), 0)
+        log.info("已恢复自动选帧：%s", source.name)
+        return {"ok": True,
+                "message": "已取消手选，下次重刮会按采样自动挑帧（现有图片不变）"}
 
     # ---------- 日志 ----------
 
@@ -369,9 +737,9 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             finally:
                 manual_refresh["running"] = False
 
-        import threading
         threading.Thread(target=worker, daemon=True, name="ws-refresh").start()
         return {"ok": True, "message": f"已开始补图，共 {len(paths)} 个文件，进度看日志"}
+
 
     @app.get("/api/config")
     def show_config():

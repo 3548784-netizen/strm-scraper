@@ -37,7 +37,9 @@ DEFAULTS: dict[str, Any] = {
         "extensions": [".strm"],
         # auto: 首次跑全量，之后只补缺失；full: 每次都重刮；incremental: 只补缺失
         # manual: 不自动跑，只在网页上手动触发
-        "mode": "auto",
+        "mode": "manual",
+        # 启动容器后是否自动开跑（默认关，打开网页点「开始任务」才跑）
+        "autostart": False,
         # 定时扫描间隔（分钟），0 表示只在网页上手动触发
         "interval_minutes": 0,
         "concurrency": 3,
@@ -156,7 +158,8 @@ class ScanConfig:
     roots: list[str] = field(default_factory=lambda: ["/media"])
     recursive: bool = True
     extensions: list[str] = field(default_factory=lambda: [".strm"])
-    mode: str = "auto"
+    mode: str = "manual"
+    autostart: bool = False
     interval_minutes: int = 0
     concurrency: int = 3
     timeout: int = 240
@@ -386,7 +389,9 @@ class Config:
             f"{s.name}({s.type})" for s in self.enabled_servers()
         ) or "无"
         return (
-            f"roots=[{roots}] mode={self.scan.mode} concurrency={self.scan.concurrency} "
+            f"roots=[{roots}] mode={self.scan.mode} "
+            f"autostart={'on' if self.scan.autostart else 'off'} "
+            f"concurrency={self.scan.concurrency} "
             f"interval={self.scan.interval_minutes}min web={self.web.host}:{self.web.port} "
             f"auth={'on' if self.web.auth.enabled else 'off'}"
             f"({self.web.auth.session_hours}h) "

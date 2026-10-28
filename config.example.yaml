@@ -14,11 +14,15 @@ scan:
   extensions:
     - .strm
 
-  # auto        首次运行全量刮一遍，之后只补缺失（推荐）
+  # auto        首次运行全量刮一遍，之后只补缺失
   # full        每次运行都全量重刮，会覆盖已有海报和 NFO
   # incremental 只处理缺失的，从不主动重刮已有的
-  # manual      不自动运行，只在网页上手动点
-  mode: auto
+  # manual      不自动运行，只在网页上手动点「开始任务」（默认）
+  mode: manual
+
+  # 容器启动后是否自动开跑。默认 false —— 打开网页点「开始任务」才开始，
+  # 免得一启动就在后台跑满带宽。想开机就刮就改成 true（mode 不能是 manual）。
+  autostart: false
 
   # 定时扫描间隔（分钟）。0 表示不定时，只在网页手动触发。
   interval_minutes: 0
@@ -34,6 +38,7 @@ scan:
 
 scrape:
   # 采样帧数（从 frame_positions 里取前 N 个）
+  # 网页上手动选过帧的文件不参与采样，直接用你选的那一秒。
   frames: 5
 
   # 采样位置，按片长比例。避开片头片尾，中间密集一些。

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS items (
     title     TEXT    NOT NULL DEFAULT '',
     duration  REAL    NOT NULL DEFAULT 0,
     attempts  INTEGER NOT NULL DEFAULT 0,
-    updated   REAL    NOT NULL DEFAULT 0
+    updated   REAL    NOT NULL DEFAULT 0,
+    frame_at  REAL    NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 
@@ -45,6 +46,8 @@ class Item:
     duration: float = 0.0
     attempts: int = 0
     updated: float = 0.0
+    # 手动选定的帧位置（秒），0 表示交给程序自动挑
+    frame_at: float = 0.0
 
     @property
     def name(self) -> str:
@@ -62,7 +65,16 @@ class StateStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """老库平滑升级：缺列就补上，不要求用户删 state.db。"""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(items)")}
+        if "frame_at" not in columns:
+            self._conn.execute(
+                "ALTER TABLE items ADD COLUMN frame_at REAL NOT NULL DEFAULT 0"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -138,6 +150,15 @@ class StateStore:
             )
             self._conn.commit()
 
+    def set_frame_at(self, path: str, seconds: float) -> None:
+        """记住手选的帧位置，之后重刮也用这一帧；传 0 表示恢复自动选帧。"""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET frame_at=?, updated=? WHERE path=?",
+                (max(0.0, round(float(seconds), 2)), time.time(), path),
+            )
+            self._conn.commit()
+
     def _set(self, path: str, **fields) -> None:
         if not fields:
             return
@@ -155,6 +176,23 @@ class StateStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM items WHERE path=?", (path,)).fetchone()
         return _row_to_item(row) if row else None
+
+    def get_many(self, paths: Iterable[str]) -> dict[str, Item]:
+        """一次查一批，文件管理页面列表用，避免逐条查询。"""
+        wanted = [p for p in dict.fromkeys(paths) if p]
+        if not wanted:
+            return {}
+        result: dict[str, Item] = {}
+        with self._lock:
+            for start in range(0, len(wanted), 400):
+                chunk = wanted[start:start + 400]
+                marks = ",".join("?" for _ in chunk)
+                rows = self._conn.execute(
+                    f"SELECT * FROM items WHERE path IN ({marks})", chunk
+                ).fetchall()
+                for row in rows:
+                    result[row["path"]] = _row_to_item(row)
+        return result
 
     def next_pending(self, limit: int) -> list[Item]:
         """取待处理队列。失败过 3 次的排到最后，避免反复卡同一个。"""
@@ -182,14 +220,17 @@ class StateStore:
             rows = self._conn.execute(sql, args).fetchall()
         return [_row_to_item(r) for r in rows]
 
-    def count(self, status: str | None = None) -> int:
+    def count(self, status: str | None = None, keyword: str = "") -> int:
+        sql = "SELECT COUNT(*) FROM items WHERE 1=1"
+        args: list = []
+        if status and status != "all":
+            sql += " AND status=?"
+            args.append(status)
+        if keyword:
+            sql += " AND path LIKE ?"
+            args.append(f"%{keyword}%")
         with self._lock:
-            if status and status != "all":
-                row = self._conn.execute(
-                    "SELECT COUNT(*) FROM items WHERE status=?", (status,)
-                ).fetchone()
-            else:
-                row = self._conn.execute("SELECT COUNT(*) FROM items").fetchone()
+            row = self._conn.execute(sql, args).fetchone()
         return int(row[0])
 
     def paths(self, statuses: tuple[str, ...] = ("ok", "skipped"),
@@ -243,4 +284,5 @@ def _row_to_item(row: sqlite3.Row) -> Item:
         duration=row["duration"],
         attempts=row["attempts"],
         updated=row["updated"],
+        frame_at=row["frame_at"] if "frame_at" in row.keys() else 0.0,
     )

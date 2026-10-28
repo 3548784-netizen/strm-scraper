@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import frames, nfo, probe
+from . import frames, nfo, picker, probe
 from .config import Config
 from .media import (Target, artifacts, build_target, iter_sources, product_state,
                     signature)
@@ -34,8 +34,12 @@ class ScrapeResult:
     elapsed: float = 0.0
 
 
-def process(cfg: Config, target: Target) -> ScrapeResult:
-    """处理一个 strm：探测 → 抓帧 → 出图 → 写 NFO。"""
+def process(cfg: Config, target: Target, frame_at: float = 0.0) -> ScrapeResult:
+    """处理一个 strm：探测 → 抓帧 → 出图 → 写 NFO。
+
+    ``frame_at`` 大于 0 时表示用户在网页上手动选过帧，直接抓那一秒，
+    不再按比例采样自动挑选。
+    """
     started = time.monotonic()
     overwrite = cfg.scrape.overwrite == "always"
     want_thumb = cfg.scrape.thumb.enabled
@@ -63,14 +67,28 @@ def process(cfg: Config, target: Target) -> ScrapeResult:
     if need_image:
         with tempfile.TemporaryDirectory(prefix="ws-") as tmp:
             workdir = Path(tmp)
-            best, count = frames.capture_best(
-                url,
-                info.duration,
-                cfg.scrape.frame_positions[: max(1, cfg.scrape.frames)],
-                workdir,
-                timeout=cfg.scan.timeout,
-            )
-            log.debug("%s 抓到 %s 帧，选用 %s", target.stem[:40], count, best.name)
+            if frame_at and frame_at > 0:
+                best = workdir / "f_manual.jpg"
+                seconds = frame_at
+                if info.duration > 1:
+                    # 别落在最后一帧之外，否则 ffmpeg 直接什么都不输出
+                    seconds = min(seconds, info.duration - 1.0)
+                if not frames.capture_at(url, seconds, best, timeout=cfg.scan.timeout):
+                    raise frames.FrameError(
+                        f"手动选的 {picker.clock(seconds)} 这一帧抓不下来，"
+                        "链接可能已失效，可以在网页上重新选一个时间点"
+                    )
+                count = 1
+                log.debug("%s 使用手动选定的 %s", target.stem[:40], picker.clock(seconds))
+            else:
+                best, count = frames.capture_best(
+                    url,
+                    info.duration,
+                    cfg.scrape.frame_positions[: max(1, cfg.scrape.frames)],
+                    workdir,
+                    timeout=cfg.scan.timeout,
+                )
+                log.debug("%s 抓到 %s 帧，选用 %s", target.stem[:40], count, best.name)
 
             if cfg.scrape.write_poster and (overwrite or "poster" in missing):
                 frames.make_poster(
@@ -134,9 +152,12 @@ class Runner:
 
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._paused = threading.Event()
+        self._cancelled = False
         self._thread: threading.Thread | None = None
 
-        self.state = "idle"  # idle / scanning / running / stopping
+        # idle / scanning / running / paused / stopping
+        self.state = "idle"
         self.processed = 0
         self.succeeded = 0
         self.failed = 0
@@ -144,13 +165,14 @@ class Runner:
         self.started_at = 0.0
         self.finished_at = 0.0
         self.last_error = ""
+        self.last_message = ""
         self.mode = ""
 
     # ---------- 对外接口 ----------
 
     def busy(self) -> bool:
         with self._lock:
-            return self.state in ("scanning", "running", "stopping")
+            return self.state in ("scanning", "running", "paused", "stopping")
 
     def start(self, full: bool = False) -> bool:
         """启动一轮扫描+刮削。已在跑就返回 False。"""
@@ -158,31 +180,77 @@ class Runner:
             if self.busy():
                 return False
             self._stop.clear()
+            self._paused.clear()
+            self._cancelled = False
             self.processed = self.succeeded = self.failed = 0
             self.current.clear()
             self.started_at = time.time()
             self.finished_at = 0.0
             self.last_error = ""
+            self.last_message = ""
             self.state = "scanning"
             self.mode = "full" if full else "incremental"
 
         self._thread = threading.Thread(target=self._run, args=(full,), daemon=True,
                                         name="ws-runner")
         self._thread.start()
+        log.info("任务开始（%s）", "全量" if full else "增量")
+        return True
+
+    def pause(self) -> bool:
+        """暂停派发：正在处理的任务会跑完，队列里的先停住。"""
+        with self._lock:
+            if self.state not in ("scanning", "running"):
+                return False
+            self._paused.set()
+            self.state = "paused"
+            active = len(self.current)
+        log.info("任务已暂停，%s 个进行中的任务会跑完后再停", active)
+        return True
+
+    def resume(self) -> bool:
+        with self._lock:
+            if not self._paused.is_set():
+                return False
+            self._paused.clear()
+            alive = self._thread is not None and self._thread.is_alive()
+            self.state = "running" if alive else "idle"
+            if not alive:
+                self._stop.clear()
+        log.info("任务已继续")
+        return True
+
+    def cancel(self) -> bool:
+        """取消：立刻停止派发，进行中的结果作废、退回待处理。"""
+        with self._lock:
+            if not self.busy():
+                return False
+            self._cancelled = True
+            self._paused.clear()
+            self._stop.set()
+            self.state = "stopping"
+        log.warning("任务已取消，进行中的任务结果作废并退回待处理")
         return True
 
     def stop(self) -> None:
-        self._stop.set()
+        """进程退出时调用，语义等同取消。"""
         with self._lock:
-            if self.state in ("scanning", "running"):
-                self.state = "stopping"
+            if self.state in ("idle",):
+                self._stop.set()
+                return
+            self._cancelled = True
+            self._paused.clear()
+            self._stop.set()
+            self.state = "stopping"
 
     def snapshot(self) -> dict:
         with self._lock:
             elapsed = (time.time() - self.started_at) if self.started_at else 0
+            paused = self._paused.is_set()
             return {
                 "state": self.state,
                 "mode": self.mode,
+                "paused": paused,
                 "processed": self.processed,
                 "succeeded": self.succeeded,
                 "failed": self.failed,
@@ -190,6 +258,7 @@ class Runner:
                 "concurrency": self.cfg.scan.concurrency,
                 "elapsed": round(elapsed, 1),
                 "last_error": self.last_error,
+                "last_message": self.last_message,
                 "stats": self.store.stats(),
             }
 
@@ -202,23 +271,33 @@ class Runner:
             log.info("扫描完成，新登记 %s 个文件，待处理 %s 个",
                      added, self.store.count("pending"))
             with self._lock:
-                self.state = "running"
+                if self.state == "scanning":
+                    self.state = "running"
 
             scraped_paths = self._drain()
-            self._refresh_servers(scraped_paths)
+            if not self._cancelled:
+                self._refresh_servers(scraped_paths)
         except Exception as exc:  # noqa: BLE001 - 主控线程不能静默死掉
             log.exception("调度线程异常")
             with self._lock:
                 self.last_error = str(exc)
         finally:
             with self._lock:
+                cancelled = self._cancelled
                 self.state = "idle"
                 self.finished_at = time.time()
                 self.current.clear()
+                if cancelled:
+                    self.last_message = "任务已取消"
             self.store.set_meta("last_run", str(int(time.time())))
-            log.info("本轮结束：处理 %s，成功 %s，失败 %s，用时 %.1f 分钟",
-                     self.processed, self.succeeded, self.failed,
-                     (time.time() - started) / 60)
+            if cancelled:
+                log.warning("本轮已取消：已处理 %s（成功 %s / 失败 %s），剩余 %s 个待处理",
+                            self.processed, self.succeeded, self.failed,
+                            self.store.count("pending"))
+            else:
+                log.info("本轮结束：处理 %s，成功 %s，失败 %s，用时 %.1f 分钟",
+                         self.processed, self.succeeded, self.failed,
+                         (time.time() - started) / 60)
 
     def _scan(self, full: bool) -> int:
         cfg = self.cfg
@@ -248,7 +327,11 @@ class Runner:
         return added
 
     def _drain(self) -> list[str]:
-        """取空待处理队列，返回刮削成功的路径。"""
+        """取空待处理队列，返回刮削成功的路径。
+
+        暂停只影响派发：已经在线程池里跑的会跑完，队列不再取新的；取消则
+        连同进行中的一起作废（结果退回 pending，下次开始还能接着做）。
+        """
         cfg = self.cfg
         workers = max(1, cfg.scan.concurrency)
         ok_paths: list[str] = []
@@ -257,6 +340,19 @@ class Runner:
 
         try:
             while not self._stop.is_set():
+                if self._paused.is_set():
+                    with self._lock:
+                        if self.state != "paused":
+                            self.state = "paused"
+                    while self._paused.is_set() and not self._stop.is_set():
+                        time.sleep(0.2)
+                    if self._stop.is_set():
+                        break
+                    with self._lock:
+                        self.state = "running"
+                    log.info("任务继续，剩余 %s 个待处理", self.store.count("pending"))
+                    continue
+
                 while len(pending) < workers:
                     batch = self.store.next_pending(1)
                     if not batch:
@@ -276,9 +372,15 @@ class Runner:
                     if path:
                         ok_paths.append(path)
 
-            if self._stop.is_set() and pending:
-                log.info("收到停止请求，等待 %s 个进行中的任务收尾", len(pending))
-                wait(pending, timeout=cfg.scan.timeout + 10)
+            if self._stop.is_set():
+                if self._cancelled:
+                    # 进行中的任务无法强杀，但结果作废，状态退回待处理
+                    running = self.store.reset(("running",))
+                    if running:
+                        log.info("已把 %s 个进行中的任务退回待处理", running)
+                elif pending:
+                    log.info("收到停止请求，等待 %s 个进行中的任务收尾", len(pending))
+                    wait(pending, timeout=cfg.scan.timeout + 10)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         return ok_paths
@@ -288,7 +390,7 @@ class Runner:
         target = build_target(Path(item.path))
         result: ScrapeResult | None = None
         try:
-            result = process(self.cfg, target)
+            result = process(self.cfg, target, frame_at=item.frame_at)
         except (probe.ProbeError, frames.FrameError) as exc:
             result = ScrapeResult(ok=False, reason=str(exc))
         except OSError as exc:
@@ -296,6 +398,15 @@ class Runner:
         except Exception as exc:  # noqa: BLE001 - 单条失败不能影响整轮
             log.exception("处理失败：%s", item.path, extra={"item": item.path})
             result = ScrapeResult(ok=False, reason=f"未预期的错误：{exc}")
+
+        # 取消后仍在跑的收尾：结果不算数，状态退回待处理，下次开始接着做
+        if self._cancelled:
+            self.store.reset_one(item.path)
+            with self._lock:
+                self.current.pop(item.path, None)
+            log.info("[取消] %s | 结果作废，已退回待处理", target.stem[:60],
+                     extra={"item": item.path})
+            return ""
 
         # 写盘后刷新时间戳，避免下一轮重复处理
         size, mtime = signature(Path(item.path))

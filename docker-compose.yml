@@ -1,0 +1,22 @@
+services:
+  strm-scraper:
+    build: .
+    image: strm-scraper:latest
+    container_name: strm-scraper
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # 左边改成你自己的 strm 目录，右边保持 /media
+      - /vol1/1000/LitePan/strm:/media
+      # 配置、状态库、日志都在这里，必须持久化
+      - ./config:/config
+    environment:
+      TZ: Asia/Shanghai
+      # 这些不写就用 /config/config.yaml 里的值
+      # WS_SCAN__CONCURRENCY: "4"
+      # WS_SCAN__INTERVAL_MINUTES: "360"
+      # WS_LOG__LEVEL: "DEBUG"
+      # 媒体服务器建议写在 config.yaml 的 servers 段（列表用环境变量不好表达）
+    # 如果海报写不进媒体目录，通常是权限问题，可以用下面这行以 root 运行
+    # user: "0:0"

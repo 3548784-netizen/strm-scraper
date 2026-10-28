@@ -1,0 +1,129 @@
+# strm 刮削器配置
+# 改完重启容器生效。环境变量优先级更高，例如 WS_SCAN__CONCURRENCY=4。
+# servers 是列表，多台服务器建议直接写在这里，环境变量不好表达列表。
+
+scan:
+  # 要扫描的目录（容器内路径）。多个目录写多行。
+  roots:
+    - /media
+
+  # 是否递归扫描子目录
+  recursive: true
+
+  # 处理的文件类型
+  extensions:
+    - .strm
+
+  # auto        首次运行全量刮一遍，之后只补缺失（推荐）
+  # full        每次运行都全量重刮，会覆盖已有海报和 NFO
+  # incremental 只处理缺失的，从不主动重刮已有的
+  # manual      不自动运行，只在网页上手动点
+  mode: auto
+
+  # 定时扫描间隔（分钟）。0 表示不定时，只在网页手动触发。
+  interval_minutes: 0
+
+  # 并发处理数。视频源在网盘上，3~5 比较合适；太高会被限速。
+  concurrency: 3
+
+  # 单帧抓取的超时（秒）
+  timeout: 240
+
+  # 探测阶段网络超时（秒）。strm 指向的地址失效时，靠这个快速失败。
+  probe_timeout: 20
+
+scrape:
+  # 采样帧数（从 frame_positions 里取前 N 个）
+  frames: 5
+
+  # 采样位置，按片长比例。避开片头片尾，中间密集一些。
+  frame_positions:
+    - 0.15
+    - 0.30
+    - 0.45
+    - 0.60
+    - 0.75
+
+  # 分辨率小于这个值的帧视为无效
+  min_width: 320
+
+  # 竖版海报。Emby 和 Jellyfin 都要求 2:3，推荐 1000×1500，最小 500×750。
+  # 比例写错会自动校正并在日志里告警（写 500×800 会变成 500×750）。
+  poster:
+    width: 1000
+    height: 1500
+    # blur      模糊背景铺满 + 画面完整居中（推荐，横版视频不会切掉主体）
+    # gradient  背景用画面上下边缘的平均色做渐变，最干净、无残影
+    # crop      直接中心裁切，画面最饱满但两侧内容会丢
+    mode: blur
+
+  # 横版背景图（fanart / backdrop）。两家都推荐 16:9，1920×1080。
+  fanart:
+    width: 1920
+    height: 1080
+
+  # 16:9 缩略图，写 <名称>-thumb.jpg。Emby 的列表视图会用，可选。
+  thumb:
+    enabled: false
+    width: 1000
+    height: 562
+
+  # 分别控制是否生成各类产物
+  write_nfo: true
+  write_poster: true
+  write_fanart: true
+
+  # missing  只在文件缺失时生成（推荐，不会覆盖你手动改过的内容）
+  # always   每次都覆盖
+  overwrite: missing
+
+  jpeg_quality: 92
+
+# Emby 和 Jellyfin 都支持，可以同时配多台，刮完会分别刷新。
+# 不配也能用，只是生成完文件后要自己在服务器上点一次刷新。
+servers:
+  # ---------- Jellyfin ----------
+  # - name: jellyfin          # 网页上显示的名字，随便起
+  #   type: jellyfin          # jellyfin / emby / auto（auto 自动识别）
+  #   enabled: false
+  #   url: http://192.168.1.10:8096
+  #   api_key: ""             # 控制台 → API 密钥 → 新建
+  #   timeout: 30
+  #   refresh_after: true     # 刮完自动让它重建图片缓存
+  #   verify_after: true      # 刷新后回查一遍，确认图真的被识别
+  #   scan_after: false       # 刮完顺手触发一次媒体库扫描
+  #   insecure: false         # 自签名 https 证书时设为 true
+  #   path_map:
+  #     # 容器内路径: 服务端看到的路径
+  #     # 两边挂载不一样时必须配，否则按路径匹配不到条目
+  #     /media: /vol1/1000/LitePan/strm
+
+  # ---------- Emby ----------
+  # - name: emby
+  #   type: emby
+  #   enabled: false
+  #   url: http://192.168.1.10:8096
+  #   api_key: ""
+  #   path_map:
+  #     /media: /vol1/1000/LitePan/strm
+
+web:
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+
+storage:
+  # 状态库位置，容器内路径，务必落在持久化卷上
+  state_db: /config/state.db
+
+log:
+  # DEBUG 会打印每次抓帧、每个请求，排查问题时很有用；平时 INFO 就够
+  level: INFO
+  # 日志目录，留空则只输出到控制台
+  dir: /config/logs
+  file: strm-scraper.log
+  # 单个文件上限（MB）与保留份数：超过就滚动，不会无限涨
+  max_mb: 5
+  backups: 5
+  # 同时输出到容器标准输出，docker logs 里也能看
+  console: true

@@ -1,7 +1,9 @@
 # strm-scraper
 
 [![构建镜像](https://github.com/3548784-netizen/strm-scraper/actions/workflows/docker.yml/badge.svg)](https://github.com/3548784-netizen/strm-scraper/actions/workflows/docker.yml)
-[![镜像](https://img.shields.io/badge/镜像-ghcr.io-2496ED)](https://github.com/3548784-netizen/strm-scraper/pkgs/container/strm-scraper)
+[![Docker Hub](https://img.shields.io/docker/v/3548784/strm-scraper?label=docker%20hub&color=2496ED)](https://hub.docker.com/r/3548784/strm-scraper)
+[![镜像大小](https://img.shields.io/docker/image-size/3548784/strm-scraper?label=%E4%BD%93%E7%A7%AF)](https://hub.docker.com/r/3548784/strm-scraper)
+[![GHCR](https://img.shields.io/badge/ghcr.io-3548784--netizen%2Fstrm--scraper-2496ED)](https://github.com/3548784-netizen/strm-scraper/pkgs/container/strm-scraper)
 
 给 115 / LitePan 生成的 `.strm` 文件补上海报、背景图和 NFO 的刮削器，跑在 Docker 里，手机和电脑都能通过网页控制台操作。
 
@@ -66,11 +68,14 @@
 
 ## 快速开始
 
-镜像已经发布在 GitHub 容器仓库，可以直接拉，不用本地构建：
+镜像同时发布在两个仓库，内容完全一致，挑能拉快的那个用：
 
 ```
-ghcr.io/3548784-netizen/strm-scraper:latest
+3548784/strm-scraper:latest                              # Docker Hub，国内一般更快
+ghcr.io/3548784-netizen/strm-scraper:latest              # GitHub 容器仓库
 ```
+
+两个都不需要登录，直接匿名拉取。`latest` 跟 `main` 分支同步，每次推送自动重建。
 
 ### 方式一：拉现成镜像（推荐）
 
@@ -83,7 +88,7 @@ mkdir -p /vol1/1000/docker/strm-scraper && cd /vol1/1000/docker/strm-scraper
 ```yaml
 services:
   strm-scraper:
-    image: ghcr.io/3548784-netizen/strm-scraper:latest
+    image: 3548784/strm-scraper:latest   # 拉不动就换成 ghcr.io/3548784-netizen/strm-scraper:latest
     container_name: strm-scraper
     restart: unless-stopped
     ports:
@@ -129,6 +134,16 @@ docker compose up -d --build
 浏览器打开 `http://你的NAS地址:6666`，点「增量刮削」。
 
 首次运行会全量扫一遍所有 strm，之后自动转成增量模式，只补新文件和缺图。跑一轮的耗时主要取决于视频数量和网盘响应速度，300 个视频大约 20~40 分钟。
+
+### 更新到新版本
+
+`main` 有新提交时镜像会自动重建，NAS 上重新拉一次即可：
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+配置、状态库、日志都在 `./config` 里，更新不会丢，已生成的图片也不会重刮。
 
 ## 配置
 

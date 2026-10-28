@@ -1,9 +1,12 @@
 # 直接拉取现成镜像部署，不需要在 NAS 上构建
 # 飞牛「Docker → 项目 → 新建」，把下面内容整段粘进去即可
+# 两个镜像仓库内容一致，哪个拉得快用哪个：
+#   Docker Hub  3548784/strm-scraper:latest
+#   GHCR        ghcr.io/3548784-netizen/strm-scraper:latest
 # 注意：真正使用前把 /vol1/1000/LitePan/strm 改成你自己的 strm 目录
 services:
   strm-scraper:
-    image: ghcr.io/3548784-netizen/strm-scraper:latest
+    image: 3548784/strm-scraper:latest
     container_name: strm-scraper
     restart: unless-stopped
     ports:

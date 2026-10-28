@@ -15,20 +15,25 @@ ls /vol1/1000/LitePan/strm
 
 ## 2. 拉取现成镜像（方式 A，推荐）
 
-镜像已经发布在 GitHub 容器仓库，不需要在 NAS 上构建：
+镜像同时发布在 Docker Hub 和 GitHub 容器仓库，内容完全一致，挑拉得快的一个：
 
 ```
-ghcr.io/3548784-netizen/strm-scraper:latest
+3548784/strm-scraper:latest                       # Docker Hub，国内一般更快
+ghcr.io/3548784-netizen/strm-scraper:latest       # GHCR，GitHub 官方
 ```
 
-压缩后约 217 MB，飞牛上拉取视网络情况 1~5 分钟。
+两个都能匿名拉，不需要登录。压缩后约 217 MB，飞牛上拉取视网络情况 1~5 分钟。
+
+> Docker Hub 匿名拉取有频次限制（同一 IP 每 6 小时 100 次）。只装一次不用管；如果经常重建容器，可以在飞牛 Docker 设置里登录 Docker Hub 账号，额度就按账号算。
 
 ### 飞牛 Docker 界面操作
 
 1. 打开「Docker」应用 → 左侧「镜像」→ 右上角「添加镜像」
-2. 仓库地址选 `ghcr.io`，镜像名填 `3548784-netizen/strm-scraper`，标签填 `latest`
-   （也可以在搜索框里直接粘整串 `ghcr.io/3548784-netizen/strm-scraper:latest`）
+2. 仓库地址选 `docker.io`（有的版本叫 Docker Hub），镜像名填 `3548784/strm-scraper`，标签填 `latest`
+   （也可以在搜索框里直接粘整串 `3548784/strm-scraper:latest`）
 3. 点确定，等进度条走完，镜像列表里出现 `strm-scraper` 就拉好了
+
+用 GHCR 的话把第 2 步换成：仓库地址 `ghcr.io`、镜像名 `3548784-netizen/strm-scraper`。
 
 拉到之后建容器。建议用「项目」而不是「容器」，以后改配置方便：
 
@@ -37,7 +42,7 @@ ghcr.io/3548784-netizen/strm-scraper:latest
 ```yaml
 services:
   strm-scraper:
-    image: ghcr.io/3548784-netizen/strm-scraper:latest
+    image: 3548784/strm-scraper:latest   # 拉不动就换 ghcr.io/3548784-netizen/strm-scraper:latest
     container_name: strm-scraper
     restart: unless-stopped
     ports:
@@ -54,12 +59,12 @@ services:
 ### 命令行等价操作
 
 ```bash
-docker pull ghcr.io/3548784-netizen/strm-scraper:latest
+docker pull 3548784/strm-scraper:latest
 ```
 
 挂载和端口的注意事项见下面「方式 B」的说明，两者一样：挂载路径要换成本机的、`./config` 必须留着、6666 被占就改映射左边。
 
-镜像在 `main` 分支每次推送后自动重建，所以 `latest` 始终是最新代码。想固定版本可以用提交哈希标签，比如 `sha-dc42b0e`。
+镜像在 `main` 分支每次推送后自动重建并推到两个仓库，所以 `latest` 始终是最新代码。想固定版本可以用提交哈希标签，比如 `sha-660eac5`。
 
 ## 3. 从源码构建（方式 B）
 
@@ -223,6 +228,27 @@ deploy:
 ```
 
 抓帧主要吃网络和 CPU 的 H.265 解码，1 核够跑 2 个并发。
+
+**拉镜像很慢或者报 `toomanyrequests`**
+
+Docker Hub 匿名拉取按 IP 限流，每 6 小时 100 次，NAS 上多台设备共用一个出口 IP 时容易撞上。三个办法，任选：
+
+```bash
+# 换 GHCR
+docker pull ghcr.io/3548784-netizen/strm-scraper:latest
+```
+
+```bash
+# 或者给 Docker 配国内加速器（飞牛的「Docker → 设置 → 镜像加速」也能填）
+# /etc/docker/daemon.json
+{ "registry-mirrors": ["https://dockerproxy.com", "https://docker.m.daocloud.io"] }
+```
+
+或者登录 Docker Hub 账号再拉，额度改按账号算：
+
+```bash
+docker login
+```
 
 **改了配置不生效**
 

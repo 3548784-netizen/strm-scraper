@@ -36,7 +36,7 @@ services:
     container_name: strm-scraper
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "6666:6666"
     volumes:
       - /vol1/1000/LitePan/strm:/media    # ← 改成你的 strm 目录
       - ./config:/config
@@ -48,7 +48,8 @@ services:
 
 - 左边是宿主机真实路径，右边保持 `/media`（或改的话，`config` 里的 `scan.roots` 要跟着改）
 - `./config:/config` 必须留着。状态库存在这里，删了会丢失进度记录，虽然不影响已生成的图片，但下一轮会重新扫一遍全部文件
-- 端口 8080 被占用就换，比如 `"18080:8080"`
+- 端口 6666 被占用就换，比如 `"16666:6666"`；只改左边，右边和 `config.yaml` 里的 `web.port` 保持一致就行
+- 从旧版本升级上来的，`config/config.yaml` 里 `web.port` 可能还是 8080。要么把它改成 6666，要么删掉这个文件让容器重新生成一份，否则端口对不上，浏览器打不开
 
 ## 4. 启动
 
@@ -71,12 +72,12 @@ docker compose logs -f
 19:28:23 INFO    [main        ] 配置：roots=[/media] mode=auto concurrency=3 ...
 19:28:23 INFO    [main        ] 图片规格：poster 1000×1500（2:3），fanart 1920×1080（16:9）
 19:28:23 INFO    [main        ] 日志文件：/config/logs/strm-scraper.log
-19:28:23 INFO    [main        ] 网页控制台：http://0.0.0.0:8080
+19:28:23 INFO    [main        ] 网页控制台：http://0.0.0.0:6666
 ```
 
 ## 5. 打开控制台
 
-浏览器访问 `http://飞牛局域网IP:8080`。
+浏览器访问 `http://飞牛局域网IP:6666`。
 
 首次进入是「空闲」状态。如果 `scan.mode` 是 `auto`，启动时会自动开跑全量，控制台能看到进度往上走。
 

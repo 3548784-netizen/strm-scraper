@@ -65,7 +65,7 @@ DEFAULTS: dict[str, Any] = {
     },
     # Emby / Jellyfin 可以配多台，刮完自动刷新各自的图片缓存
     "servers": [],
-    "web": {"enabled": True, "host": "0.0.0.0", "port": 8080},
+    "web": {"enabled": True, "host": "0.0.0.0", "port": 6666},
     "storage": {"state_db": "/config/state.db"},
     "log": {
         "level": "INFO",
@@ -216,7 +216,7 @@ class ServerConfig:
 class WebConfig:
     enabled: bool = True
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 6666
 
 
 @dataclass

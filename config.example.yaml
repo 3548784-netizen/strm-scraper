@@ -110,7 +110,7 @@ servers:
 web:
   enabled: true
   host: 0.0.0.0
-  port: 8080
+  port: 6666
 
 storage:
   # 状态库位置，容器内路径，务必落在持久化卷上

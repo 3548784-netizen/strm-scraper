@@ -26,10 +26,10 @@ RUN chmod +x /entrypoint.sh
 # /media 放媒体目录（只读挂载也能用，只要产物目录可写）
 # /config 存配置和状态库，必须持久化，否则重启会丢失进度
 VOLUME ["/config"]
-EXPOSE 8080
+EXPOSE 6666
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=3)"
+    CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:6666/api/health',timeout=3)"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "scraper.main"]

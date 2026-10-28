@@ -1,7 +1,7 @@
 # strm-scraper
 
 [![构建镜像](https://github.com/3548784-netizen/strm-scraper/actions/workflows/docker.yml/badge.svg)](https://github.com/3548784-netizen/strm-scraper/actions/workflows/docker.yml)
-[![Docker Hub](https://img.shields.io/docker/v/3548784/strm-scraper?label=docker%20hub&color=2496ED)](https://hub.docker.com/r/3548784/strm-scraper)
+[![Docker Hub](https://img.shields.io/badge/docker%20hub-3548784%2Fstrm--scraper-2496ED)](https://hub.docker.com/r/3548784/strm-scraper)
 [![镜像大小](https://img.shields.io/docker/image-size/3548784/strm-scraper?label=%E4%BD%93%E7%A7%AF)](https://hub.docker.com/r/3548784/strm-scraper)
 [![GHCR](https://img.shields.io/badge/ghcr.io-3548784--netizen%2Fstrm--scraper-2496ED)](https://github.com/3548784-netizen/strm-scraper/pkgs/container/strm-scraper)
 

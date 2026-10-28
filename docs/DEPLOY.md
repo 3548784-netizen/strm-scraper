@@ -19,7 +19,7 @@ SSH 登录飞牛，挑一个数据盘目录，比如 `/vol1/1000/docker`：
 
 ```bash
 cd /vol1/1000/docker
-git clone https://github.com/<your-name>/strm-scraper.git
+git clone https://github.com/3548784-netizen/strm-scraper.git
 cd strm-scraper
 ```
 

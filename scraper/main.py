@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from . import specs
+from .auth import AuthStore
 from .config import Config
 from .logs import LogFiles, setup_logging
 from .mediaserver import ServerPool
@@ -135,6 +136,18 @@ def doctor(cfg: Config, log_files: LogFiles) -> int:
     if not log_files.main:
         log.warning("日志没有写文件，出问题只能看 docker logs")
 
+    if not cfg.web.auth.enabled:
+        log.warning("网页登录已关闭（web.auth.enabled=false），能访问端口的人都能操作")
+    else:
+        try:
+            account = AuthStore(cfg.web.auth.file, cfg.web.auth.session_hours)
+            log.info("登录账号：%s（文件 %s）", account.describe(), account.path)
+            if account.default_password:
+                log.warning("还在用默认密码 admin / admin，登录后请到右上角「账号」里改掉")
+        except Exception as exc:  # noqa: BLE001
+            log.error("账号文件不可用：%s（检查 %s 所在目录的写权限）", exc, cfg.web.auth.file)
+            problems += 1
+
     if not cfg.servers:
         log.info("媒体服务器：未配置（只生成文件，不联动 Emby / Jellyfin）")
     for server in cfg.servers:
@@ -243,7 +256,21 @@ def main(argv: list[str] | None = None) -> int:
 
     app = None
     if not args.no_web and cfg.web.enabled:
-        app = create_app(cfg, store, runner, log_buffer, log_files, pool)
+        account = None
+        if cfg.web.auth.enabled:
+            try:
+                account = AuthStore(cfg.web.auth.file, cfg.web.auth.session_hours)
+            except OSError as exc:
+                log.error("账号文件无法写入：%s（%s）", cfg.web.auth.file, exc)
+                log.error("把 web.auth.file 改成可写路径，本地运行可用 ./data/auth.json；"
+                          "或者临时设 web.auth.enabled=false 关闭登录")
+                return 2
+            log.info("网页登录：已启用，%s", account.describe())
+            if account.default_password:
+                log.warning("默认账号 admin / admin，登录后请到右上角「账号」里改掉")
+        else:
+            log.warning("网页登录已关闭，任何能访问端口的人都能操作控制台")
+        app = create_app(cfg, store, runner, log_buffer, log_files, pool, account)
 
     # 定时线程
     def scheduler():

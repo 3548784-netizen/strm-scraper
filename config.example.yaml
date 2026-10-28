@@ -111,6 +111,13 @@ web:
   enabled: true
   host: 0.0.0.0
   port: 6666
+  auth:
+    # 登录后才能操作控制台。首次启动会创建 admin / admin，登录后可在网页上改
+    enabled: true
+    # 登录状态保持多少小时，默认 7 天
+    session_hours: 168
+    # 账号文件，密码是加盐哈希；删掉这个文件后重启会重置成 admin / admin
+    file: /config/auth.json
 
 storage:
   # 状态库位置，容器内路径，务必落在持久化卷上

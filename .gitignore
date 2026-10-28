@@ -11,6 +11,9 @@ config/
 *.db
 *.db-journal
 *.log
+# 登录账号（加盐哈希，也属于本机私有数据）
+auth.json
+auth.json.*
 
 # 编辑器 / 系统
 .vscode/

@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""网页控制台：进度看板 + 失败排查 + 媒体服务器联动 + 日志查看。"""
+"""网页控制台：登录鉴权 + 进度看板 + 失败排查 + 媒体服务器联动 + 日志查看。"""
 from __future__ import annotations
 
 import logging
 import time
+import urllib.parse
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
+from .auth import (COOKIE_NAME, AuthStore, LoginThrottle, validate_password,
+                   validate_username)
 from .config import Config
 from .logs import LogFiles, RingLogHandler, tail_file
 from .media import build_target, artifacts
@@ -20,14 +23,175 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+# 不需要登录就能访问的路径
+PUBLIC_PATHS = {"/login", "/api/login", "/api/auth-info", "/api/health", "/favicon.ico"}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
 
 def create_app(cfg: Config, store: StateStore, runner: Runner,
                log_buffer: RingLogHandler, log_files: LogFiles | None = None,
-               pool: ServerPool | None = None) -> FastAPI:
+               pool: ServerPool | None = None,
+               auth: AuthStore | None = None) -> FastAPI:
     app = FastAPI(title="strm-scraper", docs_url="/api/docs", redoc_url=None)
     pool = pool or ServerPool(cfg)
     log_files = log_files or LogFiles()
+    auth = auth or AuthStore(cfg.web.auth.file, cfg.web.auth.session_hours)
+    throttle = LoginThrottle()
     manual_refresh: dict = {"running": False, "done": 0, "total": 0, "message": ""}
+
+    def _set_session(response, username: str):
+        response.set_cookie(
+            COOKIE_NAME, auth.issue(username),
+            max_age=auth.session_hours * 3600,
+            httponly=True, samesite="lax", path="/",
+        )
+        return response
+
+    # ---------- 登录守卫 ----------
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        if not cfg.web.auth.enabled:
+            return await call_next(request)
+        path = request.url.path
+        if path in PUBLIC_PATHS or path.startswith("/static/"):
+            return await call_next(request)
+
+        user = auth.read(request.cookies.get(COOKIE_NAME))
+        if user:
+            request.state.user = user
+            return await call_next(request)
+
+        if path.startswith("/api/"):
+            return JSONResponse(
+                {"ok": False, "message": "登录已过期，请重新登录", "need_login": True},
+                status_code=401,
+            )
+        target = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/login?next={urllib.parse.quote(target)}", status_code=303)
+
+    # ---------- 登录页与账号 ----------
+
+    @app.get("/login", response_class=FileResponse)
+    def login_page():
+        if not cfg.web.auth.enabled:
+            return RedirectResponse("/", status_code=303)
+        page = STATIC_DIR / "login.html"
+        if not page.is_file():
+            raise HTTPException(500, "登录页文件缺失")
+        return FileResponse(page, media_type="text/html; charset=utf-8")
+
+    @app.get("/api/auth-info")
+    def auth_info(request: Request):
+        """登录页用：是否需要登录、是不是还没改默认密码。"""
+        user = auth.read(request.cookies.get(COOKIE_NAME)) if cfg.web.auth.enabled else None
+        return {
+            "enabled": cfg.web.auth.enabled,
+            "default_password": auth.default_password,
+            "logged_in": bool(user),
+            "username": user or "",
+        }
+
+    @app.post("/api/login")
+    def api_login(payload: dict, request: Request):
+        if not cfg.web.auth.enabled:
+            raise HTTPException(400, "当前没有启用登录")
+        ip = _client_ip(request)
+        wait = throttle.blocked(ip)
+        if wait:
+            raise HTTPException(429, f"尝试次数过多，请 {wait} 秒后再试")
+
+        username = str((payload or {}).get("username") or "").strip()
+        password = str((payload or {}).get("password") or "")
+        if not auth.verify(username, password):
+            count = throttle.fail(ip)
+            log.warning("登录失败：%s（来源 %s，连续 %s 次）", username or "(空)", ip, count)
+            raise HTTPException(401, "用户名或密码不正确")
+
+        throttle.reset(ip)
+        log.info("登录成功：%s（来源 %s）", auth.username, ip)
+        response = JSONResponse({
+            "ok": True,
+            "username": auth.username,
+            "default_password": auth.default_password,
+        })
+        return _set_session(response, auth.username)
+
+    @app.post("/api/logout")
+    def api_logout():
+        response = JSONResponse({"ok": True, "message": "已退出登录"})
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return response
+
+    @app.get("/api/account")
+    def account(request: Request):
+        user = auth.read(request.cookies.get(COOKIE_NAME)) or auth.username
+        return {
+            "username": auth.username,
+            "logged_in_as": user,
+            "auth_enabled": cfg.web.auth.enabled,
+            "default_password": auth.default_password,
+            "session_hours": auth.session_hours,
+            "file": str(auth.path) if cfg.web.auth.enabled else "",
+            "client_ip": _client_ip(request),
+        }
+
+    @app.post("/api/account")
+    def update_account(payload: dict, request: Request):
+        """改用户名 / 密码。必须验证当前密码，改完旧会话全部失效。"""
+        if not cfg.web.auth.enabled:
+            raise HTTPException(400, "当前没有启用登录，无需修改账号")
+        data = payload or {}
+        current = str(data.get("current_password") or "")
+        new_user = str(data.get("username") or "").strip()
+        new_pass = str(data.get("new_password") or "")
+
+        ip = _client_ip(request)
+        wait = throttle.blocked(ip)
+        if wait:
+            raise HTTPException(429, f"尝试次数过多，请 {wait} 秒后再试")
+        if not auth.verify(auth.username, current):
+            throttle.fail(ip)
+            log.warning("修改账号失败：当前密码不正确（来源 %s）", ip)
+            raise HTTPException(400, "当前密码不正确")
+        if not new_user and not new_pass:
+            raise HTTPException(400, "没有需要修改的内容")
+
+        try:
+            if new_user:
+                new_user = validate_username(new_user)
+            if new_pass:
+                new_pass = validate_password(new_pass, new_user or auth.username)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        if new_user and new_user == auth.username and not new_pass:
+            raise HTTPException(400, "用户名没有变化")
+        if new_pass and new_pass == current:
+            raise HTTPException(400, "新密码不能和当前密码相同")
+
+        auth.update(username=new_user or None, password=new_pass or None)
+        throttle.reset(ip)
+
+        parts = []
+        if new_user:
+            parts.append(f"用户名改为 {new_user}")
+        if new_pass:
+            parts.append("密码已更新")
+        message = "，".join(parts) + "。其他设备上的登录已失效"
+        response = JSONResponse({
+            "ok": True,
+            "message": message,
+            "username": auth.username,
+            "default_password": auth.default_password,
+        })
+        return _set_session(response, auth.username)
 
     @app.get("/", response_class=FileResponse)
     def index():

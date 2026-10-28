@@ -48,8 +48,9 @@ services:
     ports:
       - "6666:6666"
     volumes:
-      - /vol1/1000/LitePan/strm:/media   # ← 改成你的 strm 目录
-      - ./config:/config
+      - ./config:/config                    # 配置目录，必须（配置、账号、状态库、日志都在这）
+      - /vol1/1000/LitePan/strm:/media      # 媒体库，可映射多个
+      # - /vol1/1000/另一个媒体库:/media2   # 再挂一个库，同时把 /media2 加进 scan.roots
     environment:
       TZ: Asia/Shanghai
 ```
@@ -95,8 +96,9 @@ services:
     ports:
       - "6666:6666"
     volumes:
-      - /vol1/1000/LitePan/strm:/media    # ← 改成你的 strm 目录
-      - ./config:/config
+      - ./config:/config                    # 配置目录，必须（配置、账号、状态库、日志都在这）
+      - /vol1/1000/LitePan/strm:/media      # 媒体库，可映射多个
+      # - /vol1/1000/另一个媒体库:/media2   # 再挂一个库，同时把 /media2 加进 scan.roots
     environment:
       TZ: Asia/Shanghai
 ```
@@ -104,7 +106,8 @@ services:
 要点：
 
 - 左边是宿主机真实路径，右边保持 `/media`（或改的话，`config` 里的 `scan.roots` 要跟着改）
-- `./config:/config` 必须留着。状态库存在这里，删了会丢失进度记录，虽然不影响已生成的图片，但下一轮会重新扫一遍全部文件
+- `./config:/config` 必须留着。配置、登录账号、状态库、日志都在这，删了会丢失进度记录，虽然不影响已生成的图片，但下一轮会重新扫一遍全部文件
+- 要挂多个媒体库就再加几行 `- /宿主机路径:/media2`，同时把 `/media2` 写进 `scan.roots` 列表
 - 端口 6666 被占用就换，比如 `"16666:6666"`；只改左边，右边和 `config.yaml` 里的 `web.port` 保持一致就行
 - 从旧版本升级上来的，`config/config.yaml` 里 `web.port` 可能还是 8080。要么把它改成 6666，要么删掉这个文件让容器重新生成一份，否则端口对不上，浏览器打不开
 
@@ -134,7 +137,16 @@ docker compose logs -f
 
 ## 4. 打开控制台
 
-浏览器访问 `http://飞牛局域网IP:6666`。
+浏览器访问 `http://飞牛局域网IP:6666`，会先跳到登录页：
+
+```
+用户名 admin
+密码   admin
+```
+
+进去之后**建议马上改掉**：右上角「账号」→ 填当前密码 → 改用户名和/或新密码 → 保存。改完其他设备上的登录全部失效，当前浏览器会自动续上，不用重新登。
+
+账号存在 `config/auth.json`，密码是加盐哈希，文件里看不到明文。忘记密码就删掉宿主机的 `config/auth.json` 再重启容器，会恢复成 `admin` / `admin`，刮削进度不受影响。
 
 首次进入是「空闲」状态。如果 `scan.mode` 是 `auto`，启动时会自动开跑全量，控制台能看到进度往上走。
 
@@ -204,6 +216,22 @@ docker exec strm-scraper python -m scraper.main --doctor
 不过 compose 涉及构建，命令行更省事。
 
 ## 常见问题
+
+**忘记登录密码了**
+
+删掉宿主机的 `config/auth.json`，重启容器（`docker compose restart`），账号恢复成 `admin` / `admin`。刮削进度、已生成的海报都不受影响，只是登录信息重置。
+
+**登录成功但一直跳回登录页**
+
+多半是浏览器把 cookie 拦了。检查是不是用 IP 之外的方式访问（换域名、换端口都会导致 cookie 不认），或者浏览器开了「阻止第三方 cookie」之类的严格模式。同一个地址访问即可。
+
+**能不能不要登录**
+
+配置里 `web.auth.enabled: false`，或环境变量 `WS_WEB__AUTH__ENABLED=false`。只建议在内网、或者前面挂一个带鉴权的反向代理时这么做。
+
+**登录提示「尝试次数过多」**
+
+同一 IP 连续 5 次密码错误会锁 5 分钟。等一会，或者改完配置重启容器（内存里的计数会清零）。
 
 **容器起来了但扫描不到文件**
 

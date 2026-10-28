@@ -12,7 +12,10 @@ services:
     ports:
       - "6666:6666"
     volumes:
-      - /vol1/1000/LitePan/strm:/media
-      - ./config:/config
+      - ./config:/config                    # 配置目录，必须（配置、账号、状态库、日志都在这）
+      - /vol1/1000/LitePan/strm:/media      # 媒体库，可映射多个
+      # - /vol1/1000/另一个媒体库:/media2   # 再挂一个库，同时把 /media2 加进 scan.roots
     environment:
       TZ: Asia/Shanghai
+      # 想免登录（内网或反代有鉴权时）就取消下面这行
+      # WS_WEB__AUTH__ENABLED: "false"

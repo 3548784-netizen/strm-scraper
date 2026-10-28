@@ -65,7 +65,19 @@ DEFAULTS: dict[str, Any] = {
     },
     # Emby / Jellyfin 可以配多台，刮完自动刷新各自的图片缓存
     "servers": [],
-    "web": {"enabled": True, "host": "0.0.0.0", "port": 6666},
+    "web": {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": 6666,
+        "auth": {
+            # 关掉的话谁都能直接打开控制台，只建议在内网或反代后面这么用
+            "enabled": True,
+            # 登录状态保持多少小时，默认 7 天
+            "session_hours": 168,
+            # 账号文件，密码是加盐哈希，删掉这个文件会重置成 admin / admin
+            "file": "/config/auth.json",
+        },
+    },
     "storage": {"state_db": "/config/state.db"},
     "log": {
         "level": "INFO",
@@ -213,10 +225,22 @@ class ServerConfig:
 
 
 @dataclass
+class AuthConfig:
+    """网页控制台的登录鉴权。"""
+
+    enabled: bool = True
+    # 登录状态保持时长（小时）
+    session_hours: int = 168
+    # 账号文件（密码加盐哈希，不含明文）
+    file: str = "/config/auth.json"
+
+
+@dataclass
 class WebConfig:
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 6666
+    auth: AuthConfig = field(default_factory=AuthConfig)
 
 
 @dataclass
@@ -301,6 +325,18 @@ class Config:
             notes.append("scan.concurrency 小于 1，已改为 1")
             self.scan.concurrency = 1
 
+        if not 1 <= self.web.port <= 65535:
+            notes.append(f"web.port={self.web.port} 不合法，已改成 6666")
+            self.web.port = 6666
+
+        hours = self.web.auth.session_hours
+        if not isinstance(hours, int) or not 1 <= hours <= 24 * 365:
+            notes.append(f"web.auth.session_hours={hours} 超出 1–8760，已改成 168")
+            self.web.auth.session_hours = 168
+        if not str(self.web.auth.file or "").strip():
+            notes.append("web.auth.file 为空，已改成 /config/auth.json")
+            self.web.auth.file = "/config/auth.json"
+
         # 服务器：补齐名字、去重、校验必填项
         seen: set[str] = set()
         cleaned: list[ServerConfig] = []
@@ -340,6 +376,8 @@ class Config:
         return (
             f"roots=[{roots}] mode={self.scan.mode} concurrency={self.scan.concurrency} "
             f"interval={self.scan.interval_minutes}min web={self.web.host}:{self.web.port} "
+            f"auth={'on' if self.web.auth.enabled else 'off'}"
+            f"({self.web.auth.session_hours}h) "
             f"servers=[{servers}] log={self.log.dir or '仅控制台'}"
         )
 

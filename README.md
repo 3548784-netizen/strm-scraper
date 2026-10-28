@@ -59,6 +59,12 @@
 - 刷新参数同时写进 JSON body 和 URL query：Jellyfin 12.x 只认 body，Emby 对 query 更稳
 - 刷新后回查一遍，确认媒体服务器真的识别到了图，没识别上会直接把文件名打出来
 
+**登录**
+
+- 控制台默认要登录，默认账号 `admin` / `admin`，登录后在网页上就能改用户名和密码
+- 密码加盐哈希存在 `config/auth.json`，文件里看不到明文；改完密码旧会话立即失效
+- 同一 IP 连续 5 次密码错误锁 5 分钟；确实不需要可以 `web.auth.enabled: false` 关掉
+
 **日志**
 
 - 控制台 + 滚动文件 + 网页实时三路输出
@@ -94,8 +100,9 @@ services:
     ports:
       - "6666:6666"
     volumes:
-      - /vol1/1000/LitePan/strm:/media   # ← 改成你的 strm 目录
-      - ./config:/config
+      - ./config:/config                    # 配置目录，必须（配置、账号、状态库、日志都在这）
+      - /vol1/1000/LitePan/strm:/media      # 媒体库，可映射多个
+      # - /vol1/1000/另一个媒体库:/media2   # 再挂一个库，同时把 /media2 加进 scan.roots
     environment:
       TZ: Asia/Shanghai
 ```
@@ -119,8 +126,8 @@ cd strm-scraper
 
 ```yaml
 volumes:
-  - /vol1/1000/LitePan/strm:/media
-  - ./config:/config
+  - ./config:/config                    # 配置目录，必须
+  - /vol1/1000/LitePan/strm:/media      # 媒体库，可映射多个
 ```
 
 然后：
@@ -131,7 +138,13 @@ docker compose up -d --build
 
 ### 打开控制台
 
-浏览器打开 `http://你的NAS地址:6666`，点「增量刮削」。
+浏览器打开 `http://你的NAS地址:6666`，第一次会跳到登录页：
+
+```
+用户名 admin    密码 admin
+```
+
+登录后建议立刻在右上角「**账号**」里改掉，改完其他设备上的登录全部失效。
 
 首次运行会全量扫一遍所有 strm，之后自动转成增量模式，只补新文件和缺图。跑一轮的耗时主要取决于视频数量和网盘响应速度，300 个视频大约 20~40 分钟。
 
@@ -168,6 +181,8 @@ WS_LOG__LEVEL=DEBUG
 | `scrape.thumb.enabled` | 是否额外生成 16:9 缩略图 | `false` |
 | `scrape.overwrite` | `missing` 只补缺失 / `always` 每次覆盖 | `missing` |
 | `servers[]` | 媒体服务器列表，见下一节 | 空 |
+| `web.auth.enabled` | 控制台是否要登录 | `true` |
+| `web.auth.session_hours` | 登录保持多少小时 | `168` |
 | `log.level` / `log.dir` | 日志级别与目录 | `INFO` / `/config/logs` |
 
 完整项见 [`config.example.yaml`](config.example.yaml)，每项都有注释。
@@ -226,11 +241,38 @@ Kodi / Emby 标准 `<movie>` 格式，UTF-8 无 BOM，包含时长、码率、�
 
 `http://NAS:6666`
 
+- 登录后才能操作，默认账号 `admin` / `admin`
 - 实时进度：总数、已完成、失败、待处理、当前在跑哪几个文件
 - 失败列表带着具体原因，可以单条重刮
 - 按钮：增量刮削 / 全量重刮 / 停止 / 重试全部失败项
 - 媒体服务器面板：连接状态、测试、扫描媒体库、补齐缺图
 - 运行日志面板：级别筛选、关键字搜索、跟随最新、看原始文件、下载主日志和错误日志
+
+## 登录与账号
+
+控制台默认要求登录，账号密码存在 `config/auth.json` 里（加盐哈希，没有明文）。
+
+| 项 | 说明 |
+|---|---|
+| 默认账号 | `admin` / `admin`，首次启动自动创建 |
+| 改账号 | 右上角「账号」→ 填当前密码 → 改用户名和/或新密码 → 保存 |
+| 会话 | 签名 cookie，默认保持 7 天，超时后自动回登录页 |
+| 改完的效果 | 所有旧登录立刻失效，当前这个浏览器自动续上 |
+| 防爆破 | 同一 IP 连续 5 次失败锁 5 分钟，日志里有记录 |
+
+相关配置：
+
+```yaml
+web:
+  auth:
+    enabled: true          # 关掉就免登录，只建议在内网或反代鉴权后面这么用
+    session_hours: 168     # 登录保持时长
+    file: /config/auth.json
+```
+
+也可以用环境变量临时关掉：`WS_WEB__AUTH__ENABLED=false`。
+
+> 忘记密码：删掉 `config/auth.json` 后重启容器，会重新生成 `admin` / `admin`。这个文件在 `./config` 卷里，删宿主机的 `config/auth.json` 即可。
 
 ## 日志与排查
 
@@ -261,6 +303,18 @@ docker exec strm-scraper python -m scraper.main --doctor
 会依次检查 Python、ffmpeg/ffprobe、扫描目录和 strm 数量、状态库可写性、日志落盘、每台媒体服务器的连通性和鉴权方式，最后汇总问题数量。发现问题会直接说缺什么，比盯着日志猜快得多。
 
 ## 常见问题
+
+**忘记密码了**
+
+删掉宿主机的 `config/auth.json`，重启容器，账号恢复成 `admin` / `admin`。刮削进度和已生成的图片都不受影响，只有登录信息重置。
+
+**不想每次登录**
+
+两种做法：`web.auth.enabled: false` 或环境变量 `WS_WEB__AUTH__ENABLED=false`。只建议在内网、或前面有带鉴权的反向代理时这么用——控制台没有登录就等于把刮削按钮开放给所有能访问端口的人。
+
+**登录一直提示密码错误，改过用户名**
+
+用户名不区分大小写（`Admin` 和 `admin` 等价），密码区分。如果连自己改成什么了都忘了，按上一条删 `auth.json` 重置。
 
 **扫描目录为空 / 提示目录不存在**
 
@@ -330,6 +384,18 @@ Emby 一般会自动发现新图片，Jellyfin 必须显式刷新，这是两家
 ```bash
 pip install -r requirements.txt
 python -m scraper.main --config config.yaml
+```
+
+本地跑要注意默认路径都是容器里的 `/config`，改成相对路径：
+
+```yaml
+storage:
+  state_db: ./data/state.db
+web:
+  auth:
+    file: ./data/auth.json
+log:
+  dir: ./data/logs
 ```
 
 先跑一条视频确认环境正常：

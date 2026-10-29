@@ -48,13 +48,14 @@ DEFAULTS: dict[str, Any] = {
         # 定时到点跑哪种：incremental 只补缺失 / full 全量重刮覆盖
         "schedule_mode": "incremental",
         "concurrency": 3,
-        # 单个视频从探测到出图的整体超时（秒）
-        "timeout": 240,
+        # 单个时间点抓一帧的超时（秒）。网盘源上超过 30 秒基本就是被限流或
+        # 链接废了，再等下去只会拖住整个队列
+        "timeout": 30,
         # 探测阶段的网络超时（秒），strm 指向的地址可能已经失效
-        "probe_timeout": 20,
+        "probe_timeout": 8,
     },
     "scrape": {
-        "frames": 5,
+        "frames": 2,
         "frame_positions": [0.15, 0.30, 0.45, 0.60, 0.75],
         "min_width": 320,
         # 2:3 竖版。Emby / Jellyfin 推荐 1000×1500，最小 500×750
@@ -168,8 +169,8 @@ class ScanConfig:
     interval_minutes: int = 0
     schedule_mode: str = "incremental"
     concurrency: int = 3
-    timeout: int = 240
-    probe_timeout: int = 20
+    timeout: int = 30
+    probe_timeout: int = 8
 
 
 @dataclass
@@ -197,7 +198,7 @@ class ThumbConfig:
 
 @dataclass
 class ScrapeConfig:
-    frames: int = 5
+    frames: int = 2
     frame_positions: list[float] = field(default_factory=lambda: [0.15, 0.30, 0.45, 0.60, 0.75])
     min_width: int = 320
     poster: PosterConfig = field(default_factory=PosterConfig)
@@ -280,10 +281,13 @@ class Config:
     log: LogConfig = field(default_factory=LogConfig)
     # 实际加载的配置文件路径，网页「设置」保存时写回这里；不参与 yaml 持久化
     source: Path | None = field(default=None, compare=False)
+    # 加载时把旧默认值迁成新默认值产生的说明，validate() 会一并返回
+    migration_notes: list[str] = field(default_factory=list, compare=False, repr=False)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
         raw = copy.deepcopy(DEFAULTS)
+        notes: list[str] = []
 
         candidate = Path(path) if path else _find_config_file()
         if candidate and candidate.is_file():
@@ -294,6 +298,7 @@ class Config:
                 raise ValueError(f"配置文件格式不对，顶层应该是字典：{candidate}")
             # 老版本用的是单个 jellyfin 段，自动转成 servers 列表
             legacy = loaded.pop("jellyfin", None)
+            notes = _migrate_stale_defaults(loaded)
             raw = _deep_merge(raw, loaded)
             if legacy and not raw.get("servers"):
                 raw["servers"] = [_legacy_server(legacy)]
@@ -301,6 +306,7 @@ class Config:
         raw = _apply_env(raw)
         cfg = _from_dict(cls, raw)
         cfg.source = candidate if (candidate and candidate.is_file()) else None
+        cfg.migration_notes = notes
         cfg.validate()
         return cfg
 
@@ -343,7 +349,7 @@ class Config:
         if self.scan.schedule_mode not in ("incremental", "full"):
             self.scan.schedule_mode = "incremental"
         """校正明显不对的配置，返回需要提示的条目。"""
-        notes: list[str] = []
+        notes: list[str] = list(self.migration_notes)
 
         for kind, holder in (
             ("poster", self.scrape.poster),
@@ -469,6 +475,35 @@ class Config:
         if thumb.enabled:
             parts.append(f"thumb {thumb.width}×{thumb.height}（16:9）")
         return "，".join(parts)
+
+
+def _migrate_stale_defaults(raw: dict) -> list[str]:
+    """把配置文件里**仍然等于旧默认值**的项迁成新默认值。
+
+    只认旧默认值本身：这些基本都是照旧示例抄下来的，不是有人特意调过；
+    写成别的值一律不动。返回给用户看的说明。
+    """
+    notes: list[str] = []
+    scan = raw.get("scan")
+    if isinstance(scan, dict):
+        if scan.get("timeout") == 240:
+            scan["timeout"] = 30
+            notes.append(
+                "抓帧超时从 240 秒收到 30 秒（这是单个时间点抓一帧的超时）："
+                "网盘源超过 30 秒基本就是被限流或链接废了，再等只会拖住整个队列"
+            )
+        if scan.get("probe_timeout") == 20:
+            scan["probe_timeout"] = 8
+            notes.append("探测超时从 20 秒收到 8 秒，失效链接能更快放掉")
+
+    scrape = raw.get("scrape")
+    if isinstance(scrape, dict) and scrape.get("frames") == 5:
+        scrape["frames"] = 2
+        notes.append(
+            "采样帧数从 5 改成 2（取位置列表两端 0.15 / 0.75）：单文件抓帧次数少 60%，"
+            "整库速度快一倍以上，海报质量基本没差别；想更挑剔改回 5 即可"
+        )
+    return notes
 
 
 def _legacy_server(legacy: dict) -> dict:

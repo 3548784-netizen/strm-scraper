@@ -199,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     log.info("配置：%s", cfg.describe())
+    # 老配置里那些「照抄旧默认值」的项会被自动迁成更快的新默认值，逐条说明
+    for note in cfg.migration_notes:
+        log.info("配置调整：%s", note)
     log_environment(cfg, log_files)
     for root in cfg.scan.roots:
         if not Path(root).is_dir():

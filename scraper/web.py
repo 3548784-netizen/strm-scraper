@@ -1201,6 +1201,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 "schedule_mode": cfg.scan.schedule_mode,
             },
             "scrape": {
+                "frames": cfg.scrape.frames,
                 "poster_mode": poster.mode,
                 "overwrite": cfg.scrape.overwrite,
                 "jpeg_quality": cfg.scrape.jpeg_quality,
@@ -1397,6 +1398,8 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 setattr(cfg.scan, key, _as_int(scan[key], low, high, label))
 
         # ---- 刮削 ----
+        if "frames" in scrape:
+            cfg.scrape.frames = _as_int(scrape["frames"], 1, 10, "采样帧数")
         prev_poster_mode = cfg.scrape.poster.mode
         if "poster_mode" in scrape:
             mode = str(scrape.get("poster_mode") or "").lower()

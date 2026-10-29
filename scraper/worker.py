@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import frames, nfo, picker, probe
+from . import frames, nfo, picker, probe, throttle
 from .config import Config
 from .media import (Target, artifacts, build_target, iter_sources, product_state,
                     signature)
@@ -58,6 +58,9 @@ def process(cfg: Config, target: Target, frame_at: float = 0.0,
     log.debug("开始处理 %s（缺 %s）", target.stem[:50], ",".join(missing) or "无")
 
     url = probe.resolve_source(target.source)
+    # 上一次撞到限流的话，这里先等它到期；等待期间点暂停能立刻退出
+    if not throttle.GUARD.wait(abort):
+        raise frames.CaptureAborted("任务已暂停")
     info = probe.probe(url, timeout=cfg.scan.probe_timeout)
     title = nfo.display_title(target.stem)
 
@@ -89,7 +92,8 @@ def process(cfg: Config, target: Target, frame_at: float = 0.0,
                 best, count = frames.capture_best(
                     url,
                     info.duration,
-                    cfg.scrape.frame_positions[: max(1, cfg.scrape.frames)],
+                    frames.pick_positions(cfg.scrape.frame_positions,
+                                          cfg.scrape.frames),
                     workdir,
                     timeout=cfg.scan.timeout,
                     abort=abort,
@@ -208,6 +212,7 @@ class Runner:
             self.last_error = ""
             self.last_message = ""
             self.state = "scanning"
+            throttle.GUARD.reset()
             self._only = {p for p in (only or ()) if p} if only is not None else None
             self._force = bool(force)
             if self._only is not None:
@@ -308,6 +313,7 @@ class Runner:
                 "elapsed": round(elapsed, 1),
                 "last_error": self.last_error,
                 "last_message": self.last_message,
+                "throttle": throttle.GUARD.status(),
                 "stats": self.store.stats(),
             }
 

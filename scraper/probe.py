@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import throttle
+
 log = logging.getLogger(__name__)
 
 # ffprobe 对网络流默认会读很多数据才出结果，收紧一点能快不少
@@ -109,6 +111,12 @@ def _classify_error(stderr: str, url: str) -> str:
 
     if "connection refused" in text:
         return f"连接被拒绝：{host} 上没有服务在监听，检查地址或内网穿透"
+    if "429" in text or "too many requests" in text:
+        return f"地址返回 429：{host} 认为请求过于频繁，已自动退避"
+    if "503" in text or "service unavailable" in text:
+        return f"地址返回 503：{host} 可能正在限流，已自动退避"
+    if "504" in text or "gateway time" in text:
+        return f"地址返回 504：{host} 网关超时，通常是并发太高被限流，已自动退避"
     if "timed out" in text or "timeout" in text:
         return f"连接超时：{host} 响应太慢或不可达"
     if "name or service not known" in text or "getaddrinfo" in text:
@@ -123,8 +131,8 @@ def _classify_error(stderr: str, url: str) -> str:
         return "文件结构异常，可能下载不完整或不是有效视频"
     if "protocol not found" in text:
         return "不支持的协议，检查 strm 里的地址格式"
-    if "server returned 5" in text:
-        return "服务端 5xx 错误，稍后重试"
+    if "server returned 5" in text or "5xx" in text:
+        return f"服务端 5xx：{host} 多半是并发被限流，已自动退避后重试"
     tail = stderr.strip().splitlines()[-1] if stderr.strip() else "未知错误"
     return f"探测失败：{tail[:160]}"
 
@@ -161,6 +169,8 @@ def probe(source: str, timeout: int = 20) -> MediaInfo:
 
     stderr = proc.stderr.decode("utf-8", "replace")
     if proc.returncode != 0:
+        # 被限流就先记一笔，让调度线程歇一会儿（这里不阻塞，网页请求照常返回）
+        throttle.GUARD.report(stderr)
         raise ProbeError(_classify_error(stderr, source))
 
     try:

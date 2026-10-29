@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageStat
 
-from . import specs
+from . import specs, throttle
 from .probe import find_binary
 
 log = logging.getLogger(__name__)
@@ -119,8 +119,11 @@ def capture(source: str, seconds: float, output: Path, timeout: int = 60,
         log.debug("ffmpeg 退出码 %s @%.1fs：%s", code, seconds,
                   (err or b"").decode("utf-8", "replace").strip()[:300])
     if code != 0 or not _valid(output, floor):
+        # 报错里带 429 / 503 / 504 就是被限流了，交给全局退避点
+        throttle.GUARD.report((err or b"").decode("utf-8", "replace"))
         _drop(output)
         return False
+    throttle.GUARD.ok()
     return True
 
 
@@ -140,17 +143,47 @@ def capture_at(source: str, seconds: float, output: Path, timeout: int = 60,
                    width=width, abort=abort)
 
 
+def pick_positions(positions: list[float], count: int) -> list[float]:
+    """从给定的时间比例里均匀挑 count 个，而不是直接取前 N 个。
+
+    只取前 2 个会全落在片子开头（0.15 / 0.30），片头常常是黑场、片名、
+    渐入，挑出来的帧很糊。按间隔均匀取，2 个就是列表两端（0.15 / 0.75），
+    3 个是 0.15 / 0.45 / 0.75，拉得越开越不容易撞上黑场和过场。
+    """
+    items = [float(p) for p in positions] or [0.45]
+    count = max(1, int(count))
+    if count >= len(items):
+        return items
+    if count == 1:
+        return [items[len(items) // 2]]
+    picked: list[float] = []
+    for i in range(count):
+        # 把 [0, len-1] 均匀切开取整，首尾不会贴边
+        idx = round(i * (len(items) - 1) / (count - 1))
+        picked.append(items[idx])
+    # 去重（位置列表有重复时）后补齐
+    seen: list[float] = []
+    for p in picked:
+        if p not in seen:
+            seen.append(p)
+    return seen
+
+
 def capture_best(source: str, duration: float, positions: list[float],
                  workdir: Path, timeout: int = 60,
                  abort: threading.Event | None = None) -> tuple[Path, int]:
     """按片长比例采样若干帧，返回（最清晰的一帧, 成功抓到的帧数）。
 
     策略：每个位置先试快速跳转，失败再退回解码定位；全部失败时兜底抓开头。
+    抓之前会先等限流退避到期，被暂停时立刻抛出中断。
     """
     frames: list[tuple[Path, float]] = []
     for index, ratio in enumerate(positions):
         target = workdir / f"f{index:02d}.jpg"
         seconds = max(0.0, duration * ratio) if duration > 0 else 0.0
+
+        if not throttle.GUARD.wait(abort):
+            raise CaptureAborted("任务已暂停")
 
         ok = capture(source, seconds, target, timeout=timeout, fast_seek=True,
                      abort=abort)

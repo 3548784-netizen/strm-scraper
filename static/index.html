@@ -980,8 +980,9 @@
             <label class="fld"><span>并发数</span>
               <input id="setConcurrency" type="number" min="1" max="16" step="1">
               <small>同时处理几个视频，网盘限速就调小</small></label>
-            <label class="fld"><span>单个任务超时（秒）</span>
-              <input id="setTimeout" type="number" min="30" max="3600" step="10"></label>
+            <label class="fld"><span>单帧超时（秒）</span>
+              <input id="setTimeout" type="number" min="30" max="3600" step="10">
+              <small>抓一帧最多等多久，超时就换下一帧</small></label>
             <label class="fld"><span>探测超时（秒）</span>
               <input id="setProbeTimeout" type="number" min="5" max="600" step="1">
               <small>strm 指向的地址失效时，多久放弃</small></label>
@@ -1019,6 +1020,9 @@
               </select></label>
             <label class="fld"><span>JPEG 质量</span>
               <input id="setQuality" type="number" min="60" max="100" step="1"></label>
+            <label class="fld"><span>采样帧数</span>
+              <input id="setFrames" type="number" min="1" max="10" step="1">
+              <small>每多一帧就多一次网络抓帧；2 帧最快，5 帧最挑</small></label>
           </div>
           <div class="set-grid">
             <label class="switch"><input type="checkbox" id="setNfo"> 生成 NFO</label>
@@ -1350,6 +1354,17 @@ function renderStatus(st) {
 
   const busy = ['scanning', 'running', 'paused', 'stopping'].includes(state);
   const paused = state === 'paused';
+
+  // 源站限流正在退避：状态徽标换成倒计时，让人知道不是卡死了
+  const th = st.throttle || {};
+  if (th.active && (state === 'running' || state === 'scanning')) {
+    $('badge').className = 'badge stopping';
+    $('badgeText').textContent = `限流退避 ${Math.ceil(th.remaining)}s`;
+    $('badge').title = `源站返回限流状态码已 ${th.hits} 次，正在等待重试；`
+      + `连续命中 ${th.streak} 次，越连续退避越久`;
+  } else {
+    $('badge').removeAttribute('title');
+  }
 
   $('btnStart').disabled = busy;
   $('btnFull').disabled = busy;
@@ -3296,6 +3311,7 @@ async function loadSettings() {
   $('setPosterMode').value = scrape.poster_mode || 'crop';
   $('setOverwrite').value = scrape.overwrite || 'missing';
   $('setQuality').value = scrape.jpeg_quality ?? 92;
+  $('setFrames').value = scrape.frames ?? 2;
   $('setNfo').checked = scrape.write_nfo !== false;
   $('setPosterOn').checked = scrape.write_poster !== false;
   $('setFanartOn').checked = scrape.write_fanart !== false;
@@ -3676,6 +3692,7 @@ function settingsPayload(roots) {
       poster_mode: $('setPosterMode').value,
       overwrite: $('setOverwrite').value,
       jpeg_quality: Number($('setQuality').value),
+      frames: Number($('setFrames').value) || 2,
       write_nfo: $('setNfo').checked,
       write_poster: $('setPosterOn').checked,
       write_fanart: $('setFanartOn').checked,

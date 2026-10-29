@@ -26,3 +26,4 @@ auth.json.*
 .DS_Store
 Thumbs.db
 .devdata_auth/
+.devdata_ui/

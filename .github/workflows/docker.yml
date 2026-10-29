@@ -49,6 +49,8 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
       - name: 生成 Docker Hub 标签
@@ -60,6 +62,8 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
       - name: 构建并推送到 GHCR
@@ -122,3 +126,88 @@ jobs:
           urllib.request.urlopen(edit, timeout=30)
           print("Docker Hub 页面说明已同步")
           PY
+
+  # 打 v* 标签时自动建 Release，说明用上一个标签到这个标签之间的提交记录生成
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          # 要拿到上一个标签才能列出两次发版之间的提交
+          fetch-depth: 0
+
+      - name: 生成发布说明
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          ver = tag.lstrip("vV")
+
+          def git(*args):
+              r = subprocess.run(["git", *args], capture_output=True, text=True)
+              return r.stdout.strip() if r.returncode == 0 else ""
+
+          # 上一个标签；首个版本没有上一个，就把全部提交都列出来
+          prev = git("describe", "--tags", "--abbrev=0", tag + "^")
+          since = prev or "（首个正式版本，包含此前的全部提交）"
+
+          raw = git("log", "--no-merges", "--pretty=%h|%s",
+                    (prev + ".." + tag) if prev else tag)
+          commits = [line.split("|", 1) for line in raw.splitlines() if "|" in line]
+
+          def group(subject):
+              s = subject.lower()
+              if s.startswith(("feat",)) or "新增" in s or "支持" in s:
+                  return "新功能"
+              if s.startswith("fix") or "修复" in s or "修掉" in s:
+                  return "修复"
+              if s.startswith("perf") or "提速" in s or "性能" in s or "并发" in s:
+                  return "性能"
+              if s.startswith(("style", "ui")) or "界面" in s or "样式" in s:
+                  return "界面"
+              if s.startswith(("chore", "docs", "test", "refactor")):
+                  return "其他"
+              return "更新"
+
+          order = ["新功能", "修复", "性能", "界面", "更新", "其他"]
+          buckets = {k: [] for k in order}
+          for short, subject in commits:
+              buckets[group(subject)].append((short, subject))
+
+          lines = [f"## {tag}", "",
+                   f"上一次发版：{since}", "",
+                   "### 拉取镜像", "`docker pull 3548784/strm-scraper:%s`" % ver,
+                   f"（另有 `{'.'.join(ver.split('.')[:2])}` 跟随小版本、`latest` 跟随主线；"
+                   f"GHCR：`ghcr.io/3548784-netizen/strm-scraper:{ver}`）", ""]
+
+          for key in order:
+              if buckets[key]:
+                  lines.append(f"### {key}")
+                  lines += [f"- {s}（`{h}`）" for h, s in buckets[key]]
+                  lines.append("")
+
+          if not commits:
+              lines.append("本次没有新的提交记录。")
+              lines.append("")
+
+          lines += ["<details><summary>完整提交列表</summary>", ""]
+          lines += [f"- `{h}` {s}" for h, s in commits]
+          lines += ["", "</details>"]
+
+          open("RELEASE_NOTES.md", "w", encoding="utf-8").write("\n".join(lines))
+          print("\n".join(lines))
+          PY
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md

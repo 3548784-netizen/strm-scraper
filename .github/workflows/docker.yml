@@ -84,3 +84,41 @@ jobs:
           tags: ${{ steps.hubmeta.outputs.tags }}
           labels: ${{ steps.hubmeta.outputs.labels }}
           cache-from: type=gha
+
+      # 页面说明直接取 docs/dockerhub.md，改文件推上来就同步，不用手动粘贴
+      - name: 同步 Docker Hub 页面说明
+        if: steps.hub.outcome == 'success' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+
+          user, token = os.environ["HUB_USER"], os.environ["HUB_TOKEN"]
+          body = open("docs/dockerhub.md", encoding="utf-8").read()
+
+          login = urllib.request.Request(
+              "https://hub.docker.com/v2/users/login",
+              data=json.dumps({"username": user, "password": token}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          jwt = json.load(urllib.request.urlopen(login, timeout=30))["token"]
+
+          edit = urllib.request.Request(
+              f"https://hub.docker.com/v2/repositories/{user}/strm-scraper/",
+              data=json.dumps({
+                  "full_description": body,
+                  "description": "115 网盘 strm 刮削器 · 海报/NFO · "
+                                 "定时自动化 · Emby & Jellyfin 联动",
+              }, ensure_ascii=False).encode(),
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": f"JWT {jwt}",
+              },
+              method="PATCH",
+          )
+          urllib.request.urlopen(edit, timeout=30)
+          print("Docker Hub 页面说明已同步")
+          PY

@@ -416,8 +416,10 @@
   .check { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 
   /* ---------- 媒体服务器 / 日志 ---------- */
-  .servers { display: grid; gap: var(--s3); padding: var(--s4) var(--gutter);
-             grid-template-columns: repeat(auto-fill, minmax(264px, 1fr)); overflow: auto; }
+  .servers { flex: 1; min-height: 0; display: grid; gap: var(--s3);
+             padding: var(--s4) var(--gutter);
+             grid-template-columns: repeat(auto-fill, minmax(264px, 1fr)); overflow: auto;
+             align-content: start; align-items: start; }
   .server {
     border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4);
     background: var(--surface); position: relative; overflow: hidden;
@@ -668,11 +670,23 @@
     display: flex; flex-direction: column; gap: var(--s3);
   }
   /* 空状态：标题、说明、主操作三层，别全挤成一样小 */
-  .auto-empty { display: flex; flex-direction: column; align-items: center; gap: var(--s3);
-                padding: var(--s6) var(--s5); text-align: center; }
+  /* 空状态：在可用高度里垂直居中，别顶在上边留一大片空 */
+  .auto-empty { flex: 1; display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: var(--s3);
+                padding: var(--s5) var(--s5) 8vh; text-align: center; }
   .auto-empty > div:not(.tips) { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
-  .auto-empty .tips { color: var(--text-3); font-size: var(--fs-xs); line-height: 1.75; max-width: 400px; }
+  .auto-empty .tips { color: var(--text-3); font-size: var(--fs-xs); line-height: 1.75;
+                      max-width: 440px; text-wrap: balance; }
   .auto-empty button { height: var(--h-btn); font-size: var(--fs-xs); margin-top: var(--s1); }
+
+  /* 媒体服务器无数据时的同款空状态 */
+  .servers.is-empty { align-content: center; padding-bottom: 8vh; }
+  .empty-state { grid-column: 1 / -1; display: flex; flex-direction: column;
+                 align-items: center; gap: var(--s2); text-align: center;
+                 padding: var(--s5); }
+  .empty-state .es-title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+  .empty-state .es-tip { color: var(--text-3); font-size: var(--fs-xs);
+                         line-height: 1.75; max-width: 440px; text-wrap: balance; }
   .auto-card {
     border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface);
     padding: var(--s3) var(--s4); display: flex; align-items: center; gap: var(--s4);
@@ -2493,9 +2507,12 @@ let srvCache = '';
 
 function renderServers(list) {
   const box = $('serverList');
+  box.classList.toggle('is-empty', !list.length);
   if (!list.length) {
-    const html = '<div class="empty" style="grid-column:1/-1">还没有配置媒体服务器，'
-      + '去「设置」页填 Emby / Jellyfin 的地址和 API 密钥就行</div>';
+    const html = `<div class="empty-state">
+      <div class="es-title">还没有配置媒体服务器</div>
+      <div class="es-tip">去「设置」页填 Emby / Jellyfin 的地址和 API 密钥，刮削完就能把海报、背景图直接推给播放器。只生成文件、不联动播放器的话可以不加</div>
+    </div>`;
     if (html !== srvCache) { srvCache = html; box.innerHTML = html; }
     return;
   }

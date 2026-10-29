@@ -255,15 +255,20 @@ def make_thumb(frame: Path, output: Path, width: int = 1000, height: int = 562,
     return width, height
 
 
-def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
-    """等比缩放后居中裁切，铺满目标尺寸。"""
+def _cover(img: Image.Image, width: int, height: int, top_bias: float = 0.28) -> Image.Image:
+    """等比缩放后裁切，铺满目标尺寸。
+
+    横向居中裁切（横版视频切 2:3 时左右各让一点，主体通常还在中间）；纵向裁切
+    时往上偏一点（``top_bias`` = 0.28，即把多余的 28% 留在上方切掉），这样竖版
+    视频转 2:3 不会把脑袋切掉——死居中经常正好切在额头上。
+    """
     scale = max(width / img.width, height / img.height)
     resized = img.resize(
         (max(1, round(img.width * scale)), max(1, round(img.height * scale))),
         Image.LANCZOS,
     )
     left = (resized.width - width) // 2
-    top = (resized.height - height) // 2
+    top = round(max(0, resized.height - height) * min(1.0, max(0.0, top_bias)))
     return resized.crop((left, top, left + width, top + height))
 
 

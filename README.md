@@ -66,7 +66,7 @@
 
 比例不对会被媒体服务器拉伸或裁切，比不显示更难发现，所以配置里的尺寸一律按比例校正，偏了会在日志里明确告警。
 
-海报有三种生成方式：`blur`（模糊背景 + 完整画面居中，横版视频不切主体，默认）、`gradient`（用画面边缘平均色做渐变背景，最干净）、`crop`（中心裁切，画面最饱满但两侧会丢）。
+海报有三种生成方式：`crop`（中心裁切铺满 2:3，默认——横版视频也整张铺满，和 PC 版刮削器一致）、`blur`（模糊背景 + 完整画面居中，横版视频上下留两条背景，主体不丢）、`gradient`（用画面边缘平均色做渐变背景，最干净）。
 
 **处理**
 
@@ -178,6 +178,11 @@ docker compose up -d --build
 docker compose pull && docker compose up -d
 ```
 
+升级后两点会自动处理，不用手动改配置：
+
+- 旧版默认的海报模式 `blur`（横版视频缩在中间、上下两条深色背景）会自动改成 `crop`，横版视频也铺满整张 2:3。已经生成的旧海报不会自己重画，到「文件管理」勾上目录点「开始重刮」就会按新模式覆盖；喜欢留白效果的可以在「设置 → 刮削与图片」里改回 `blur`。
+- 旧版的 `scan.interval_minutes` 会转成一条「全部媒体库」自动化任务，之后在「自动化」页里管。
+
 配置、状态库、日志都在 `./config` 里，更新不会丢，已生成的图片也不会重刮。
 
 ## 配置
@@ -201,7 +206,7 @@ WS_LOG__LEVEL=DEBUG
 | `scan.autostart` | 容器启动后先自动跑一轮 | `false` |
 | `scan.concurrency` | 并发数，网盘有限速，3~5 比较合适 | `3` |
 | `scan.probe_timeout` | 探测超时，strm 地址失效时靠它快速失败 | `20` |
-| `scrape.poster.mode` | `blur` / `gradient` / `crop` | `blur` |
+| `scrape.poster.mode` | `crop` 中心裁切铺满 / `blur` 模糊背景补边 / `gradient` 渐变补边 | `crop` |
 | `scrape.thumb.enabled` | 是否额外生成 16:9 缩略图 | `false` |
 | `scrape.overwrite` | `missing` 只补缺失 / `always` 每次覆盖 | `missing` |
 | `servers[]` | 媒体服务器列表，见下一节 | 空 |
@@ -456,7 +461,7 @@ Emby 一般会自动发现新图片，Jellyfin 必须显式刷新，这是两家
 
 **海报里主体被切了**
 
-把 `scrape.poster.mode` 改成 `blur`（完整画面居中）或 `gradient`（纯渐变背景）。`crop` 会裁掉两侧内容。
+确认 `scrape.poster.mode` 是 `crop`（默认，画面铺满 2:3）。不喜欢左右被裁可以改成 `blur`（模糊背景 + 完整画面居中）或 `gradient`（纯渐变背景）。
 
 **能只刮某个子目录吗**
 

@@ -1397,11 +1397,14 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 setattr(cfg.scan, key, _as_int(scan[key], low, high, label))
 
         # ---- 刮削 ----
+        prev_poster_mode = cfg.scrape.poster.mode
         if "poster_mode" in scrape:
             mode = str(scrape.get("poster_mode") or "").lower()
             if mode not in ("crop", "blur", "gradient"):
                 raise HTTPException(400, "海报模式只能是 crop / blur / gradient")
             cfg.scrape.poster.mode = mode
+            # 手动选过就不再被「旧默认值迁移」覆盖（见 Config.validate）
+            cfg.scrape.poster.mode_explicit = True
         if "overwrite" in scrape:
             overwrite = str(scrape.get("overwrite") or "").lower()
             if overwrite not in ("missing", "always"):
@@ -1469,6 +1472,12 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         except (OSError, RuntimeError, ValueError) as exc:
             log.error("设置写回文件失败：%s", exc)
             message = f"设置已在本次运行生效，但写文件失败：{exc}"
+
+        if cfg.scrape.poster.mode != prev_poster_mode:
+            message += (
+                f"；海报模式已改成 {cfg.scrape.poster.mode}，"
+                "已生成的海报不会自动重画——到「文件管理」勾上要换的目录点「开始重刮」"
+            )
 
         result = _settings_payload()
         result["schedule"] = sched.status()

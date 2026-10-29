@@ -177,6 +177,9 @@ class PosterConfig:
     width: int = 1000
     height: int = 1500
     mode: str = "crop"
+    # 用户在网页里主动选过海报模式。老版本默认是 blur，升级时要把这类
+    # 「没人动过的模糊补边」迁成 crop；动过的保持原样。
+    mode_explicit: bool = False
 
 
 @dataclass
@@ -356,6 +359,14 @@ class Config:
             notes.append(
                 f"poster.mode={self.scrape.poster.mode} 不认识（可选 crop/blur/gradient），"
                 "已回退为 crop"
+            )
+            self.scrape.poster.mode = "crop"
+        elif self.scrape.poster.mode in ("blur", "gradient") and not self.scrape.poster.mode_explicit:
+            # 老版本的隐式默认是 blur，横版视频会缩在中间、上下两条深色背景。
+            # 只迁移「没在网页里选过」的配置，选过的保持原样。
+            notes.append(
+                f"海报模式从旧的 {self.scrape.poster.mode}（补边）改成 crop（满幅裁切）："
+                "横版视频也铺满 2:3；想保留留白可在设置里改回 blur"
             )
             self.scrape.poster.mode = "crop"
         elif self.scrape.poster.mode in ("blur", "gradient"):

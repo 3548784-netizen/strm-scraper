@@ -152,6 +152,10 @@ def main(argv=None) -> int:
     row = find_task(on, task_id) or {}
     check("重新启用后有时间点", row.get("next_run") is not None)
 
+    # 先记一份范围外的状态，跑完对比：只要没变，就说明没被这次任务动过
+    # （之前要求「必须是 ok/skipped」，环境里留一条故意失败的失效链接就会误报）
+    before = {str(r["path"]): r["status"] for r in api(base, "/api/items?size=200")["items"]}
+
     print("\n========== 5. 接口：立即执行这条任务 ==========")
     started = api(base, "/api/automation/run", {"id": task_id})
     check("立即执行被受理", started.get("started") is True, str(started)[:140])
@@ -172,7 +176,7 @@ def main(argv=None) -> int:
     items = api(base, "/api/items?size=200")
     outside = [row for row in items["items"]
                if not str(row["path"]).startswith(subdir)
-               and row["status"] not in ("ok", "skipped")]
+               and before.get(str(row["path"])) != row["status"]]
     check("范围外的文件没被重扫", not outside,
           f"{len(outside)} 条状态异常：{[r['path'] for r in outside][:2]}")
 

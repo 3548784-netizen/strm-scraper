@@ -98,6 +98,10 @@ def main(argv: list[str] | None = None) -> int:
     new = normalize(old, args.version)
     tag = f"v{new}"
 
+    if not args.dry_run and new == old:
+        print(f"现在就是 v{old}，要发新版本换一个号，或者用 --dry-run 看看动作", file=sys.stderr)
+        return 1
+
     dirty = sh(["git", "status", "--porcelain"]).strip()
     # 发版本身会改 version.py，所以只要没有别的文件没提交就行
     others = [l for l in dirty.splitlines() if "scraper/version.py" not in l]

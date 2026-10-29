@@ -268,6 +268,7 @@ class Runner:
             self.state = "running" if alive else "idle"
             if not alive:
                 self._stop.clear()
+                self.finished_at = time.time()
         log.info("任务已继续")
         return True
 
@@ -299,7 +300,10 @@ class Runner:
 
     def snapshot(self) -> dict:
         with self._lock:
-            elapsed = (time.time() - self.started_at) if self.started_at else 0
+            # 任务结束后要停在结束那一刻，否则「用时」会一直往上涨，
+            # 让人误以为这轮还在跑、或者觉得速度没变快
+            end = self.finished_at if self.finished_at else time.time()
+            elapsed = max(0.0, end - self.started_at) if self.started_at else 0
             paused = self._paused.is_set()
             return {
                 "state": self.state,

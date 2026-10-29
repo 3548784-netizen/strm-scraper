@@ -878,12 +878,15 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             raise HTTPException(400, "没有选中文件")
         queued: list[str] = []
         ready: list[str] = []
+        rejected = 0
         for raw in paths:
             try:
                 source = _within_roots(raw)
             except HTTPException:
+                rejected += 1
                 continue
             if not source.is_file():
+                rejected += 1
                 continue
             path = str(source)
             if not force and _products_ready(source):
@@ -905,6 +908,10 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
         tail = f"，{len(ready)} 个产物已齐全跳过" if ready else ""
         if not queued:
+            if not ready and rejected:
+                return {"ok": False, "started": False, "skipped": 0,
+                        "message": f"选中的 {rejected} 个文件不在媒体库目录里"
+                                   "（或已经被移动/删除），刷新列表再看"}
             return {"ok": True, "started": False, "skipped": len(ready),
                     "message": f"选中的 {len(ready)} 个文件产物都齐了，不用重刮"
                                "（要覆盖旧图就点「开始重刮」）"}

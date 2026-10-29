@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageStat
@@ -19,14 +21,70 @@ MIN_FRAME_BYTES = 512
 # 平均亮度低于此值视为黑屏（0~255）
 MIN_BRIGHTNESS = 12.0
 
+# 轮询 ffmpeg 是否退出的间隔。取 0.2 秒，暂停时最多这么久就能收到中断
+_POLL_SECONDS = 0.2
+
 
 class FrameError(RuntimeError):
     """抓帧失败。"""
 
 
+class CaptureAborted(FrameError):
+    """抓帧被暂停 / 取消中断，不是这个文件本身的问题。"""
+
+
+def _aborted(abort: threading.Event | None) -> bool:
+    return abort is not None and abort.is_set()
+
+
+def _run_ffmpeg(cmd: list[str], timeout: int,
+                abort: threading.Event | None) -> tuple[int, bytes]:
+    """跑 ffmpeg 并盯着退出状态，支持随时中断。
+
+    不能用 ``subprocess.run``：它在超时前一直阻塞，网页上点「暂停」要等到
+    整个抓帧结束才生效，用户看到的就是“暂停了还在跑”。改成 Popen + 轮询，
+    暂停信号一到就 kill 掉子进程。
+    """
+    creation = 0x08000000 if os.name == "nt" else 0
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            creationflags=creation,
+        )
+    except FileNotFoundError as exc:
+        raise FrameError("ffmpeg 未安装或不可执行") from exc
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while True:
+        try:
+            proc.wait(timeout=_POLL_SECONDS)
+            break
+        except subprocess.TimeoutExpired:
+            if _aborted(abort):
+                proc.kill()
+                proc.wait(timeout=5)
+                raise CaptureAborted("任务已暂停") from None
+            if time.monotonic() >= deadline:
+                timed_out = True
+                proc.kill()
+                proc.wait(timeout=5)
+                break
+
+    try:
+        _, err = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        err = b""
+    if timed_out:
+        return -1, b"timeout"
+    return proc.returncode, err or b""
+
+
 def capture(source: str, seconds: float, output: Path, timeout: int = 60,
             fast_seek: bool = True, width: int = 0,
-            min_bytes: int | None = None) -> bool:
+            min_bytes: int | None = None,
+            abort: threading.Event | None = None) -> bool:
     """按秒抓一帧。
 
     Args:
@@ -34,6 +92,8 @@ def capture(source: str, seconds: float, output: Path, timeout: int = 60,
             网络源不支持 Range 时跳到错误位置，可置 False 改为解码定位。
         width: 大于 0 时缩放输出宽度（高度按比例），网页缩略图用，能省不少流量。
         min_bytes: 判定“成功”的最小字节数，缩放后的小图门槛要放低。
+        abort: 一旦被 set 就立刻杀掉 ffmpeg 并抛 :class:`CaptureAborted`，
+            网页上的「暂停 / 取消」靠它才能真正生效。
     """
     ffmpeg = find_binary("ffmpeg")
     seek = ["-ss", f"{max(0.0, seconds):.3f}"]
@@ -49,39 +109,40 @@ def capture(source: str, seconds: float, output: Path, timeout: int = 60,
     # 缩略图本来就小（纯色画面只有几百字节），门槛得跟着宽度放低
     floor = min_bytes if min_bytes is not None else (
         MIN_FRAME_BYTES if width <= 0 else 128)
-    creation = 0x08000000 if os.name == "nt" else 0
-    try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
-                              creationflags=creation)
-    except subprocess.TimeoutExpired:
+
+    code, err = _run_ffmpeg(cmd, timeout, abort)
+    if code == -1:
         log.debug("抓帧超时 %ss @%.1fs", timeout, seconds)
         _drop(output)
         return False
-    except FileNotFoundError as exc:
-        raise FrameError("ffmpeg 未安装或不可执行") from exc
-
-    if proc.returncode != 0 or not _valid(output, floor):
+    if code != 0:
+        log.debug("ffmpeg 退出码 %s @%.1fs：%s", code, seconds,
+                  (err or b"").decode("utf-8", "replace").strip()[:300])
+    if code != 0 or not _valid(output, floor):
         _drop(output)
         return False
     return True
 
 
 def capture_at(source: str, seconds: float, output: Path, timeout: int = 60,
-               width: int = 0) -> bool:
+               width: int = 0, abort: threading.Event | None = None) -> bool:
     """抓指定时间点的一帧：先试快速跳转，不行再退化解码定位。
 
     手动选帧走这条路，用户点了哪一秒就要哪一秒，不能像自动选帧那样悄悄
     换到别的位置。
     """
-    if capture(source, seconds, output, timeout=timeout, fast_seek=True, width=width):
+    if capture(source, seconds, output, timeout=timeout, fast_seek=True,
+               width=width, abort=abort):
         return True
-    if seconds <= 1.0:
+    if _aborted(abort) or seconds <= 1.0:
         return False
-    return capture(source, seconds, output, timeout=timeout, fast_seek=False, width=width)
+    return capture(source, seconds, output, timeout=timeout, fast_seek=False,
+                   width=width, abort=abort)
 
 
 def capture_best(source: str, duration: float, positions: list[float],
-                 workdir: Path, timeout: int = 60) -> tuple[Path, int]:
+                 workdir: Path, timeout: int = 60,
+                 abort: threading.Event | None = None) -> tuple[Path, int]:
     """按片长比例采样若干帧，返回（最清晰的一帧, 成功抓到的帧数）。
 
     策略：每个位置先试快速跳转，失败再退回解码定位；全部失败时兜底抓开头。
@@ -91,10 +152,14 @@ def capture_best(source: str, duration: float, positions: list[float],
         target = workdir / f"f{index:02d}.jpg"
         seconds = max(0.0, duration * ratio) if duration > 0 else 0.0
 
-        ok = capture(source, seconds, target, timeout=timeout, fast_seek=True)
-        if not ok and seconds > 1.0:
-            ok = capture(source, seconds, target, timeout=timeout, fast_seek=False)
+        ok = capture(source, seconds, target, timeout=timeout, fast_seek=True,
+                     abort=abort)
+        if not ok and seconds > 1.0 and not _aborted(abort):
+            ok = capture(source, seconds, target, timeout=timeout, fast_seek=False,
+                         abort=abort)
         if not ok:
+            if _aborted(abort):
+                raise CaptureAborted("任务已暂停")
             continue
 
         score = sharpness(target)
@@ -106,7 +171,7 @@ def capture_best(source: str, duration: float, positions: list[float],
     if not frames:
         # 兜底：有的源只能在开头正常出帧
         fallback = workdir / "f_fallback.jpg"
-        if capture(source, 0.0, fallback, timeout=timeout, fast_seek=True):
+        if capture(source, 0.0, fallback, timeout=timeout, fast_seek=True, abort=abort):
             score = sharpness(fallback)
             if score is not None:
                 frames.append((fallback, score))
@@ -141,24 +206,27 @@ def sharpness(path: Path) -> float | None:
 
 
 def make_poster(frame: Path, output: Path, width: int = 1000, height: int = 1500,
-                mode: str = "blur", quality: int = 92) -> tuple[int, int]:
+                mode: str = "crop", quality: int = 92) -> tuple[int, int]:
     """生成 2:3 竖版海报，返回实际像素尺寸。
 
     Emby 和 Jellyfin 都要求海报是 2:3，比例不对会被拉伸或裁掉一条，所以这里
-    先按 spec 校正一次再画。``mode`` 为 ``blur`` 时用模糊背景铺满、原始画面
-    完整居中（横版视频不会切掉主体）；``crop`` 直接中心裁切。
+    先按 spec 校正一次再画。
+
+    ``mode`` 默认 ``crop``：等比放大后中心裁切，画面铺满、四周不留任何边——
+    和 PC 版刮削器出图一致。横版视频会把左右裁掉一部分，这是铺满 2:3 的必然
+    代价；不想丢画面可改成 ``blur``（模糊背景补边）或 ``gradient``（渐变补边）。
     """
     width, height, note = specs.conform(width, height, "poster")
     if note:
         log.warning("%s：%s", output.name, note)
     with Image.open(frame) as img:
         img = img.convert("RGB")
-        if mode == "crop":
-            canvas = _cover(img, width, height)
+        if mode == "blur":
+            canvas = _contain_with_blur(img, width, height)
         elif mode == "gradient":
             canvas = _contain_with_gradient(img, width, height)
         else:
-            canvas = _contain_with_blur(img, width, height)
+            canvas = _cover(img, width, height)
         canvas.save(output, "JPEG", quality=quality, optimize=True, progressive=True)
     return width, height
 

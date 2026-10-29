@@ -363,6 +363,11 @@ class ServerPool:
     def servers(self) -> list:
         return [s for s in self.cfg.servers if s.enabled]
 
+    def reset_cache(self) -> None:
+        """改过设置（地址、密钥、路径映射）后把客户端和连通状态都丢掉重来。"""
+        self._clients.clear()
+        self._status.clear()
+
     def client(self, server) -> MediaServerClient:
         key = f"{server.name}|{server.url}|{server.api_key[:6]}"
         if key not in self._clients:

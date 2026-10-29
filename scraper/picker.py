@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+from PIL import Image
+
 from . import frames, probe
 from .config import Config
 from .media import Target, artifacts
@@ -101,32 +103,51 @@ class FramePicker:
             self._sweep()
         return out
 
-    def apply(self, target: Target, seconds: float, kinds: list[str]) -> dict:
-        """用选中的那一帧重新生成海报 / 背景图 / 缩略图。"""
+    def apply(self, target: Target, seconds: float, kinds: list[str],
+              crop: tuple[float, float, float, float] | None = None,
+              crop_for: str = "all") -> dict:
+        """用选中的那一帧重新生成海报 / 背景图 / 缩略图。
+
+        ``crop`` 是用户在网页上拖出来的取景框，按「相对整帧的比例」给
+        ``(x, y, w, h)``（0–1）。``crop_for`` 说明这个框作用于谁：
+        ``poster`` 只裁海报、``fanart`` 只裁背景图/缩略图、``all`` 一起裁。
+        """
         cfg = self.cfg.scrape
         frame = self.frame(target.source, seconds, 0)  # 原图，缓存供后续重出
+        cropped = self._cropped(frame, crop) if crop else None
+
+        def source_for(kind: str) -> Path:
+            if cropped is None:
+                return frame
+            if crop_for == "all":
+                return cropped
+            if crop_for == "poster":
+                return cropped if kind == "poster" else frame
+            # fanart：背景图和缩略图都是横版，跟着一起裁
+            return frame if kind == "poster" else cropped
 
         if "poster" in kinds:
             frames.make_poster(
-                frame, target.poster,
+                source_for("poster"), target.poster,
                 width=cfg.poster.width, height=cfg.poster.height,
                 mode=cfg.poster.mode, quality=cfg.jpeg_quality,
             )
         if "fanart" in kinds:
             frames.make_fanart(
-                frame, target.fanart,
+                source_for("fanart"), target.fanart,
                 width=cfg.fanart.width, height=cfg.fanart.height,
                 quality=cfg.jpeg_quality,
             )
         if "thumb" in kinds:
             frames.make_thumb(
-                frame, target.thumb,
+                source_for("thumb"), target.thumb,
                 width=cfg.thumb.width, height=cfg.thumb.height,
                 quality=cfg.jpeg_quality,
             )
 
-        log.info("手动选帧：%s 使用 %s（%s）", target.source.name,
-                 clock(seconds), "、".join(kinds))
+        log.info("手动选帧：%s 使用 %s（%s%s）", target.source.name,
+                 clock(seconds), "、".join(kinds),
+                 "，取景 " + _crop_label(crop) if crop else "")
         return {
             "path": str(target.source),
             "seconds": round(float(seconds), 2),
@@ -135,6 +156,36 @@ class FramePicker:
             "artifacts": artifacts(target),
             "duration": round(self._duration(target.source), 2),
         }
+
+    def cropped(self, source: Path, seconds: float, crop, width: int = 0) -> Path:
+        """按取景框裁一版预览图（网页上拖框时实时看效果）。"""
+        frame = self.frame(source, seconds, width)
+        return self._cropped(frame, crop)
+
+    def _cropped(self, frame: Path, crop) -> Path:
+        """把缓存的整帧按取景框裁下来并缓存，同一框只算一次。"""
+        x, y, w, h = _norm_crop(crop)
+        digest = hashlib.sha1(
+            f"{frame.name}|{x:.4f}|{y:.4f}|{w:.4f}|{h:.4f}".encode("utf-8")
+        ).hexdigest()[:20]
+        out = frame.parent / f"c_{digest}.jpg"
+        if self._fresh(out):
+            _touch(out)
+            return out
+        with self._lock_for(out.name):
+            if self._fresh(out):
+                return out
+            with Image.open(frame) as img:
+                img = img.convert("RGB")
+                width, height = img.size
+                left = min(max(0, round(x * width)), max(0, width - 2))
+                top = min(max(0, round(y * height)), max(0, height - 2))
+                right = min(width, left + max(2, round(w * width)))
+                bottom = min(height, top + max(2, round(h * height)))
+                img.crop((left, top, right, bottom)).save(
+                    out, "JPEG", quality=95, optimize=True)
+            self._sweep()
+        return out
 
     def duration(self, source: Path) -> float:
         return self._duration(source)
@@ -222,6 +273,24 @@ class FramePicker:
                     path.unlink()
                 except OSError:
                     continue
+
+
+def _norm_crop(crop) -> tuple[float, float, float, float]:
+    """把取景框规整成 0–1 的 (x, y, w, h)，越界或不合法就退回整帧。"""
+    try:
+        x, y, w, h = (float(v) for v in crop)
+    except (TypeError, ValueError):
+        return (0.0, 0.0, 1.0, 1.0)
+    w = min(1.0, max(0.02, w))
+    h = min(1.0, max(0.02, h))
+    x = min(max(0.0, x), 1.0 - w)
+    y = min(max(0.0, y), 1.0 - h)
+    return (x, y, w, h)
+
+
+def _crop_label(crop) -> str:
+    x, y, w, h = _norm_crop(crop)
+    return f"{w * 100:.0f}%×{h * 100:.0f}% @ {x * 100:.0f}%/{y * 100:.0f}%"
 
 
 def _mtime(path: Path) -> float:

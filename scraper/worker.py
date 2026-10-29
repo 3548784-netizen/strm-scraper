@@ -9,7 +9,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from . import frames, nfo, picker, probe
 from .config import Config
@@ -34,14 +34,18 @@ class ScrapeResult:
     elapsed: float = 0.0
 
 
-def process(cfg: Config, target: Target, frame_at: float = 0.0) -> ScrapeResult:
+def process(cfg: Config, target: Target, frame_at: float = 0.0,
+            abort: threading.Event | None = None, force: bool = False) -> ScrapeResult:
     """处理一个 strm：探测 → 抓帧 → 出图 → 写 NFO。
 
     ``frame_at`` 大于 0 时表示用户在网页上手动选过帧，直接抓那一秒，
-    不再按比例采样自动挑选。
+    不再按比例采样自动挑选。``abort`` 被 set 时立刻中断正在跑的 ffmpeg
+    并抛 :class:`frames.CaptureAborted`，让「暂停 / 取消」即时生效。
+    ``force`` 为真时忽略「产物已齐全」，全部重做并覆盖旧文件（单次有效，
+    不改全局的 overwrite 设置）。
     """
     started = time.monotonic()
-    overwrite = cfg.scrape.overwrite == "always"
+    overwrite = force or cfg.scrape.overwrite == "always"
     want_thumb = cfg.scrape.thumb.enabled
 
     complete, missing = product_state(
@@ -73,7 +77,8 @@ def process(cfg: Config, target: Target, frame_at: float = 0.0) -> ScrapeResult:
                 if info.duration > 1:
                     # 别落在最后一帧之外，否则 ffmpeg 直接什么都不输出
                     seconds = min(seconds, info.duration - 1.0)
-                if not frames.capture_at(url, seconds, best, timeout=cfg.scan.timeout):
+                if not frames.capture_at(url, seconds, best, timeout=cfg.scan.timeout,
+                                         abort=abort):
                     raise frames.FrameError(
                         f"手动选的 {picker.clock(seconds)} 这一帧抓不下来，"
                         "链接可能已失效，可以在网页上重新选一个时间点"
@@ -87,6 +92,7 @@ def process(cfg: Config, target: Target, frame_at: float = 0.0) -> ScrapeResult:
                     cfg.scrape.frame_positions[: max(1, cfg.scrape.frames)],
                     workdir,
                     timeout=cfg.scan.timeout,
+                    abort=abort,
                 )
                 log.debug("%s 抓到 %s 帧，选用 %s", target.stem[:40], count, best.name)
 
@@ -153,6 +159,9 @@ class Runner:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._paused = threading.Event()
+        # 传给正在跑的 ffmpeg：一旦置位就立刻杀掉子进程。暂停和取消都会置位，
+        # 否则用户点了暂停要等整轮抓帧跑完才停下，看起来就像没生效
+        self._abort = threading.Event()
         self._cancelled = False
         self._thread: threading.Thread | None = None
 
@@ -167,6 +176,10 @@ class Runner:
         self.last_error = ""
         self.last_message = ""
         self.mode = ""
+        # 只跑这些路径（文件管理里勾选的范围）；None 表示整库待处理都跑
+        self._only: set[str] | None = None
+        # 本轮是否强制覆盖已有产物（文件管理里的「开始重刮」）
+        self._force = False
 
     # ---------- 对外接口 ----------
 
@@ -174,13 +187,19 @@ class Runner:
         with self._lock:
             return self.state in ("scanning", "running", "paused", "stopping")
 
-    def start(self, full: bool = False) -> bool:
-        """启动一轮扫描+刮削。已在跑就返回 False。"""
+    def start(self, full: bool = False, only: Iterable[str] | None = None,
+              force: bool = False) -> bool:
+        """启动一轮扫描+刮削。已在跑就返回 False。
+
+        ``only`` 给定时只处理这些文件（文件管理里勾了哪个文件夹就只跑哪个），
+        不做全库扫描，也不会顺带处理别的目录里的待处理项。
+        """
         with self._lock:
             if self.busy():
                 return False
             self._stop.clear()
             self._paused.clear()
+            self._abort.clear()
             self._cancelled = False
             self.processed = self.succeeded = self.failed = 0
             self.current.clear()
@@ -189,23 +208,49 @@ class Runner:
             self.last_error = ""
             self.last_message = ""
             self.state = "scanning"
-            self.mode = "full" if full else "incremental"
+            self._only = {p for p in (only or ()) if p} if only is not None else None
+            self._force = bool(force)
+            if self._only is not None:
+                self.mode = "selection"
+            else:
+                self.mode = "full" if full else "incremental"
 
         self._thread = threading.Thread(target=self._run, args=(full,), daemon=True,
                                         name="ws-runner")
         self._thread.start()
-        log.info("任务开始（%s）", "全量" if full else "增量")
+        if self._only is not None:
+            log.info("任务开始（只处理勾选的 %s 个文件%s）", len(self._only),
+                     "，覆盖原有产物" if self._force else "")
+        else:
+            log.info("任务开始（%s）", "全量" if full else "增量")
         return True
 
+    def add_scope(self, paths: Iterable[str]) -> bool:
+        """任务在跑时又勾了新文件：并进当前这轮的范围，别让它们干等。"""
+        wanted = {p for p in (paths or ()) if p}
+        with self._lock:
+            if self._only is None or self.state not in ("scanning", "running", "paused"):
+                return False
+            self._only |= wanted
+        return True
+
+    def _scope(self) -> set[str] | None:
+        with self._lock:
+            return set(self._only) if self._only is not None else None
+
     def pause(self) -> bool:
-        """暂停派发：正在处理的任务会跑完，队列里的先停住。"""
+        """暂停：不再派发新任务，并立刻中断正在跑的抓帧。
+
+        被中断的条目退回待处理，不算失败；点「继续任务」会重新跑它们。
+        """
         with self._lock:
             if self.state not in ("scanning", "running"):
                 return False
             self._paused.set()
+            self._abort.set()
             self.state = "paused"
             active = len(self.current)
-        log.info("任务已暂停，%s 个进行中的任务会跑完后再停", active)
+        log.info("任务已暂停，%s 个进行中的任务已中断并退回队列", active)
         return True
 
     def resume(self) -> bool:
@@ -213,6 +258,7 @@ class Runner:
             if not self._paused.is_set():
                 return False
             self._paused.clear()
+            self._abort.clear()
             alive = self._thread is not None and self._thread.is_alive()
             self.state = "running" if alive else "idle"
             if not alive:
@@ -227,6 +273,7 @@ class Runner:
                 return False
             self._cancelled = True
             self._paused.clear()
+            self._abort.set()
             self._stop.set()
             self.state = "stopping"
         log.warning("任务已取消，进行中的任务结果作废并退回待处理")
@@ -237,9 +284,11 @@ class Runner:
         with self._lock:
             if self.state in ("idle",):
                 self._stop.set()
+                self._abort.set()
                 return
             self._cancelled = True
             self._paused.clear()
+            self._abort.set()
             self._stop.set()
             self.state = "stopping"
 
@@ -267,9 +316,13 @@ class Runner:
     def _run(self, full: bool) -> None:
         started = time.time()
         try:
-            added = self._scan(full)
-            log.info("扫描完成，新登记 %s 个文件，待处理 %s 个",
-                     added, self.store.count("pending"))
+            only = self._scope()
+            added = self._scan(full, only)
+            if only is None:
+                log.info("扫描完成，新登记 %s 个文件，待处理 %s 个",
+                         added, self.store.count("pending"))
+            else:
+                log.info("本次只处理勾选的 %s 个文件，不扫描其它目录", len(only))
             with self._lock:
                 if self.state == "scanning":
                     self.state = "running"
@@ -299,8 +352,22 @@ class Runner:
                          self.processed, self.succeeded, self.failed,
                          (time.time() - started) / 60)
 
-    def _scan(self, full: bool) -> int:
+    def _scan(self, full: bool, only: set[str] | None = None) -> int:
         cfg = self.cfg
+        if only is not None:
+            # 只处理勾选的文件：不遍历媒体库，别的文件夹里的待处理项也不会被拉起来
+            rows = []
+            for path in only:
+                source = Path(path)
+                if not source.is_file():
+                    continue
+                size, mtime = signature(source)
+                rows.append((str(source), size, mtime))
+            self.store.ensure(rows)
+            for path, _size, _mtime in rows:
+                self.store.reset_one(path)
+            return len(rows)
+
         rows = []
         for source in iter_sources(cfg.scan.roots, cfg.scan.extensions, cfg.scan.recursive):
             size, mtime = signature(source)
@@ -329,8 +396,8 @@ class Runner:
     def _drain(self) -> list[str]:
         """取空待处理队列，返回刮削成功的路径。
 
-        暂停只影响派发：已经在线程池里跑的会跑完，队列不再取新的；取消则
-        连同进行中的一起作废（结果退回 pending，下次开始还能接着做）。
+        暂停时会中断正在跑的抓帧（``_abort``），被中断的条目退回 pending，
+        所以「继续」之后能原样重跑；取消则连同进行中的一起作废。
         """
         cfg = self.cfg
         workers = max(1, cfg.scan.concurrency)
@@ -354,7 +421,7 @@ class Runner:
                     continue
 
                 while len(pending) < workers:
-                    batch = self.store.next_pending(1)
+                    batch = self.store.next_pending(1, only=self._scope())
                     if not batch:
                         break
                     item = batch[0]
@@ -364,6 +431,10 @@ class Runner:
                     pending.add(executor.submit(self._work, item))
 
                 if not pending:
+                    # 队列看起来空了，但文件管理那边可能刚塞进新的待处理（
+                    # 「已加入队列」），所以再问一次，别让它们干等下一次开始
+                    if self.store.next_pending(1, only=self._scope()):
+                        continue
                     break
 
                 done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
@@ -390,7 +461,17 @@ class Runner:
         target = build_target(Path(item.path))
         result: ScrapeResult | None = None
         try:
-            result = process(self.cfg, target, frame_at=item.frame_at)
+            result = process(self.cfg, target, frame_at=item.frame_at,
+                             abort=self._abort, force=self._force)
+        except frames.CaptureAborted:
+            # 暂停 / 取消把 ffmpeg 打断了：这个文件本身没毛病，退回待处理
+            with self._lock:
+                self.current.pop(item.path, None)
+            self.store.reset_one(item.path)
+            log.info("[中断] %s | %s，已退回待处理", target.stem[:60],
+                     "任务已取消" if self._cancelled else "任务已暂停",
+                     extra={"item": item.path})
+            return ""
         except (probe.ProbeError, frames.FrameError) as exc:
             result = ScrapeResult(ok=False, reason=str(exc))
         except OSError as exc:

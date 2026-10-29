@@ -22,6 +22,7 @@ from .config import Config
 from .logs import LogFiles, setup_logging
 from .mediaserver import ServerPool
 from .probe import ProbeError, find_binary
+from .scheduler import Scheduler
 from .state import StateStore
 from .web import create_app
 from .worker import Runner
@@ -207,8 +208,14 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(cfg, log_files)
 
     store = StateStore(cfg.storage.state_db)
+    # 上次被 kill / 容器重启时正在跑的文件会停在 running（处理中），
+    # 不清理就永远是「处理中」，增量扫描也不会再碰它
+    stale = store.reset(("running",))
+    if stale:
+        log.warning("上次退出时有 %s 个文件卡在「处理中」，已退回待处理", stale)
     pool = ServerPool(cfg)
     runner = Runner(cfg, store, on_refresh=build_refresher(pool))
+    scheduler = Scheduler(cfg, runner, store)
 
     if pool.servers():
         pool.test_all()
@@ -235,8 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # 默认不自动开跑：打开网页点「开始任务」才开始。要开机就跑就把
-    # scan.autostart 设为 true（定时任务 interval_minutes>0 时也会自动跑）。
-    interval = max(0, cfg.scan.interval_minutes)
+    # scan.autostart 设为 true（网页「自动化」页上也能直接开关）。
     auto_start = args.full or args.once or (
         cfg.scan.autostart and cfg.scan.mode.lower() != "manual"
     )
@@ -252,8 +258,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         log.info("未自动开始刮削，打开网页控制台点「开始任务」即可（scan.autostart=false）")
 
-    if interval <= 0 and not auto_start:
-        log.warning("未启用定时任务（scan.interval_minutes=0），只能通过网页手动触发")
+    if not scheduler.tasks() and not auto_start:
+        log.info("还没有自动化任务，需要定时扫库就在网页「自动化」页新建一条")
 
     app = None
     if not args.no_web and cfg.web.enabled:
@@ -271,26 +277,16 @@ def main(argv: list[str] | None = None) -> int:
                 log.warning("默认账号 admin / admin，登录后请到右上角「账号」里改掉")
         else:
             log.warning("网页登录已关闭，任何能访问端口的人都能操作控制台")
-        app = create_app(cfg, store, runner, log_buffer, log_files, pool, account)
+        app = create_app(cfg, store, runner, log_buffer, log_files, pool, account,
+                         scheduler)
 
-    # 定时线程
-    def scheduler():
-        if interval <= 0:
-            return
-        while not stopping["flag"]:
-            for _ in range(interval * 60):
-                if stopping["flag"]:
-                    return
-                time.sleep(1)
-            if runner.busy():
-                log.info("上一轮还在跑，跳过本次定时")
-                continue
-            full = cfg.scan.mode.lower() == "full"
-            log.info("定时触发（%s）", "全量" if full else "增量")
-            runner.start(full=full)
-
-    if interval > 0:
-        threading.Thread(target=scheduler, daemon=True, name="ws-scheduler").start()
+    # 自动化任务：网页里增删改即时生效，不用重启容器
+    scheduler.start()
+    active = [t for t in scheduler.tasks() if t.get("enabled")]
+    if active:
+        log.info("自动化已启用：%d 条任务（网页「自动化」页可改）", len(active))
+    else:
+        log.info("自动化未启用任何任务（网页「自动化」页可以新建）")
 
     # 首轮结束后记录标记，下次就是增量。manual 模式没跑首轮，不能打这个标记
     if auto_start:

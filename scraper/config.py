@@ -29,6 +29,9 @@ except ImportError:  # pragma: no cover - yaml 是硬依赖
 
 log = logging.getLogger(__name__)
 
+# 没有显式指定、也找不到已有配置文件时，网页「设置」保存到这里
+DEFAULT_CONFIG_PATH = Path("/config/config.yaml")
+
 
 DEFAULTS: dict[str, Any] = {
     "scan": {
@@ -42,6 +45,8 @@ DEFAULTS: dict[str, Any] = {
         "autostart": False,
         # 定时扫描间隔（分钟），0 表示只在网页上手动触发
         "interval_minutes": 0,
+        # 定时到点跑哪种：incremental 只补缺失 / full 全量重刮覆盖
+        "schedule_mode": "incremental",
         "concurrency": 3,
         # 单个视频从探测到出图的整体超时（秒）
         "timeout": 240,
@@ -53,7 +58,7 @@ DEFAULTS: dict[str, Any] = {
         "frame_positions": [0.15, 0.30, 0.45, 0.60, 0.75],
         "min_width": 320,
         # 2:3 竖版。Emby / Jellyfin 推荐 1000×1500，最小 500×750
-        "poster": {"width": 1000, "height": 1500, "mode": "blur"},
+        "poster": {"width": 1000, "height": 1500, "mode": "crop"},
         # 16:9 横版背景图，两家都推荐 1920×1080
         "fanart": {"width": 1920, "height": 1080},
         # 16:9 缩略图，写 <名称>-thumb.jpg，Emby 的列表视图会用
@@ -161,6 +166,7 @@ class ScanConfig:
     mode: str = "manual"
     autostart: bool = False
     interval_minutes: int = 0
+    schedule_mode: str = "incremental"
     concurrency: int = 3
     timeout: int = 240
     probe_timeout: int = 20
@@ -170,7 +176,7 @@ class ScanConfig:
 class PosterConfig:
     width: int = 1000
     height: int = 1500
-    mode: str = "blur"
+    mode: str = "crop"
 
 
 @dataclass
@@ -269,6 +275,8 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    # 实际加载的配置文件路径，网页「设置」保存时写回这里；不参与 yaml 持久化
+    source: Path | None = field(default=None, compare=False)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
@@ -289,12 +297,48 @@ class Config:
 
         raw = _apply_env(raw)
         cfg = _from_dict(cls, raw)
+        cfg.source = candidate if (candidate and candidate.is_file()) else None
         cfg.validate()
         return cfg
 
     # ------------------------------------------------------------------
 
+    def save(self, path: str | Path | None = None) -> Path:
+        """把当前配置写回 yaml（网页「设置」页保存时用）。
+
+        写的是完整生效配置，所以 ``config.yaml`` 里的注释会丢；改的是同名的
+        临时文件再替换，写一半断电也不会留下半个配置文件。
+        """
+        if yaml is None:
+            raise RuntimeError("保存配置需要 PyYAML：pip install pyyaml")
+        target = Path(path) if path else (self.source or DEFAULT_CONFIG_PATH)
+        payload = self.to_yaml_dict()
+        text = (
+            "# 由网页「设置」页保存，注释不会保留；想写注释请直接编辑本文件\n"
+            + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False,
+                             default_flow_style=False)
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(target)
+        self.source = target
+        return target
+
+    def to_yaml_dict(self) -> dict[str, Any]:
+        """可序列化的完整配置（不含 Path 之类 yaml 表达不了的东西）。"""
+        return {
+            "scan": _to_dict(self.scan),
+            "scrape": _to_dict(self.scrape),
+            "servers": _to_dict(self.servers),
+            "web": _to_dict(self.web),
+            "storage": _to_dict(self.storage),
+            "log": _to_dict(self.log),
+        }
+
     def validate(self) -> list[str]:
+        if self.scan.schedule_mode not in ("incremental", "full"):
+            self.scan.schedule_mode = "incremental"
         """校正明显不对的配置，返回需要提示的条目。"""
         notes: list[str] = []
 
@@ -310,10 +354,15 @@ class Config:
 
         if self.scrape.poster.mode not in ("blur", "gradient", "crop"):
             notes.append(
-                f"poster.mode={self.scrape.poster.mode} 不认识（可选 blur/gradient/crop），"
-                "已回退为 blur"
+                f"poster.mode={self.scrape.poster.mode} 不认识（可选 crop/blur/gradient），"
+                "已回退为 crop"
             )
-            self.scrape.poster.mode = "blur"
+            self.scrape.poster.mode = "crop"
+        elif self.scrape.poster.mode in ("blur", "gradient"):
+            notes.append(
+                f"海报是 {self.scrape.poster.mode} 补边模式，四周会有背景条；"
+                "想要满幅裁切、和 PC 版一致，把 scrape.poster.mode 改成 crop"
+            )
 
         if self.scrape.overwrite not in ("missing", "always"):
             notes.append(f"overwrite={self.scrape.overwrite} 不认识，已回退为 missing")
@@ -392,7 +441,8 @@ class Config:
             f"roots=[{roots}] mode={self.scan.mode} "
             f"autostart={'on' if self.scan.autostart else 'off'} "
             f"concurrency={self.scan.concurrency} "
-            f"interval={self.scan.interval_minutes}min web={self.web.host}:{self.web.port} "
+            f"interval={self.scan.interval_minutes}min"
+            f"({self.scan.schedule_mode}) web={self.web.host}:{self.web.port} "
             f"auth={'on' if self.web.auth.enabled else 'off'}"
             f"({self.web.auth.session_hours}h) "
             f"servers=[{servers}] log={self.log.dir or '仅控制台'}"
@@ -433,7 +483,7 @@ def _find_config_file() -> Path | None:
     env = os.environ.get("WS_CONFIG")
     if env and Path(env).is_file():
         return Path(env)
-    for candidate in (Path("config.yaml"), Path("/config/config.yaml")):
+    for candidate in (Path("config.yaml"), DEFAULT_CONFIG_PATH):
         if candidate.is_file():
             return candidate
     return None

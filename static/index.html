@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234c8dff'/%3E%3Crect x='7' y='9' width='18' height='14' rx='2.5' fill='none' stroke='white' stroke-width='2'/%3E%3Ccircle cx='12' cy='14' r='1.5' fill='white'/%3E%3Cpath d='M7 21l5-5 3.5 3.5L19 16l6 6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
-<title>strm 刮削器</title>
+<title>strm-scraper</title>
 <style>
   :root {
     --bg: #0b0e14;
@@ -74,6 +74,10 @@
   h1 { margin: 0; font-size: 14.5px; font-weight: 600; letter-spacing: .2px; }
   .sub { color: var(--dim); font-size: 11.5px; margin-top: 0; max-width: 46vw;
          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub.fmts {
+    font-size: 10.5px; color: #5f6877; letter-spacing: .1px; margin-top: 3px;
+    max-width: 54vw; cursor: default;
+  }
   .taskbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-left: auto; }
   .sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; }
 
@@ -112,6 +116,8 @@
   .counts .c-ok b { color: var(--ok); }
   .counts .c-err b { color: var(--err); }
   .counts .c-warn b { color: var(--warn); }
+  .counts .c-run b { color: var(--accent); }
+  .counts .c-run { color: #a9c6ff; }
 
   /* ---------- 标签页 ---------- */
   .tabs {
@@ -148,12 +154,80 @@
   .switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
             color: var(--muted); cursor: pointer; user-select: none; }
   .switch input { accent-color: var(--accent); }
+  .selcount { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .selcount b { color: var(--accent); font-weight: 600; }
+  /* 下拉菜单：删除这类破坏性操作用它收起来，避免和「开始刮削」混在一排 */
+  .menu-wrap { position: relative; display: inline-flex; }
+  .menu {
+    position: absolute; top: calc(100% + 5px); right: 0; z-index: 60;
+    min-width: 232px; padding: 5px; display: flex; flex-direction: column; gap: 2px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 16px 36px rgba(0, 0, 0, .5);
+  }
+  .menu[hidden] { display: none; }
+  .menu button {
+    text-align: left; padding: 8px 10px; border: 0; border-radius: 7px;
+    background: transparent; color: var(--text); font-weight: 400;
+  }
+  .menu button:hover { background: var(--surface-3); }
+  .menu button.danger { color: #ff9b95; }
+  .menu .menu-note { padding: 5px 10px 6px; font-size: 11px; color: var(--dim); }
   .chips { display: flex; gap: 5px; flex-wrap: wrap; }
   .chip-btn {
     padding: 4px 10px; font-size: 11.5px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--border); background: transparent; color: var(--muted);
   }
   .chip-btn.active { border-color: rgba(76, 141, 255, .5); background: var(--accent-soft); color: #a9c6ff; }
+
+  /* 视图切换：按文件 / 按文件夹 */
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    border: 0; border-radius: 0; background: transparent; color: var(--muted);
+    padding: 4px 10px; font-size: 11.5px;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button.on { background: var(--accent-soft); color: #a9c6ff; }
+
+  /* 任务列表的文件夹行 */
+  tr.grouprow td { background: var(--surface); border-bottom: 1px solid var(--border-soft); }
+  tr.grouprow:hover td { background: var(--surface-2); }
+  /* 刚从文件管理选中的那个：置顶 + 淡蓝底 + 左侧竖条，一眼能找到 */
+  tr.grouprow.pinned td { background: rgba(76, 141, 255, .07); }
+  tr.grouprow.pinned:hover td { background: rgba(76, 141, 255, .11); }
+  tr.grouprow.pinned td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+  .tagpin {
+    font-size: 10.5px; font-weight: 500; padding: 0 6px; border-radius: 99px;
+    color: #a9c6ff; background: var(--accent-soft); border: 1px solid rgba(76, 141, 255, .35);
+    white-space: nowrap; flex: none;
+  }
+  .gwrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .gwrap .grow { flex: 1; }
+  .gbtn {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    padding: 0; border: 0; background: transparent; color: var(--text);
+    font-size: 13px; font-weight: 600; text-align: left;
+  }
+  .gbtn:hover:not(:disabled) { background: transparent; }
+  .gcaret { color: var(--muted); font-size: 9px; width: 10px; display: inline-block; transition: transform .15s; }
+  .gopen .gcaret { transform: rotate(90deg); }
+  .gname { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gsub {
+    color: var(--dim); font-weight: 400; font-size: 11.5px;
+    max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .gbar { width: 180px; height: 5px; border-radius: 99px; background: var(--surface-3); overflow: hidden; flex: none; }
+  .gbar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .gbar i.full { background: var(--ok); }
+  .gnum { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .gbadge { font-size: 11px; padding: 1px 7px; border-radius: 99px; white-space: nowrap; }
+  .gbadge.run { color: #a9c6ff; background: var(--accent-soft); }
+  .gbadge.fail { color: #ff9b95; background: var(--err-soft); }
+  .gbadge.wait { color: var(--muted); background: var(--surface-3); }
+  /* 组内文件行：左侧一条竖线表示从属 */
+  tr.gitem td:first-child { position: relative; padding-left: 20px; }
+  tr.gitem td:first-child::before {
+    content: ''; position: absolute; left: 11px; top: 0; bottom: 0; width: 1px; background: var(--border);
+  }
 
   /* ---------- 表格 ---------- */
   .tablewrap { flex: 1; overflow: auto; min-height: 0; }
@@ -341,15 +415,87 @@
   .pick-body > div { min-width: 0; }
   .pick-stage {
     background: #05070c; border: 1px solid var(--border); border-radius: 10px;
-    height: 42vh; min-height: 170px; display: grid; place-items: center;
+    height: 48vh; min-height: 200px;
     overflow: hidden; position: relative;
   }
-  .pick-stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* 画面位置由 JS 按「适应 / 缩放 / 平移」算好，直接给像素尺寸，不走 object-fit */
+  .pick-stage img#pickImg {
+    position: absolute; left: 0; top: 0; width: 0; height: 0;
+    display: block; max-width: none; max-height: none;
+  }
+  .pick-stage.can-pan { cursor: grab; }
+  .pick-stage.panning { cursor: grabbing; }
+  /* 缩放控件：浮在画面右下角，不占布局 */
+  .pick-zoom {
+    position: absolute; right: 8px; bottom: 8px; z-index: 4;
+    display: flex; align-items: center; gap: 1px; padding: 2px;
+    background: rgba(10, 14, 22, .74); border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 8px; backdrop-filter: blur(4px);
+  }
+  .pick-zoom button {
+    background: none; border: 0; color: #dbe6ff; font: inherit; font-size: 13px;
+    width: 26px; height: 22px; border-radius: 6px; cursor: pointer; line-height: 1;
+  }
+  .pick-zoom button:hover { background: rgba(255, 255, 255, .14); }
+  .pick-zoom .pct {
+    min-width: 46px; height: 22px; padding: 0 2px; font-size: 11.5px;
+    font-variant-numeric: tabular-nums; color: #cfe0ff;
+  }
+  .pick-zoom .pct:hover { background: rgba(255, 255, 255, .14); }
   .pick-stage .hint {
     position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
     color: var(--dim); font-size: 12px; padding: 14px; background: rgba(5, 7, 12, .86);
   }
   .pick-stage .hint[hidden] { display: none; }
+  /* 取景框：框外压暗，四角可拖拽缩放，框内拖动整体平移 */
+  .pick-cropbar {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+    font-size: 11.5px; color: var(--dim); flex-wrap: wrap;
+  }
+  .pick-cropbar .lbl { font-size: 11.5px; color: var(--muted); }
+  .pick-cropbar .grow { flex: 1; }
+  .pick-cropbar button.on {
+    background: var(--accent-soft); color: #cfe0ff; border-color: #3f6fbf;
+  }
+  .pick-cropbar button:disabled { opacity: .38; }
+  /* 裁切框：和 PC 版一致——细白框 + 九宫格 + 四角 L 形把手，框内拖动平移 */
+  .pick-box {
+    position: absolute; box-sizing: border-box;
+    border: 1.5px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 0 0 9999px rgba(4, 7, 14, .55);
+    cursor: grab; touch-action: none; z-index: 2;
+  }
+  .pick-box[hidden] { display: none; }
+  .pick-box.dragging { cursor: grabbing; border-color: #fff; }
+  .pick-stage img { pointer-events: none; user-select: none; -webkit-user-drag: none; }
+  .pick-stage .hint { z-index: 3; }
+  /* 九宫格辅助线：压在画面内，别和四边框重叠 */
+  .pick-box .pick-grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, .32) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, .32) 1px, transparent 1px);
+    background-size: 33.3333% 33.3333%;
+    background-position: -1px -1px;
+  }
+  /* 四角把手：L 形，命中区比看上去略大，但别大到把框内区域吃掉 */
+  .pick-box i {
+    position: absolute; width: 16px; height: 16px; pointer-events: auto;
+  }
+  .pick-box i::after {
+    content: ''; position: absolute; width: 12px; height: 12px;
+    border: 0 solid #fff; filter: drop-shadow(0 0 2px rgba(0, 0, 0, .7));
+  }
+  .pick-box i[data-h="nw"] { left: -3px; top: -3px; cursor: nwse-resize; }
+  .pick-box i[data-h="nw"]::after { left: 2px; top: 2px; border-left-width: 2.5px; border-top-width: 2.5px; }
+  .pick-box i[data-h="ne"] { right: -3px; top: -3px; cursor: nesw-resize; }
+  .pick-box i[data-h="ne"]::after { right: 2px; top: 2px; border-right-width: 2.5px; border-top-width: 2.5px; }
+  .pick-box i[data-h="sw"] { left: -3px; bottom: -3px; cursor: nesw-resize; }
+  .pick-box i[data-h="sw"]::after { left: 2px; bottom: 2px; border-left-width: 2.5px; border-bottom-width: 2.5px; }
+  .pick-box i[data-h="se"] { right: -3px; bottom: -3px; cursor: nwse-resize; }
+  .pick-box i[data-h="se"]::after { right: 2px; bottom: 2px; border-right-width: 2.5px; border-bottom-width: 2.5px; }
+  .pick-side { overflow: auto; max-height: 47vh; }
+  .pick-side #pickCropView { aspect-ratio: auto; max-height: 168px; object-fit: contain; }
   .pick-line { display: flex; align-items: center; gap: 10px; margin: 11px 0 3px; }
   .pick-line input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
   .pick-ctrl { display: flex; align-items: center; gap: 6px;
@@ -370,13 +516,172 @@
                    background: #0f1420; display: block; }
   .pick-side .meta { font-size: 11px; color: var(--dim); margin-top: 8px;
                      line-height: 1.65; white-space: pre-line; }
-  .pick-foot { flex-wrap: wrap; }
+  .pick-foot { flex-wrap: wrap; gap: 10px; }
   .pick-foot .opts { display: flex; gap: 13px; flex-wrap: wrap; align-items: center; }
-  .pick-foot .acts { display: flex; gap: 6px; margin-left: auto; }
+  /* 「确定裁切」：和 PC 版一样给一个显眼的主按钮，别让人找 */
+  .pick-confirm {
+    margin-left: auto; min-width: 210px; height: 40px; padding: 0 26px;
+    border-radius: 9px; border: 1px solid transparent; cursor: pointer;
+    font-size: 14px; font-weight: 600; letter-spacing: .5px; color: #fff;
+    background: linear-gradient(180deg, #7b3ff2, #6425d8);
+    box-shadow: 0 6px 18px rgba(110, 60, 230, .28);
+    transition: filter .15s, transform .06s;
+  }
+  .pick-confirm:hover:not(:disabled) { filter: brightness(1.08); }
+  .pick-confirm:active:not(:disabled) { transform: translateY(1px); }
+  .pick-confirm:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+
+  /* ---------- 自动化 ---------- */
+  .auto-list {
+    flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .auto-list::-webkit-scrollbar { width: 10px; }
+  .auto-list::-webkit-scrollbar-thumb { background: #2a3346; border-radius: 99px; }
+  .auto-empty { display: flex; flex-direction: column; align-items: center; gap: 10px;
+                padding: 52px 20px; text-align: center; }
+  .auto-empty .tips { color: var(--dim); font-size: 12px; line-height: 1.7; max-width: 380px; }
+  .auto-card {
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+    padding: 12px 14px; display: flex; align-items: center; gap: 14px;
+    position: relative; flex: none;
+  }
+  .auto-card::before {
+    content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px;
+    border-radius: 99px; background: var(--jf); opacity: .9;
+  }
+  .auto-card.off { opacity: .58; }
+  .auto-card.off::before { background: var(--dim); }
+  .auto-card .a-main { flex: 1; min-width: 0; }
+  .auto-card .a-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .auto-card .a-name { font-size: 13px; font-weight: 600; }
+  .auto-card .a-scope {
+    margin-top: 6px; font-size: 11.5px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+  }
+  .auto-card .a-scope code {
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 11.4px;
+    color: #9fb0c8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .auto-card .a-meta { margin-top: 4px; font-size: 11.5px; color: var(--dim); line-height: 1.6; }
+  .auto-card .a-meta b { color: var(--muted); font-weight: 600; }
+  .auto-card .a-acts { display: flex; align-items: center; gap: 6px; flex: none; }
+  .pill {
+    font-size: 10.5px; padding: 1px 7px; border-radius: 999px; line-height: 1.6;
+    background: var(--surface-3); border: 1px solid var(--border); color: var(--muted);
+    white-space: nowrap;
+  }
+  .pill.on { background: rgba(63, 185, 80, .12); border-color: rgba(63, 185, 80, .35); color: #7fd68d; }
+  .pill.accent { background: var(--accent-soft); border-color: rgba(88, 132, 255, .35); color: #a9c6ff; }
+
+  .modal-card.auto-modal { max-width: 600px; }
+  .auto-body {
+    padding: 14px 17px 4px; display: flex; flex-direction: column; gap: 14px;
+    max-height: 74vh; overflow-y: auto;
+  }
+  .auto-field { display: flex; flex-direction: column; gap: 6px; font-size: 11.5px; color: var(--muted); }
+  .auto-field > label { margin: 0; }
+  .auto-field input[type="text"], .auto-field input[type="number"], .auto-field select {
+    font: inherit; font-size: 12.5px; padding: 7px 10px; border-radius: 8px; width: 100%;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+    outline: none;
+  }
+  .auto-field input:focus, .auto-field select:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .auto-field .chips { margin-top: 2px; }
+  .auto-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .auto-scopebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .auto-scopebar .grow { flex: 1; }
+  .auto-scopebar .tiny.on {
+    border-color: var(--accent); color: #a9c6ff; background: var(--accent-soft);
+  }
+  .auto-roots .tiny.on {
+    border-color: var(--border); color: var(--text); background: var(--surface-3);
+  }
+  .auto-roots { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .auto-roots:empty { display: none; }
+  .auto-roots .lbl { font-size: 11px; color: var(--dim); margin-right: 2px; }
+  .auto-crumbs {
+    display: flex; flex-wrap: wrap; gap: 3px; font-size: 11.4px; color: var(--dim);
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+  }
+  .auto-crumbs button {
+    background: none; border: 0; padding: 1px 3px; border-radius: 4px; cursor: pointer;
+    color: #9fb0c8; font: inherit;
+  }
+  .auto-crumbs button:hover { background: var(--surface-3); color: var(--text); }
+  .auto-crumbs span.sep { opacity: .45; }
+  .auto-dirs {
+    max-height: 148px; overflow-y: auto; border: 1px solid var(--border-soft);
+    border-radius: 8px; background: var(--surface-2); padding: 4px;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .auto-dirs button {
+    text-align: left; background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+    color: var(--muted); font: inherit; font-size: 12px; padding: 5px 8px;
+    display: flex; align-items: center; gap: 7px; width: 100%;
+  }
+  .auto-dirs button:hover { background: var(--surface-3); color: var(--text); }
+  .auto-dirs button .up { color: var(--dim); }  .auto-dirs .empty { padding: 9px 10px; font-size: 11.8px; color: var(--dim); }
+
+  /* ---------- 设置 ---------- */
+  .settings {
+    flex: 1; min-height: 0; overflow: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .settings::-webkit-scrollbar { width: 10px; }
+  .settings::-webkit-scrollbar-thumb { background: #2a3346; border-radius: 99px; }
+  .set-card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); overflow: hidden; flex: none;
+  }
+  .set-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 11px 15px; border-bottom: 1px solid var(--border-soft);
+    background: var(--surface-2);
+  }
+  .set-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .set-head .set-sub { color: var(--dim); font-size: 11.5px; }
+  .set-head .grow { flex: 1; }
+  .set-body { padding: 14px 15px; display: flex; flex-direction: column; gap: 13px; }
+  .set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(206px, 1fr)); gap: 12px; }
+  .fld { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--muted); }
+  .fld.wide { grid-column: 1 / -1; }
+  .fld input[type="text"], .fld input[type="password"], .fld input[type="number"],
+  .fld select, .fld textarea {
+    font: inherit; font-size: 12.5px; padding: 7px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+    outline: none; width: 100%;
+  }
+  .fld input:focus, .fld select:focus, .fld textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .fld textarea {
+    resize: vertical; min-height: 58px; line-height: 1.65;
+    font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 12px;
+  }
+  .fld small { color: var(--dim); font-size: 11px; line-height: 1.5; }
+  .set-foot {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 11px 15px; border-top: 1px solid var(--border-soft); background: #10141d;
+  }
+  .set-foot .grow { flex: 1; }
+  .srv-edit {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 13px;
+    background: var(--surface-2); display: flex; flex-direction: column; gap: 11px;
+  }
+  .srv-edit .srv-top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .srv-edit .srv-top .grow { flex: 1; }
+  .srv-edit .srv-name { font-size: 12.5px; font-weight: 600; }
+  .set-note { font-size: 12px; color: var(--muted); line-height: 1.7; }
 
   @media (max-width: 760px) {
     .topbar { padding: 9px 12px; gap: 10px; }
     .sub { max-width: 62vw; }
+    .sub.fmts {
+      max-width: calc(100vw - 78px); white-space: normal; line-height: 1.55;
+    }
     .taskbar { width: 100%; margin-left: 0; }
     .statusbar { padding: 8px 12px; gap: 9px; }
     .counts { gap: 10px; }
@@ -387,6 +692,9 @@
     .pick-side { display: none; }
     .pick-stage { height: 28vh; }
     .pick-foot .acts { margin-left: 0; width: 100%; justify-content: flex-end; }
+    .auto-card { flex-direction: column; align-items: stretch; gap: 10px; }
+    .auto-card .a-acts { flex-wrap: wrap; }
+    .auto-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -403,14 +711,20 @@
       </svg>
     </div>
     <div>
-      <h1>strm 刮削器</h1>
+      <h1>strm-scraper</h1>
       <div class="sub" id="rootInfo">正在连接…</div>
+      <div class="sub fmts" id="fmtInfo"
+           title="strm 里指向的视频只要 ffmpeg 能解码就能刮削；本地视频想一起刮，在 config.yaml 的 scan.extensions 里加后缀即可，默认只扫 .strm">
+        支持 strm · mp4 · mkv · avi · ts · m2ts · mov · wmv · flv · rmvb · webm · mpg
+      </div>
     </div>
   </div>
 
   <div class="taskbar">
-    <button id="btnStart" class="primary">开始任务</button>
-    <button id="btnFull">全量重刮</button>
+    <button id="btnStart" class="primary"
+            title="整库：扫描全部目录，只补缺的图片 / NFO，重试失败的，已齐全的跳过">开始任务（整库）</button>
+    <button id="btnFull"
+            title="整库：所有文件重新刮削，并覆盖现有的图片 / NFO">全量重刮（整库）</button>
     <button id="btnPause" disabled>暂停</button>
     <button id="btnCancel" class="danger" disabled>取消任务</button>
     <span class="sep"></span>
@@ -434,6 +748,7 @@
     <span class="c-ok">成功<b id="cOk">0</b></span>
     <span class="c-err">失败<b id="cFail">0</b></span>
     <span class="c-warn">待处理<b id="cPending">0</b></span>
+    <span id="cSingleWrap" class="c-run" hidden>单独执行<b id="cSingle">0</b></span>
     <span>共<b id="cTotal">0</b></span>
     <span>用时<b id="cElapsed">—</b></span>
   </div>
@@ -443,7 +758,9 @@
   <button class="tab active" data-tab="tasks">任务列表<span class="n" id="tabTaskCount"></span></button>
   <button class="tab" data-tab="files">文件管理</button>
   <button class="tab" data-tab="servers">媒体服务器</button>
+  <button class="tab" data-tab="automation">自动化<span class="n" id="tabAutoCount"></span></button>
   <button class="tab" data-tab="logs">运行日志</button>
+  <button class="tab" data-tab="settings">设置</button>
 </nav>
 
 <main>
@@ -459,8 +776,21 @@
         <button class="chip-btn" data-status="skipped">已跳过</button>
       </div>
       <label class="switch"><input type="checkbox" id="onlyFail"> 只看失败</label>
+      <div class="seg" id="taskView">
+        <button class="on" data-view="flat">按文件</button>
+        <button data-view="dir">按文件夹</button>
+      </div>
       <input type="search" id="taskSearch" placeholder="搜索片名 / 路径">
       <span class="grow"></span>
+      <span id="taskSelInfo" class="selcount">未选择</span>
+      <div class="menu-wrap">
+        <button class="tiny" id="btnTaskDel" disabled>删除 ▾</button>
+        <div class="menu" id="taskDelMenu" hidden>
+          <div class="menu-note" id="taskDelNote">只影响任务列表，不动媒体库里的 strm</div>
+          <button data-tdel="record">仅从任务列表移除</button>
+          <button class="danger" data-tdel="purge">移除并删除已生成的图片 / NFO</button>
+        </div>
+      </div>
       <button class="tiny" id="btnRetry">重试失败项</button>
       <button class="tiny" id="btnTaskRefresh">刷新</button>
     </div>
@@ -468,6 +798,8 @@
       <table>
         <thead>
           <tr>
+            <th style="width:34px"><input class="check" type="checkbox" id="taskAll"
+                  title="全选当前列表里的任务"></th>
             <th style="width:88px">状态</th>
             <th>视频名称</th>
             <th style="width:86px">时长</th>
@@ -480,7 +812,7 @@
           </tr>
         </thead>
         <tbody id="taskBody">
-          <tr><td colspan="9"><div class="empty">正在加载…</div></td></tr>
+          <tr><td colspan="10"><div class="empty">正在加载…</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -498,11 +830,21 @@
     <div class="crumbs" id="crumbs"></div>
     <div class="toolbar">
       <label class="switch"><input type="checkbox" id="fileAll"> 全选</label>
-      <span id="fileSelInfo" class="num">已选 0 项</span>
+      <span id="fileSelInfo" class="selcount">已选 <b>0</b> 项</span>
       <span class="sep"></span>
-      <button class="tiny primary" id="btnFileScrape">刮削选中</button>
-      <button class="tiny" id="btnFileDel">删除产物</button>
-      <button class="tiny" id="btnFileDelNfo">仅删 NFO</button>
+      <button class="tiny primary" id="btnFileScrape" disabled
+              title="只刮缺图 / 缺 NFO 的，已经齐全的自动跳过">开始刮削</button>
+      <button class="tiny" id="btnFileRescrape" disabled
+              title="选中的文件（含选中的文件夹及其子目录）全部重新刮削，覆盖现有的图片 / NFO">开始重刮</button>
+      <div class="menu-wrap">
+        <button class="tiny" id="btnFileDel" disabled>删除产物 ▾</button>
+        <div class="menu" id="fileDelMenu" hidden>
+          <div class="menu-note" id="fileDelNote">对选中的文件操作，删掉后下次刮削会重新生成</div>
+          <button class="danger" data-del="all">全部产物（海报 / 背景图 / NFO）</button>
+          <button class="danger" data-del="image">只删图片（海报 / 背景图）</button>
+          <button class="danger" data-del="nfo">只删 NFO</button>
+        </div>
+      </div>
       <span class="grow"></span>
       <input type="search" id="fileSearch" placeholder="在当前目录搜索">
       <button class="tiny" id="btnFileRefresh">刷新</button>
@@ -530,7 +872,7 @@
     <div class="footbar">
       <span id="fileMeta">—</span>
       <span class="grow"></span>
-      <span class="num">勾选文件后可批量刮削或删除产物</span>
+      <span class="num">勾选文件夹＝选中里面所有 strm（含子目录）；行内「刮削」立即执行单个文件</span>
     </div>
   </section>
 
@@ -545,6 +887,26 @@
     </div>
     <div class="servers" id="serverList">
       <div class="empty" style="grid-column:1/-1">未配置媒体服务器</div>
+    </div>
+  </section>
+
+  <!-- 自动化 -->
+  <section class="pane" data-pane="automation">
+    <div class="toolbar">
+      <span id="autoSummary" class="num">—</span>
+      <span class="grow"></span>
+      <label class="switch" title="和具体任务无关：容器起来后先整库跑一轮">
+        <input type="checkbox" id="autoAutostart"> 启动后先跑一轮</label>
+      <button class="tiny" id="btnAutoRefresh">刷新</button>
+      <button class="tiny primary" id="btnAutoAdd">+ 新建任务</button>
+    </div>
+    <div class="auto-list" id="autoList">
+      <div class="empty">正在加载…</div>
+    </div>
+    <div class="footbar">
+      <span>一条任务＝一个监控范围＋一个间隔。到点只跑该范围里的 strm，其它目录不动。</span>
+      <span class="grow"></span>
+      <span class="num">任意时刻只跑一轮，撞车的那次自动顺延</span>
     </div>
   </section>
 
@@ -573,40 +935,178 @@
       <span>排查问题先看这里，或运行 <code>python -m scraper.main --doctor</code></span>
     </div>
   </section>
+
+  <!-- 设置 -->
+  <section class="pane" data-pane="settings">
+    <div class="settings">
+      <div class="set-card" id="setAccount">
+        <div class="set-head">
+          <h3>登录账号</h3>
+          <span class="set-sub" id="setAccHint">—</span>
+        </div>
+        <div class="set-body">
+          <div class="msg-line" id="accMsg"></div>
+          <div class="set-grid">
+            <label class="fld"><span>用户名</span>
+              <input id="accUser" type="text" autocomplete="username" spellcheck="false"></label>
+            <label class="fld"><span>当前密码（必填）</span>
+              <input id="accCurrent" type="password" autocomplete="current-password"></label>
+            <label class="fld"><span>新密码（留空表示不改）</span>
+              <input id="accNew" type="password" autocomplete="new-password" placeholder="至少 6 位"></label>
+            <label class="fld"><span>确认新密码</span>
+              <input id="accConfirm" type="password" autocomplete="new-password"></label>
+          </div>
+          <p class="set-note">改完以后，其他设备上的登录会全部失效，需要用新账号重新登录。</p>
+        </div>
+        <div class="set-foot">
+          <button class="tiny danger" id="btnLogout">退出登录</button>
+          <span class="grow"></span>
+          <button class="tiny primary" id="btnSaveAccount">保存账号</button>
+        </div>
+      </div>
+
+      <div class="set-card">
+        <div class="set-head">
+          <h3>媒体库</h3>
+          <span class="set-sub">容器里能看到的路径；保存后扫描与文件管理立即按新目录走</span>
+        </div>
+        <div class="set-body">
+          <label class="fld wide"><span>媒体库目录（每行一个，容器内绝对路径）</span>
+            <textarea id="setRoots" rows="3" spellcheck="false" placeholder="/media"></textarea>
+            <small>对应 docker-compose 里的挂载：<code>- /vol1/1000/LitePan/strm:/media</code>
+              就填 <code>/media</code>。多个库换行写。</small>
+          </label>
+          <div class="set-grid">
+            <label class="fld"><span>并发数</span>
+              <input id="setConcurrency" type="number" min="1" max="16" step="1">
+              <small>同时处理几个视频，网盘限速就调小</small></label>
+            <label class="fld"><span>单个任务超时（秒）</span>
+              <input id="setTimeout" type="number" min="30" max="3600" step="10"></label>
+            <label class="fld"><span>探测超时（秒）</span>
+              <input id="setProbeTimeout" type="number" min="5" max="600" step="1">
+              <small>strm 指向的地址失效时，多久放弃</small></label>
+            <label class="fld"><span>扫描模式</span>
+              <select id="setMode">
+                <option value="manual">manual · 只在网页手动触发</option>
+                <option value="auto">auto · 首次全量，之后增量</option>
+                <option value="incremental">incremental · 只补缺失</option>
+                <option value="full">full · 每次都全量重刮</option>
+              </select></label>
+            <label class="switch" style="align-self:end;padding-bottom:8px">
+              <input type="checkbox" id="setRecursive"> 递归扫描子目录</label>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="set-card">
+        <div class="set-head">
+          <h3>刮削与图片</h3>
+          <span class="set-sub" id="setImageHint">—</span>
+        </div>
+        <div class="set-body">
+          <div class="set-grid">
+            <label class="fld"><span>海报模式</span>
+              <select id="setPosterMode">
+                <option value="crop">crop · 满幅中心裁切（无黑边，推荐）</option>
+                <option value="blur">blur · 模糊背景补边</option>
+                <option value="gradient">gradient · 渐变背景补边</option>
+              </select></label>
+            <label class="fld"><span>覆盖策略</span>
+              <select id="setOverwrite">
+                <option value="missing">missing · 缺什么补什么（推荐）</option>
+                <option value="always">always · 每次都覆盖</option>
+              </select></label>
+            <label class="fld"><span>JPEG 质量</span>
+              <input id="setQuality" type="number" min="60" max="100" step="1"></label>
+          </div>
+          <div class="set-grid">
+            <label class="switch"><input type="checkbox" id="setNfo"> 生成 NFO</label>
+            <label class="switch"><input type="checkbox" id="setPosterOn"> 生成海报</label>
+            <label class="switch"><input type="checkbox" id="setFanartOn"> 生成背景图</label>
+            <label class="switch"><input type="checkbox" id="setThumbOn"> 生成缩略图</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="set-card">
+        <div class="set-head">
+          <h3>媒体服务器（媒体库链接）</h3>
+          <span class="set-sub">Emby / Jellyfin 的地址与 API 密钥，刮完自动刷新图片</span>
+          <span class="grow"></span>
+          <button class="tiny" id="btnSrvAdd">添加服务器</button>
+        </div>
+        <div class="set-body">
+          <div id="srvEditor" style="display:flex;flex-direction:column;gap:10px"></div>
+          <p class="set-note">API 密钥位置：Jellyfin 在「控制台 → API 密钥」，Emby 在
+            「设置 → 高级 → API 密钥」。密钥留空表示沿用已保存的那个。</p>
+        </div>
+        <div class="set-foot">
+          <span class="set-sub" id="setSaveMsg"></span>
+          <span class="set-sub" id="setFileHint" title="设置会写回这个配置文件">—</span>
+          <span class="grow"></span>
+          <button class="tiny primary" id="btnSaveSettings">保存设置</button>
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <div class="toast" id="toast"></div>
 
-<!-- 账号 -->
-<div class="modal" id="accountModal" hidden>
-  <div class="modal-card">
+<!-- 自动化任务 -->
+<div class="modal" id="autoModal" hidden>
+  <div class="modal-card auto-modal">
     <div class="modal-head">
-      <h2>账号设置</h2>
-      <button class="tiny" id="btnCloseAccount">关闭</button>
+      <h2 id="autoModalTitle">新建自动化任务</h2>
+      <button class="tiny" id="btnCloseAuto">关闭</button>
     </div>
-    <div class="modal-body">
-      <div class="msg-line" id="accMsg"></div>
-      <div class="field">
-        <label for="accUser">用户名</label>
-        <input id="accUser" type="text" autocomplete="username" spellcheck="false">
+    <div class="auto-body">
+      <div class="auto-field">
+        <label for="autoName">任务名称</label>
+        <input type="text" id="autoName" maxlength="60" placeholder="例如：电影库 · 每 6 小时">
       </div>
-      <div class="field">
-        <label for="accCurrent">当前密码（必填）</label>
-        <input id="accCurrent" type="password" autocomplete="current-password">
+      <div class="auto-field">
+        <label>监控范围</label>
+        <div class="auto-scopebar">
+          <button class="tiny" id="autoScopeAll">全部媒体库</button>
+          <button class="tiny" id="autoScopeHere">设为当前目录</button>
+          <span class="grow"></span>
+          <span class="num" id="autoScopePick">—</span>
+        </div>
+        <div class="auto-roots" id="autoRoots"></div>
+        <div class="auto-crumbs" id="autoCrumbs">—</div>
+        <div class="auto-dirs" id="autoDirs"></div>
+        <p class="set-note" id="autoScopeHint">不选就是全部媒体库；只看某个文件夹就点进去再「设为当前目录」</p>
       </div>
-      <div class="field">
-        <label for="accNew">新密码（留空表示不改）</label>
-        <input id="accNew" type="password" autocomplete="new-password" placeholder="至少 6 位">
+      <div class="auto-grid">
+        <div class="auto-field">
+          <label for="autoInterval">间隔（分钟，最小 5）</label>
+          <input type="number" id="autoInterval" min="5" max="10080" step="10" value="360">
+          <div class="chips" id="autoChips">
+            <button class="tiny" data-min="60">每小时</button>
+            <button class="tiny" data-min="360">6 小时</button>
+            <button class="tiny" data-min="720">12 小时</button>
+            <button class="tiny" data-min="1440">每天</button>
+          </div>
+        </div>
+        <div class="auto-field">
+          <label for="autoMode">执行方式</label>
+          <select id="autoMode">
+            <option value="incremental">增量 · 只补新文件和缺产物的</option>
+            <option value="full">全量 · 范围内重刮并覆盖旧图</option>
+          </select>
+          <label class="switch" style="margin-top:6px">
+            <input type="checkbox" id="autoEnabled" checked> 保存后立即启用</label>
+        </div>
       </div>
-      <div class="field">
-        <label for="accConfirm">确认新密码</label>
-        <input id="accConfirm" type="password" autocomplete="new-password">
-      </div>
-      <p class="tip">改完以后，其他设备上的登录会全部失效，需要重新登录。</p>
+      <div class="msg-line" id="autoMsg"></div>
     </div>
     <div class="modal-foot">
-      <button class="tiny danger" id="btnLogout">退出登录</button>
-      <button class="tiny primary" id="btnSaveAccount">保存</button>
+      <span class="set-sub">到点只处理监控范围里的 strm，其它目录不动</span>
+      <span class="grow"></span>
+      <button class="tiny" id="btnAutoCancel">取消</button>
+      <button class="tiny primary" id="btnAutoSave">保存任务</button>
     </div>
   </div>
 </div>
@@ -632,9 +1132,28 @@
     </div>
     <div class="pick-body">
       <div>
-        <div class="pick-stage">
+        <div class="pick-cropbar" id="pickCropBar">
+          <span class="lbl">裁切</span>
+          <button class="tiny on" data-crop="poster" title="按海报 2:3 画框，只作用于海报">海报 2:3</button>
+          <button class="tiny" data-crop="fanart" title="按背景图 16:9 画框，只作用于背景图 / 缩略图">背景图 16:9</button>
+          <button class="tiny" data-crop="free" title="自由比例，同时作用于所有勾选的图片">自由</button>
+          <button class="tiny" data-crop="none" title="不裁切，整帧铺满">整帧</button>
+          <span class="grow"></span>
+          <span class="num" id="pickCropInfo">—</span>
+          <button class="tiny" id="pickCropReset">重置裁切框</button>
+        </div>
+        <div class="pick-stage" id="pickStage">
           <img id="pickImg" alt="">
+          <div class="pick-box" id="pickBox" hidden>
+            <span class="pick-grid"></span>
+            <i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i>
+          </div>
           <div class="hint" id="pickStageHint">正在读取视频信息…</div>
+          <div class="pick-zoom">
+            <button id="pickZoomOut" title="缩小（滚轮向下也可以）">−</button>
+            <button class="pct" id="pickZoomFit" title="回到适应窗口">100%</button>
+            <button id="pickZoomIn" title="放大（滚轮向上也可以）">+</button>
+          </div>
         </div>
         <div class="pick-line">
           <input type="range" id="pickRange" min="0" max="0" step="0.1" value="0" disabled>
@@ -644,12 +1163,14 @@
           <button class="tiny" id="pickBack">−1 秒</button>
           <button class="tiny" id="pickFwd">+1 秒</button>
           <span class="grow"></span>
-          <span id="pickHint">拖时间轴，或点下面的缩略图快速定位</span>
+          <span id="pickHint">拖动画面里的框调整位置，拖四角改大小</span>
         </div>
         <div class="pick-strip" id="pickStrip"></div>
       </div>
       <aside class="pick-side">
-        <div class="t">当前海报</div>
+        <div class="t">取景预览</div>
+        <img id="pickCropView" alt="">
+        <div class="t" style="margin-top:10px">当前海报</div>
         <img id="pickPoster" alt="">
         <div class="meta" id="pickMeta">—</div>
       </aside>
@@ -660,11 +1181,9 @@
         <label class="switch"><input type="checkbox" id="pickFanartOn" checked> 背景图</label>
         <label class="switch"><input type="checkbox" id="pickThumbOn"> 缩略图</label>
         <label class="switch"><input type="checkbox" id="pickRefreshOn" checked> 通知媒体服务器</label>
-      </div>
-      <div class="acts">
         <button class="tiny" id="btnPickAuto">恢复自动</button>
-        <button class="tiny primary" id="btnPickApply" disabled>使用这一帧</button>
       </div>
+      <button class="pick-confirm" id="btnPickApply" disabled>确定裁切</button>
     </div>
   </div>
 </div>
@@ -685,10 +1204,30 @@ const S = {
   total: 0,
   taskSig: '',
   lastTasks: 0,
-  files: { path: '', q: '', sel: new Set(), data: null, sig: '' },
+  // 任务列表视图：flat 平铺 / dir 按文件夹
+  tasksView: 'flat',
+  groups: [],
+  openDirs: new Set(),
+  groupItems: new Map(),
+  // 刚从文件管理选中的文件夹：置顶 + 标记，方便一眼看到
+  pinnedDirs: new Set(),
+  pinnedScrolled: false,
+  // 任务列表勾选：taskSel 是文件路径，taskSelDirs 是整个文件夹
+  taskSel: new Set(),
+  taskSelDirs: new Set(),
+  taskRows: [],
+  settings: null,
+  files: {
+    path: '', q: '', sel: new Set(), data: null, sig: '',
+    // 勾文件夹时用：dirPaths 记每个目录展开出来的路径，dirSel 是这些路径的并集
+    dirPaths: new Map(), dirSel: new Set(),
+  },
+  filesTick: 0, filesBusy: false,
   logSince: 0,
   logFilter: '',
   logMode: 'live',
+  // 自动化页：tasks 是服务端返回的任务，browse 是新建任务时正在浏览的目录
+  auto: { tasks: [], scope: '', browse: '', editing: null, roots: [], lastLoad: 0 },
 };
 
 /* ---------- 基础工具 ---------- */
@@ -774,6 +1313,8 @@ function switchTab(name) {
   if (name === 'files') loadFiles();
   if (name === 'logs' && S.logMode === 'live') pollLogs();
   if (name === 'servers' && lastStatus) renderServers(lastStatus.servers || []);
+  if (name === 'automation') loadAutomation();
+  if (name === 'settings' && !S.settings) loadSettings();
 }
 $('tabs').addEventListener('click', e => {
   const btn = e.target.closest('.tab');
@@ -797,6 +1338,15 @@ function renderStatus(st) {
   const state = st.state || 'idle';
   $('badge').className = 'badge ' + state;
   $('badgeText').textContent = STATUS_TEXT[state] || state;
+
+  // 单独执行的文件不在批量任务里，单独标一下，否则状态看着像「空闲」
+  const single = (st.single && st.single.count) || 0;
+  $('cSingleWrap').hidden = single === 0;
+  $('cSingle').textContent = single;
+  if (single > 0 && state === 'idle') {
+    $('badge').className = 'badge running';
+    $('badgeText').textContent = '单独执行中';
+  }
 
   const busy = ['scanning', 'running', 'paused', 'stopping'].includes(state);
   const paused = state === 'paused';
@@ -839,13 +1389,25 @@ async function pollStatus() {
     return;
   }
   renderStatus(st);
+  renderAutoSummary(st.schedule);   // S.status 是任务筛选条件，别拿状态快照去盖它
+  if (S.tab === 'automation' && Date.now() - S.auto.lastLoad > 4000) loadAutomation();
   if (S.tab === 'tasks' && Date.now() - S.lastTasks > 2700) loadTasks();
+  // 文件管理页：任务在跑就跟着刷，跑完的那一下也要刷（filesBusy 还留着 true）
+  const busy = ['scanning', 'running', 'paused', 'stopping'].includes(st.state)
+    || (st.single && st.single.count > 0);
+  if (S.tab === 'files' && (busy || S.filesBusy)
+      && Date.now() - (S.filesTick || 0) > 1500) {
+    S.filesTick = Date.now();
+    loadFiles();
+  }
+  S.filesBusy = busy;
 }
 
 /* ---------- 任务列表 ---------- */
 
 async function loadTasks(force) {
   S.lastTasks = Date.now();
+  if (S.tasksView === 'dir') return loadGroups(force);
   const params = new URLSearchParams({
     status: S.status, q: S.q, page: String(S.page), size: String(S.size),
   });
@@ -869,50 +1431,340 @@ async function loadTasks(force) {
   renderTasks(data.items);
 }
 
-function renderTasks(items) {
-  const body = $('taskBody');
-  if (!items.length) {
-    body.innerHTML = `<tr><td colspan="9"><div class="empty">${esc(
-      S.status === 'all' && !S.q ? '暂无记录，点「开始任务」开始第一轮刮削' : '没有符合条件的记录')}</div></td></tr>`;
+/* ---------- 按文件夹视图 ---------- */
+
+async function loadGroups(force) {
+  const params = new URLSearchParams({ status: S.status, q: S.q, limit: '400' });
+  let data;
+  try {
+    data = await api('/api/items/groups?' + params.toString());
+  } catch (e) {
     return;
   }
-  body.innerHTML = items.map(it => {
-    const art = it.artifacts || {};
-    const st = it.status || 'pending';
-    const name = it.title || it.name;
-    const dir = it.path.split(/[\\/]/).slice(-2, -1)[0] || '';
-    let reason;
-    if (!it.reason) {
-      reason = st === 'ok' ? '<span class="reason mute">已生成</span>'
-        : '<span class="nothing">—</span>';
-    } else if (st === 'failed') {
-      reason = `<span class="reason" title="${esc(it.reason)}">${esc(it.reason)}</span>`;
-    } else {
-      reason = `<span class="reason mute" title="${esc(it.reason)}">${esc(it.reason)}</span>`;
-    }
-    return `<tr data-path="${esc(it.path)}">
-      <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
-      <td><div class="name" title="${esc(it.path)}">${esc(name)}${
-        it.frame_at ? `<span class="tag">手选 ${fmtDur(it.frame_at)}</span>` : ''}
-        <span class="path">${esc(dir)}</span></div></td>
-      <td class="num">${fmtDur(it.duration) || '<span class="nothing">—</span>'}</td>
-      <td class="num">${fmtBytes(it.size) || '<span class="nothing">—</span>'}</td>
-      <td>${thumbCell(it.path, art.poster, 'poster')}</td>
-      <td>${thumbCell(it.path, art.fanart, 'fanart')}</td>
-      <td class="num">${art.nfo ? fmtBytes(art.nfo) : '<span class="nothing">—</span>'}</td>
-      <td>${reason}</td>
-      <td>
-        <div class="rowbtns">
-          <button class="tiny" data-act="pick">选帧</button>
-          <button class="tiny" data-act="redo">重刮</button>
-          <button class="tiny" data-act="clean">删产物</button>
-        </div>
-      </td>
-    </tr>`;
-  }).join('');
+  S.groups = data.groups || [];
+
+  // 刚从文件管理选中的文件夹排到最前，别的仍按「进行中 / 失败 / 待处理」排
+  if (S.pinnedDirs.size) {
+    const pinned = [], rest = [];
+    for (const g of S.groups) (S.pinnedDirs.has(g.path) ? pinned : rest).push(g);
+    S.groups = pinned.concat(rest);
+  }
+
+  // 已经展开的目录，组内进度也要跟着更新
+  await Promise.all([...S.openDirs].map(d => loadGroupFiles(d, true)));
+
+  const pages = S.groups.length;
+  $('pageInfo').textContent = '—';
+  $('btnPrev').disabled = true;
+  $('btnNext').disabled = true;
+  $('taskMeta').textContent = pages
+    ? `共 ${pages} 个文件夹${S.openDirs.size ? `，已展开 ${S.openDirs.size} 个` : ''}`
+      + (data.truncated ? '（只显示前 400 个）' : '')
+    : (S.status === 'all' && !S.q ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录');
+
+  const sig = JSON.stringify(S.groups) + '|' + [...S.openDirs].join('|')
+    + '|' + JSON.stringify([...S.groupItems].map(([k, v]) => [k, v.map(x => x.status)]));
+  if (!force && sig === S.taskSig) return;
+  S.taskSig = sig;
+  renderGroups();
 }
 
+async function loadGroupFiles(dir, silent) {
+  const params = new URLSearchParams({
+    dir, status: S.status, q: S.q, size: '200',
+  });
+  try {
+    const data = await api('/api/items?' + params.toString());
+    S.groupItems.set(dir, data.items || []);
+  } catch (e) {
+    if (!silent) {
+      S.groupItems.set(dir, []);
+      toast(e.message, true);
+    }
+  }
+}
+
+async function toggleGroup(dir) {
+  if (S.openDirs.has(dir)) {
+    S.openDirs.delete(dir);
+    S.groupItems.delete(dir);
+  } else {
+    S.openDirs.add(dir);
+    S.pinnedDirs.delete(dir);   // 已经点开看过了，「刚选择」的提示可以收掉
+    if (!S.groupItems.has(dir)) S.groupItems.set(dir, []);
+    await loadGroupFiles(dir);
+  }
+  S.taskSig = '';
+  renderGroups();
+  $('taskMeta').textContent = S.groups.length
+    ? `共 ${S.groups.length} 个文件夹${S.openDirs.size ? `，已展开 ${S.openDirs.size} 个` : ''}`
+    : '没有符合条件的记录';
+}
+
+function groupStatus(g) {
+  if (g.running) return 'running';
+  if (g.failed) return 'failed';
+  if (g.pending) return 'pending';
+  if (g.total && g.done >= g.total) return 'ok';
+  return 'skipped';
+}
+
+function groupRowHtml(g, open) {
+  const st = groupStatus(g);
+  const pct = g.total ? Math.round(100 * g.done / g.total) : 0;
+  const where = g.rel !== undefined ? g.rel : g.path.replace(/[\\/][^\\/]+$/, '');
+  const pinned = S.pinnedDirs.has(g.path);
+  const checked = S.taskSelDirs.has(g.path);
+  const badges = [];
+  if (g.running) badges.push(`<span class="gbadge run">处理中 ${g.running}</span>`);
+  if (g.pending) badges.push(`<span class="gbadge wait">待处理 ${g.pending}</span>`);
+  if (g.failed) badges.push(`<span class="gbadge fail">失败 ${g.failed}</span>`);
+  return `<tr class="grouprow${open ? ' gopen' : ''}${pinned ? ' pinned' : ''}${
+      checked ? ' sel' : ''}" data-group="${esc(g.path)}">
+    <td><input class="check" type="checkbox" data-gpick="${esc(g.path)}"
+               title="选中这个文件夹里的所有任务"${checked ? ' checked' : ''}></td>
+    <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
+    <td colspan="8"><div class="gwrap">
+      <button class="gbtn" data-toggle="${esc(g.path)}" title="展开 / 收起这个文件夹">
+        <span class="gcaret">▶</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none">
+          <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+        </svg>
+        <span class="gname">${esc(g.name || g.path)}</span>
+        ${pinned ? '<span class="tagpin">刚选择</span>' : ''}
+        ${where && where !== g.name
+          ? `<span class="gsub" title="${esc(g.path)}">${esc(where)}</span>` : ''}
+      </button>
+      <span class="grow"></span>
+      <div class="gbar"><i class="${pct >= 100 ? 'full' : ''}" style="width:${pct}%"></i></div>
+      <span class="gnum">${g.done}/${g.total}</span>
+      ${badges.join('')}
+    </div></td>
+  </tr>`;
+}
+
+function renderGroups() {
+  const body = $('taskBody');
+  if (!S.groups.length) {
+    body.innerHTML = `<tr><td colspan="10"><div class="empty">${esc(
+      S.status === 'all' && !S.q ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录')}</div></td></tr>`;
+    updateTaskSelInfo();
+    return;
+  }
+  const rows = [];
+  for (const g of S.groups) {
+    const open = S.openDirs.has(g.path);
+    rows.push(groupRowHtml(g, open));
+    if (!open) continue;
+    const items = S.groupItems.get(g.path) || [];
+    if (!items.length) {
+      rows.push(`<tr class="gitem"><td></td><td></td><td colspan="8"><div class="empty">这个文件夹暂时没有记录</div></td></tr>`);
+      continue;
+    }
+    items.forEach(it => rows.push(itemRowHtml(it, { inside: true })));
+    if (items.length >= 200) {
+      rows.push(`<tr class="gitem"><td></td><td></td><td colspan="8"><div class="empty">只显示前 200 个文件</div></td></tr>`);
+    }
+  }
+  body.innerHTML = rows.join('');
+  updateTaskSelInfo();
+  // 从文件管理跳过来时，确保那个文件夹在视野里（只滚一次，别跟用户抢）
+  if (!S.pinnedScrolled) {
+    const first = body.querySelector('tr.grouprow.pinned');
+    if (first) {
+      first.scrollIntoView({ block: 'nearest' });
+      S.pinnedScrolled = true;
+    }
+  }
+}
+
+/* ---------- 任务行渲染（平铺与会话内共用） ---------- */
+
+function itemRowHtml(it, opts = {}) {
+  const art = it.artifacts || {};
+  const st = it.status || 'pending';
+  const name = it.title || it.name;
+  const dir = it.path.split(/[\\/]/).slice(-2, -1)[0] || '';
+  let reason;
+  if (!it.reason) {
+    reason = st === 'ok' ? '<span class="reason mute">已生成</span>'
+      : '<span class="nothing">—</span>';
+  } else if (st === 'failed') {
+    reason = `<span class="reason" title="${esc(it.reason)}">${esc(it.reason)}</span>`;
+  } else {
+    reason = `<span class="reason mute" title="${esc(it.reason)}">${esc(it.reason)}</span>`;
+  }
+  const picked = S.taskSel.has(it.path);
+  return `<tr data-path="${esc(it.path)}"${
+      opts.inside ? ' class="gitem"' : (picked ? ' class="sel"' : '')}>
+    <td>${opts.inside ? ''
+      : `<input class="check" type="checkbox" data-tpick="${esc(it.path)}"${
+          picked ? ' checked' : ''}>`}</td>
+    <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
+    <td><div class="name" title="${esc(it.path)}">${esc(name)}${
+      it.frame_at ? `<span class="tag">手选 ${fmtDur(it.frame_at)}</span>` : ''}
+      ${opts.inside ? '' : `<span class="path">${esc(dir)}</span>`}</div></td>
+    <td class="num">${fmtDur(it.duration) || '<span class="nothing">—</span>'}</td>
+    <td class="num">${fmtBytes(it.size) || '<span class="nothing">—</span>'}</td>
+    <td>${thumbCell(it.path, art.poster, 'poster')}</td>
+    <td>${thumbCell(it.path, art.fanart, 'fanart')}</td>
+    <td class="num">${art.nfo ? fmtBytes(art.nfo) : '<span class="nothing">—</span>'}</td>
+    <td>${reason}</td>
+    <td>
+      <div class="rowbtns">
+        <button class="tiny" data-act="pick">选帧</button>
+        <button class="tiny" data-act="redo">重刮</button>
+        <button class="tiny" data-act="clean">删产物</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function renderTasks(items) {
+  const body = $('taskBody');
+  S.taskRows = items || [];
+  if (!items.length) {
+    body.innerHTML = `<tr><td colspan="10"><div class="empty">${esc(
+      S.status === 'all' && !S.q ? '暂无记录，点「开始任务」开始第一轮刮削' : '没有符合条件的记录')}</div></td></tr>`;
+    updateTaskSelInfo();
+    return;
+  }
+  body.innerHTML = items.map(it => itemRowHtml(it)).join('');
+  updateTaskSelInfo();
+}
+
+/* ---------- 任务勾选与删除 ---------- */
+
+function updateTaskSelInfo() {
+  const n = S.taskSel.size, d = S.taskSelDirs.size;
+  $('taskSelInfo').innerHTML = (n || d)
+    ? `已选 <b>${n}</b> 个文件${d ? ` + <b>${d}</b> 个文件夹` : ''}`
+    : '未选择';
+  $('btnTaskDel').disabled = !(n || d);
+  if (!(n || d)) closeTaskMenu();
+
+  const keys = S.tasksView === 'dir'
+    ? S.groups.map(g => g.path) : S.taskRows.map(it => it.path);
+  const has = key => (S.tasksView === 'dir' ? S.taskSelDirs.has(key) : S.taskSel.has(key));
+  const hit = keys.filter(has);
+  const all = keys.length > 0 && hit.length === keys.length;
+  $('taskAll').checked = all;
+  $('taskAll').indeterminate = !all && hit.length > 0;
+
+  // 文件夹行：整个文件夹被选中就勾上，只有组内文件被选就显示半选
+  document.querySelectorAll('#taskBody input[data-gpick]').forEach(box => {
+    const dir = box.dataset.gpick;
+    const on = S.taskSelDirs.has(dir);
+    let some = false;
+    if (!on) {
+      const prefix = dir.replace(/[\\/]+$/, '') + pathSep(dir);
+      for (const p of S.taskSel) {
+        if (p.startsWith(prefix)) { some = true; break; }
+      }
+    }
+    box.checked = on;
+    box.indeterminate = !on && some;
+    const tr = box.closest('tr');
+    if (tr) tr.classList.toggle('sel', on);
+  });
+  // 文件行
+  document.querySelectorAll('#taskBody input[data-tpick]').forEach(box => {
+    const on = S.taskSel.has(box.dataset.tpick);
+    box.checked = on;
+    const tr = box.closest('tr');
+    if (tr) tr.classList.toggle('sel', on);
+  });
+}
+
+$('taskBody').addEventListener('change', e => {
+  const dirBox = e.target.closest('input[data-gpick]');
+  if (dirBox) {
+    if (dirBox.checked) S.taskSelDirs.add(dirBox.dataset.gpick);
+    else S.taskSelDirs.delete(dirBox.dataset.gpick);
+    updateTaskSelInfo();
+    return;
+  }
+  const box = e.target.closest('input[data-tpick]');
+  if (!box) return;
+  if (box.checked) S.taskSel.add(box.dataset.tpick);
+  else S.taskSel.delete(box.dataset.tpick);
+  updateTaskSelInfo();
+});
+
+/* 表头全选：按文件视图选当前这一页，按文件夹视图选当前列出的所有文件夹 */
+$('taskAll').addEventListener('change', e => {
+  const on = e.target.checked;
+  S.taskSel.clear();
+  S.taskSelDirs.clear();
+  if (on) {
+    if (S.tasksView === 'dir') S.groups.forEach(g => S.taskSelDirs.add(g.path));
+    else S.taskRows.forEach(it => S.taskSel.add(it.path));
+  }
+  updateTaskSelInfo();
+});
+
+function closeTaskMenu() { $('taskDelMenu').hidden = true; }
+
+$('btnTaskDel').addEventListener('click', e => {
+  e.stopPropagation();
+  const menu = $('taskDelMenu');
+  if (menu.hidden) {
+    const n = S.taskSel.size, d = S.taskSelDirs.size;
+    $('taskDelNote').textContent = n || d
+      ? `将移除 ${n} 个文件${d ? `、${d} 个文件夹（含里面的记录）` : ''}，媒体库里的 strm 不动`
+      : '先勾选任务';
+  }
+  menu.hidden = !menu.hidden;
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#taskDelMenu') && !e.target.closest('#btnTaskDel')) closeTaskMenu();
+});
+
+async function deleteTasks(mode) {
+  const paths = [...S.taskSel];
+  const dirs = [...S.taskSelDirs];
+  if (!paths.length && !dirs.length) { toast('先勾选任务', true); return; }
+  const scope = `${paths.length} 个文件${dirs.length ? `、${dirs.length} 个文件夹` : ''}`;
+  const what = mode === 'purge'
+    ? '移除记录，并删除已生成的海报 / 背景图 / NFO'
+    : '仅从任务列表移除（下次扫描会重新登记）';
+  if (!confirm(`确定${what}？\n共 ${scope}。`)) return;
+
+  const btn = $('btnTaskDel');
+  btn.disabled = true;
+  try {
+    const r = await post('/api/items/delete', {
+      paths, dirs, purge: mode === 'purge',
+    });
+    toast(r.message, !r.ok);
+    S.taskSel.clear();
+    S.taskSelDirs.clear();
+    S.openDirs.clear();
+    S.groupItems.clear();
+    S.taskSig = '';
+    loadTasks(true);
+    pollStatus();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    updateTaskSelInfo();
+  }
+}
+
+$('taskDelMenu').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-tdel]');
+  if (!btn) return;
+  closeTaskMenu();
+  deleteTasks(btn.dataset.tdel);
+});
+
+/* ---------- 任务行操作 ---------- */
+
 $('taskBody').addEventListener('click', async e => {
+  const tog = e.target.closest('[data-toggle]');
+  if (tog) { toggleGroup(tog.dataset.toggle); return; }
   const img = e.target.closest('img[data-preview]');
   if (img) { openPreview(img.dataset.preview, img.dataset.kind, img.dataset.v); return; }
   const btn = e.target.closest('button[data-act]');
@@ -987,6 +1839,31 @@ $('btnTaskRefresh').addEventListener('click', () => { S.taskSig = ''; loadTasks(
 $('btnPrev').addEventListener('click', () => { S.page = Math.max(1, S.page - 1); loadTasks(true); });
 $('btnNext').addEventListener('click', () => { S.page += 1; loadTasks(true); });
 
+/* 按文件 / 按文件夹 */
+$('taskView').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-view]');
+  if (!btn || btn.dataset.view === S.tasksView) return;
+  S.tasksView = btn.dataset.view;
+  document.querySelectorAll('#taskView button').forEach(b =>
+    b.classList.toggle('on', b.dataset.view === S.tasksView));
+  S.taskSel.clear();
+  S.taskSelDirs.clear();
+  S.taskSig = '';
+  S.page = 1;
+  loadTasks(true);
+});
+
+function setTaskView(view) {
+  if (S.tasksView === view) return;
+  S.tasksView = view;
+  S.taskSel.clear();
+  S.taskSelDirs.clear();
+  document.querySelectorAll('#taskView button').forEach(b =>
+    b.classList.toggle('on', b.dataset.view === view));
+  S.taskSig = '';
+  if (S.tab === 'tasks') loadTasks(true);
+}
+
 $('statusChips').addEventListener('click', e => {
   const btn = e.target.closest('.chip-btn');
   if (!btn) return;
@@ -1034,7 +1911,9 @@ function fileSig(data) {
   });
 }
 
+let filesSeq = 0;
 async function loadFiles(force) {
+  const seq = ++filesSeq;      // 自动刷新和手动刷新可能撞车，只认最后一次
   const params = new URLSearchParams();
   if (S.files.path) params.set('path', S.files.path);
   if (S.files.q) params.set('q', S.files.q);
@@ -1045,6 +1924,7 @@ async function loadFiles(force) {
     toast(e.message, true);
     return;
   }
+  if (seq !== filesSeq) return;
   S.files.data = data;
   if (!data.ok) {
     $('crumbs').innerHTML = '<span class="crumb last">—</span>';
@@ -1052,9 +1932,11 @@ async function loadFiles(force) {
     $('fileMeta').textContent = '—';
     return;
   }
-  // 选中项只保留当前目录里仍存在的
+  // 选中项只保留当前目录里仍存在的（勾文件夹选中的要留着，切目录不该丢）
   const visible = new Set(data.files.map(f => f.path));
-  [...S.files.sel].forEach(p => { if (!visible.has(p)) S.files.sel.delete(p); });
+  [...S.files.sel].forEach(p => {
+    if (!visible.has(p) && !S.files.dirSel.has(p)) S.files.sel.delete(p);
+  });
 
   const sig = fileSig(data);
   if (!force && sig === S.files.sig) { updateFileSelInfo(); return; }
@@ -1063,6 +1945,68 @@ async function loadFiles(force) {
   renderCrumbs(data);
   renderFiles(data);
   updateFileSelInfo();
+}
+
+/* ---------- 文件夹勾选 ---------- */
+
+function pathSep(p) { return p.includes('\\') ? '\\' : '/'; }
+
+function dirPickState(dirPath) {
+  const cached = S.files.dirPaths.get(dirPath);
+  if (cached) {
+    if (!cached.length) return 'none';
+    let hit = 0;
+    cached.forEach(p => { if (S.files.sel.has(p)) hit += 1; });
+    if (hit === 0) return 'none';
+    return hit === cached.length ? 'all' : 'some';
+  }
+  // 还没展开过：只要选中项里有落在这个目录下的，就显示半选
+  const prefix = dirPath.replace(/[\\/]+$/, '') + pathSep(dirPath);
+  for (const p of S.files.sel) {
+    if (p.startsWith(prefix)) return 'some';
+  }
+  return 'none';
+}
+
+/* 展开一个目录并把里面的 strm 加入选中，供文件夹勾选和全选复用 */
+async function pickDir(dirPath, on = true) {
+  let paths = S.files.dirPaths.get(dirPath);
+  if (!paths) {
+    const r = await post('/api/files/expand', { dirs: [dirPath] });
+    paths = (r.per && r.per[dirPath]) || [];
+    S.files.dirPaths.set(dirPath, paths);
+  }
+  if (on) {
+    paths.forEach(p => { S.files.sel.add(p); S.files.dirSel.add(p); });
+  } else {
+    paths.forEach(p => { S.files.sel.delete(p); S.files.dirSel.delete(p); });
+    S.files.dirPaths.delete(dirPath);
+  }
+  return paths;
+}
+
+async function toggleDirPick(box) {
+  const dir = box.dataset.dirpick;
+  box.disabled = true;
+  try {
+    const paths = await pickDir(dir, box.checked);
+    if (box.checked && !paths.length) {
+      S.files.dirPaths.delete(dir);
+      toast('这个文件夹里没有 strm');
+    }
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    box.disabled = false;
+    updateFileSelInfo();
+  }
+}
+
+/* 切换目录后只清掉手选的，勾文件夹选中的保留 */
+function pruneSelection() {
+  [...S.files.sel].forEach(p => {
+    if (!S.files.dirSel.has(p)) S.files.sel.delete(p);
+  });
 }
 
 function renderCrumbs(data) {
@@ -1082,7 +2026,7 @@ $('crumbs').addEventListener('click', e => {
   S.files.path = target;
   S.files.q = '';
   $('fileSearch').value = '';
-  S.files.sel.clear();
+  pruneSelection();
   S.files.sig = '';
   loadFiles(true);
 });
@@ -1092,8 +2036,10 @@ function renderFiles(data) {
   const rows = [];
 
   (data.dirs || []).forEach(d => {
-    rows.push(`<tr>
-      <td></td>
+    const st = dirPickState(d.path);
+    rows.push(`<tr class="dirrow${st === 'all' ? ' sel' : ''}">
+      <td><input class="check" type="checkbox" data-dirpick="${esc(d.path)}"
+                 title="选中这个文件夹里的所有 strm"${st === 'all' ? ' checked' : ''}></td>
       <td><span class="dir" data-dir="${esc(d.path)}">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1143,15 +2089,39 @@ function renderFiles(data) {
 
 function updateFileSelInfo() {
   const n = S.files.sel.size;
-  $('fileSelInfo').textContent = `已选 ${n} 项`;
+  const pickedDirs = S.files.dirPaths.size;
+  $('fileSelInfo').innerHTML =
+    `已选 <b>${n}</b> 项` + (pickedDirs ? `（含 ${pickedDirs} 个文件夹）` : '');
+  $('btnFileScrape').textContent = n > 1 ? `开始刮削 (${n})` : '开始刮削';
+  $('btnFileRescrape').textContent = n > 1 ? `开始重刮 (${n})` : '开始重刮';
   $('btnFileScrape').disabled = n === 0;
+  $('btnFileRescrape').disabled = n === 0;
   $('btnFileDel').disabled = n === 0;
-  $('btnFileDelNfo').disabled = n === 0;
+  if (n === 0) closeFileMenu();
   const files = (S.files.data && S.files.data.files) || [];
-  const allSel = files.length > 0 && files.every(f => S.files.sel.has(f.path));
+  const dirs = (S.files.data && S.files.data.dirs) || [];
+  // 全选要连文件夹一起看：没展开过的目录不算全选，空目录不影响
+  const allSel = (files.length > 0 || dirs.length > 0)
+    && files.every(f => S.files.sel.has(f.path))
+    && dirs.every(d => {
+      const cached = S.files.dirPaths.get(d.path);
+      return cached ? (cached.length === 0 || dirPickState(d.path) === 'all') : false;
+    });
   $('fileAll').checked = allSel;
+  // 文件行
+  document.querySelectorAll('#fileBody input[data-pick]').forEach(box => {
+    box.checked = S.files.sel.has(box.dataset.pick);
+  });
   document.querySelectorAll('#fileBody tr[data-path]').forEach(tr => {
     tr.classList.toggle('sel', S.files.sel.has(tr.dataset.path));
+  });
+  // 文件夹行：全选打勾，部分选中打横杠
+  document.querySelectorAll('#fileBody input[data-dirpick]').forEach(box => {
+    const st = dirPickState(box.dataset.dirpick);
+    box.checked = st === 'all';
+    box.indeterminate = st === 'some';
+    const row = box.closest('tr');
+    if (row) row.classList.toggle('sel', st === 'all');
   });
 }
 
@@ -1164,7 +2134,7 @@ $('fileBody').addEventListener('click', async e => {
     S.files.path = dir.dataset.dir;
     S.files.q = '';
     $('fileSearch').value = '';
-    S.files.sel.clear();
+    pruneSelection();
     S.files.sig = '';
     loadFiles(true);
     return;
@@ -1177,8 +2147,9 @@ $('fileBody').addEventListener('click', async e => {
   btn.disabled = true;
   try {
     if (btn.dataset.act === 'scrape') {
-      const r = await post('/api/files/scrape', { paths: [path] });
-      toast(r.message);
+      const r = await post('/api/files/scrape', { paths: [path], now: true });
+      toast(r.message, !r.ok);
+      if (r.ok) watchFiles();
     } else {
       if (!confirm(`删除 ${path.split(/[\\/]/).pop()} 的产物（海报 / 背景图 / NFO）？`)) {
         btn.disabled = false;
@@ -1198,6 +2169,8 @@ $('fileBody').addEventListener('click', async e => {
 });
 
 $('fileBody').addEventListener('change', e => {
+  const dirBox = e.target.closest('input[data-dirpick]');
+  if (dirBox) { toggleDirPick(dirBox); return; }
   const box = e.target.closest('input[data-pick]');
   if (!box) return;
   if (box.checked) S.files.sel.add(box.dataset.pick);
@@ -1205,41 +2178,111 @@ $('fileBody').addEventListener('change', e => {
   updateFileSelInfo();
 });
 
-$('fileAll').addEventListener('change', e => {
+$('fileAll').addEventListener('change', async e => {
   const files = (S.files.data && S.files.data.files) || [];
-  if (e.target.checked) files.forEach(f => S.files.sel.add(f.path));
-  else files.forEach(f => S.files.sel.delete(f.path));
-  document.querySelectorAll('#fileBody input[data-pick]').forEach(box => {
-    box.checked = e.target.checked;
-  });
-  updateFileSelInfo();
+  const dirs = (S.files.data && S.files.data.dirs) || [];
+  const box = e.target;
+  box.disabled = true;
+  try {
+    if (box.checked) {
+      files.forEach(f => S.files.sel.add(f.path));
+      // 这一层如果有文件夹就一起勾上，否则纯目录层点全选会毫无反应
+      await Promise.all(dirs.map(d => pickDir(d.path, true).catch(() => {})));
+      document.querySelectorAll('#fileBody input[data-pick]').forEach(b => { b.checked = true; });
+    } else {
+      files.forEach(f => S.files.sel.delete(f.path));
+      dirs.forEach(d => {
+        (S.files.dirPaths.get(d.path) || []).forEach(p => {
+          S.files.sel.delete(p);
+          S.files.dirSel.delete(p);
+        });
+        S.files.dirPaths.delete(d.path);
+      });
+      document.querySelectorAll('#fileBody input[data-pick]').forEach(b => { b.checked = false; });
+    }
+  } finally {
+    box.disabled = false;
+    updateFileSelInfo();
+  }
 });
 
-async function batchFiles(kind) {
-  const paths = [...S.files.sel];
-  if (!paths.length) { toast('先勾选文件', true); return; }
-  if (kind === 'scrape') {
-    try {
-      const r = await post('/api/files/scrape', { paths });
-      toast(r.message);
-      S.files.sig = '';
-      setTimeout(() => loadFiles(true), 800);
-    } catch (e) { toast(e.message, true); }
-    return;
+/* 删除是破坏性操作，收进下拉菜单，不和「开始刮削」并排 */
+function closeFileMenu() { $('fileDelMenu').hidden = true; }
+
+$('btnFileDel').addEventListener('click', e => {
+  e.stopPropagation();
+  const menu = $('fileDelMenu');
+  if (menu.hidden) {
+    const n = S.files.sel.size;
+    const d = S.files.dirPaths.size;
+    $('fileDelNote').textContent =
+      `将对选中的 ${n} 个文件操作${d ? `（含 ${d} 个文件夹里的）` : ''}，删掉后下次刮削会重新生成`;
   }
-  const what = kind === 'nfo' ? ['nfo'] : ['poster', 'fanart', 'thumb', 'nfo'];
-  const label = kind === 'nfo' ? 'NFO 文件' : '产物（海报 / 背景图 / NFO）';
-  if (!confirm(`删除选中的 ${paths.length} 个文件的${label}？删除后可以重新刮削生成。`)) return;
+  menu.hidden = !menu.hidden;
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#fileDelMenu') && !e.target.closest('#btnFileDel')) closeFileMenu();
+});
+
+const DEL_KINDS = {
+  all: { kinds: ['poster', 'fanart', 'thumb', 'nfo'], label: '全部产物（海报 / 背景图 / NFO）' },
+  image: { kinds: ['poster', 'fanart', 'thumb'], label: '海报和背景图' },
+  nfo: { kinds: ['nfo'], label: 'NFO' },
+};
+
+$('fileDelMenu').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-del]');
+  if (!btn) return;
+  closeFileMenu();
+  const spec = DEL_KINDS[btn.dataset.del];
+  const paths = [...S.files.sel];
+  if (!spec || !paths.length) { toast('先勾选文件', true); return; }
+  if (!confirm(`删除选中的 ${paths.length} 个文件的${spec.label}？删掉后下次刮削会重新生成。`)) return;
   try {
-    const r = await post('/api/files/delete', { paths, what, reset: true });
+    const r = await post('/api/files/delete', { paths, what: spec.kinds, reset: true });
     toast(r.message, !r.ok);
     S.files.sig = '';
     loadFiles(true);
-  } catch (e) { toast(e.message, true); }
+  } catch (err) { toast(err.message, true); }
+});
+
+/* 任务在跑的时候文件管理自动跟随刷新（见 pollStatus），这里只留一个空函数名
+   给旧的调用点用，避免散落的 watchFiles() 全改一遍 */
+function watchFiles() { S.filesTick = 0; }
+
+/* force=false：只补缺的，齐全的跳过；force=true：全部重刮并覆盖旧产物 */
+async function scrapeSelected(force) {
+  const paths = [...S.files.sel];
+  if (!paths.length) { toast('先勾选文件', true); return; }
+  if (force && !confirm(
+    `把选中的 ${paths.length} 个文件全部重新刮削？\n现有的海报 / 背景图 / NFO 会被覆盖。`)) return;  const btns = [$('btnFileScrape'), $('btnFileRescrape')];
+  btns.forEach(b => { b.disabled = true; });
+  try {
+    // 只选了一个就立刻单独执行，不必等批量队列里排在前面的几百个
+    const r = await post('/api/files/scrape',
+      { paths, now: paths.length === 1, force: !!force });
+    toast(r.message, !r.ok);
+    S.files.sig = '';
+    setTimeout(() => loadFiles(true), 700);
+    watchFiles();
+    // 按文件夹选的：任务列表切到文件夹视图，并把刚选的文件夹置顶标出来，
+    // 但先不展开 —— 里面的文件等用户点开再看
+    if (r.started && S.files.dirPaths.size) {
+      S.pinnedDirs = new Set(S.files.dirPaths.keys());
+      S.pinnedScrolled = false;
+      setTaskView('dir');
+    }
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    updateFileSelInfo();
+  }
 }
-$('btnFileScrape').addEventListener('click', () => batchFiles('scrape'));
-$('btnFileDel').addEventListener('click', () => batchFiles('all'));
-$('btnFileDelNfo').addEventListener('click', () => batchFiles('nfo'));
+
+$('btnFileScrape').addEventListener('click', () => scrapeSelected(false));
+$('btnFileRescrape').addEventListener('click', () => scrapeSelected(true));
+
 $('btnFileRefresh').addEventListener('click', () => { S.files.sig = ''; loadFiles(true); });
 
 let fileTimer = null;
@@ -1260,8 +2303,8 @@ let srvCache = '';
 function renderServers(list) {
   const box = $('serverList');
   if (!list.length) {
-    const html = '<div class="empty" style="grid-column:1/-1">未配置媒体服务器，'
-      + '在 config.yaml 的 servers 段添加 Emby 或 Jellyfin 即可</div>';
+    const html = '<div class="empty" style="grid-column:1/-1">还没有配置媒体服务器，'
+      + '去「设置」页填 Emby / Jellyfin 的地址和 API 密钥就行</div>';
     if (html !== srvCache) { srvCache = html; box.innerHTML = html; }
     return;
   }
@@ -1396,7 +2439,15 @@ $('previewModal').addEventListener('click', e => {
 
 /* ---------- 手动选帧 ---------- */
 
-const PICK = { path: '', duration: 0, t: 0, seq: 0 };
+const PICK = {
+  path: '', duration: 0, t: 0, seq: 0,
+  // 取景框：cropMode 决定框的比例和作用对象，crop 是相对整帧的 0–1 坐标
+  cropMode: 'poster', crop: { x: 0, y: 0, w: 1, h: 1 }, fresh: true,
+  ratios: { poster: [1000, 1500], fanart: [1920, 1080], thumb: [1000, 562] },
+  fit: null,
+  // 画面视图：zoom=1 是「适应窗口」，放大后靠 pan 平移；取景框坐标始终是相对整帧的 0–1
+  zoom: 1, pan: { x: 0, y: 0 }, base: null,
+};
 
 function frameUrl(path, t, width) {
   let url = `/api/frames/frame?t=${Number(t).toFixed(2)}&path=${encodeURIComponent(path)}`;
@@ -1404,14 +2455,188 @@ function frameUrl(path, t, width) {
   return url;
 }
 
+function cropParam() {
+  const c = PICK.crop;
+  return `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.w.toFixed(4)},${c.h.toFixed(4)}`;
+}
+
+/* 取景框比例：正数表示锁定的宽高比，null 表示自由或整帧 */
+function pickAspect() {
+  if (PICK.cropMode === 'free' || PICK.cropMode === 'none') return null;
+  const r = PICK.ratios[PICK.cropMode] || [1, 1];
+  return r[0] / Math.max(1, r[1]);
+}
+
+/* 归一化坐标下的宽高比（把画面本身的宽高比除掉），拖拽时按它锁比例 */
+function pickNormRatio() {
+  const a = pickAspect();
+  if (!a) return null;
+  const f = PICK.fit || { iw: 16, ih: 9 };
+  return a / (f.iw / f.ih);
+}
+
+/* 画面在舞台里的实际显示区域（1 倍时按 contain 铺满，放大后可以平移） */
+function baseSize() {
+  const stage = $('pickStage');
+  const img = $('pickImg');
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  const iw = img.naturalWidth || 16, ih = img.naturalHeight || 9;
+  if (!sw || !sh) return null;
+  const scale = Math.min(sw / iw, sh / ih);
+  return { sw, sh, iw, ih, baseW: iw * scale, baseH: ih * scale };
+}
+
+function clampNum(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+/* 把「缩放 + 平移」算成画面矩形：放大后画面能整体移动，但不会露出舞台底色 */
+function stageFit() {
+  const b = PICK.base || baseSize();
+  if (!b) return null;
+  const w = b.baseW * PICK.zoom, h = b.baseH * PICK.zoom;
+  const maxX = Math.max(0, (w - b.sw) / 2), maxY = Math.max(0, (h - b.sh) / 2);
+  PICK.pan.x = clampNum(PICK.pan.x, -maxX, maxX);
+  PICK.pan.y = clampNum(PICK.pan.y, -maxY, maxY);
+  return {
+    left: (b.sw - w) / 2 + PICK.pan.x,
+    top: (b.sh - h) / 2 + PICK.pan.y,
+    width: w, height: h, iw: b.iw, ih: b.ih,
+    sw: b.sw, sh: b.sh,
+  };
+}
+
+let spaceHeld = false;      // 按住空格随时可以拖画面平移
+
+function syncZoomLabel() {
+  const pct = Math.round(PICK.zoom * 100);
+  $('pickZoomFit').textContent = `${pct}%`;
+  $('pickZoomOut').disabled = PICK.zoom <= 1.001;
+  $('pickZoomIn').disabled = PICK.zoom >= 7.999;
+  $('pickStage').classList.toggle('can-pan', PICK.zoom > 1.001 || spaceHeld);
+}
+
+/* 把当前的缩放/平移落到画面元素上，再重画取景框 */
+function applyView() {
+  PICK.fit = stageFit();
+  const f = PICK.fit, img = $('pickImg');
+  if (f && img.naturalWidth) {
+    img.style.left = `${f.left}px`;
+    img.style.top = `${f.top}px`;
+    img.style.width = `${f.width}px`;
+    img.style.height = `${f.height}px`;
+  }
+  syncZoomLabel();
+  placeBox();
+}
+
+/* 以 anchor（舞台坐标）为不动点缩放 */
+function setZoom(z, anchor) {
+  const b = PICK.base || baseSize();
+  if (!b) return;
+  z = clampNum(z, 1, 8);
+  const prev = stageFit() || { left: 0, top: 0, width: b.baseW || 1, height: b.baseH || 1 };
+  const a = anchor || { x: b.sw / 2, y: b.sh / 2 };
+  const px = prev.width ? (a.x - prev.left) / prev.width : 0.5;
+  const py = prev.height ? (a.y - prev.top) / prev.height : 0.5;
+  PICK.zoom = z;
+  const nw = b.baseW * z, nh = b.baseH * z;
+  PICK.pan.x = a.x - px * nw - (b.sw - nw) / 2;
+  PICK.pan.y = a.y - py * nh - (b.sh - nh) / 2;
+  applyView();
+}
+
+function resetView() {
+  PICK.zoom = 1;
+  PICK.pan = { x: 0, y: 0 };
+  applyView();
+}
+
+function defaultCrop() {
+  const f = PICK.fit || { iw: 16, ih: 9 };
+  const aspect = pickAspect();
+  if (!aspect) return { x: 0.06, y: 0.06, w: 0.88, h: 0.88 };
+  const k = aspect / (f.iw / f.ih);      // 归一化坐标下的宽高比
+  let w, h;
+  if (k >= 1) { w = 0.92; h = w / k; } else { h = 0.92; w = h * k; }
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+function clampCrop(c) {
+  const min = 0.03;
+  let w = Math.min(1, Math.max(min, c.w));
+  let h = Math.min(1, Math.max(min, c.h));
+  let x = Math.min(1 - w, Math.max(0, c.x));
+  let y = Math.min(1 - h, Math.max(0, c.y));
+  return { x, y, w, h };
+}
+
+function placeBox() {
+  const box = $('pickBox');
+  const f = PICK.fit;
+  if (PICK.cropMode === 'none' || !f) { box.hidden = true; return; }
+  const c = PICK.crop;
+  box.hidden = false;
+  const info = $('pickCropInfo');
+  if (info) info.textContent = `取景 ${Math.round(c.w * 100)}% × ${Math.round(c.h * 100)}%`;
+  box.style.left = `${f.left + c.x * f.width}px`;
+  box.style.top = `${f.top + c.y * f.height}px`;
+  box.style.width = `${c.w * f.width}px`;
+  box.style.height = `${c.h * f.height}px`;
+}
+
+let cropTimer = null;
+function refreshCropView() {
+  const img = $('pickCropView');
+  if (!PICK.path) { img.removeAttribute('src'); return; }
+  clearTimeout(cropTimer);
+  cropTimer = setTimeout(() => {
+    if (!PICK.path) return;
+    const box = PICK.cropMode === 'none' ? '' : cropParam();
+    img.src = frameUrl(PICK.path, PICK.t, 520) + (box ? `&crop=${box}` : '');
+  }, 220);
+}
+
+const CROP_LABEL = { poster: '海报 2:3', fanart: '背景图 16:9', free: '自由比例', none: '整帧' };
+
+function updatePickTitle() {
+  const mode = PICK.cropMode;
+  const tip = mode === 'none' ? '不裁切，整帧出图' : '拖动画面里的框可调整位置，拖四角改大小';
+  $('pickTitle').textContent = `手动选帧 · ${CROP_LABEL[mode] || ''}（${tip}）`;
+  $('btnPickApply').textContent = mode === 'none' ? '使用整帧' : '确定裁切';
+  $('pickHint').textContent = mode === 'none'
+    ? '滚轮缩放画面，放大后拖画面可平移'
+    : '滚轮缩放 · 拖框平移 · 拖四角改大小 · 空格拖画面 · Alt 画新框';
+}
+
+function setCropMode(mode, redraw) {
+  PICK.cropMode = mode;
+  document.querySelectorAll('#pickCropBar button[data-crop]').forEach(b =>
+    b.classList.toggle('on', b.dataset.crop === mode));
+  if (redraw !== false) {
+    PICK.crop = defaultCrop();
+    PICK.fresh = false;
+    placeBox();
+    refreshCropView();
+  }
+  $('pickCropReset').disabled = mode === 'none';
+  updatePickTitle();
+}
+
 async function openPicker(path) {
   PICK.path = path;
   PICK.duration = 0;
   PICK.t = 0;
   PICK.seq++;
+  PICK.fit = null;
+  PICK.fresh = true;
+  PICK.zoom = 1;
+  PICK.pan = { x: 0, y: 0 };
+  PICK.base = null;
+  PICK.crop = { x: 0, y: 0, w: 1, h: 1 };
+  $('pickBox').hidden = true;
 
-  $('pickTitle').textContent = '手动选帧 · ' + path.split(/[\\/]/).pop();
+  $('pickTitle').textContent = '手动选帧（正在抽帧…）';
   $('pickImg').removeAttribute('src');
+  $('pickCropView').removeAttribute('src');
   $('pickStrip').innerHTML = '<span class="nothing">正在抽帧…</span>';
   $('pickPoster').removeAttribute('src');
   $('pickMeta').textContent = '—';
@@ -1436,6 +2661,10 @@ async function openPicker(path) {
   if (PICK.path !== path) return;   // 期间又打开了别的文件
 
   PICK.duration = plan.duration || 0;
+  if (plan.ratios) PICK.ratios = plan.ratios;
+  // 默认按海报 2:3 取景；只勾了背景图时切到 16:9
+  setCropMode($('pickPosterOn').checked ? 'poster'
+    : ($('pickFanartOn').checked ? 'fanart' : 'free'), false);
   const art = plan.artifacts || {};
   if (art.poster) $('pickPoster').src = imgUrl(path, 'poster', art.poster);
   $('pickMeta').textContent =
@@ -1461,14 +2690,41 @@ function renderStrip(cands) {
     box.innerHTML = '<span class="nothing">没有可用时间点</span>';
     return;
   }
+  // 先只放占位：网络源（115 网盘）一次并发十几张会直接限流，主帧都抢不到带宽。
+  // 等主帧出来后由 loadStrip() 一张张补齐。
+  stripSeq++;
   box.innerHTML = cands.map(c => `<figure data-t="${c.t}">
-      <img loading="lazy" alt="" src="${esc(frameUrl(PICK.path, c.t, 260))}"
-           onerror="this.style.opacity=.16">
+      <img alt="" data-src="${esc(frameUrl(PICK.path, c.t, 260))}">
       <figcaption>${esc(c.label)}</figcaption>
     </figure>`).join('');
   box.querySelectorAll('figure').forEach(fig => {
     fig.addEventListener('click', () => selectFrame(parseFloat(fig.dataset.t), true));
   });
+}
+
+let stripSeq = 0;
+let stripRunning = false;
+
+async function loadStrip() {
+  if (stripRunning) return;
+  stripRunning = true;
+  try {
+    const seq = stripSeq;
+    const imgs = [...document.querySelectorAll('#pickStrip img[data-src]')];
+    for (const im of imgs) {
+      if (seq !== stripSeq || !im.isConnected) return;   // 换了文件 / 关了面板
+      const src = im.dataset.src;
+      if (!src) continue;
+      await new Promise(done => {
+        const probe = new Image();
+        probe.onload = () => { im.src = src; im.removeAttribute('data-src'); done(); };
+        probe.onerror = () => { im.style.opacity = .16; im.removeAttribute('data-src'); done(); };
+        probe.src = src;
+      });
+    }
+  } finally {
+    stripRunning = false;
+  }
 }
 
 function markSelection() {
@@ -1493,6 +2749,27 @@ function selectFrame(t, load) {
   if (load !== false) showFrame();
 }
 
+function syncStage() {
+  PICK.base = baseSize();
+  PICK.fit = stageFit();
+  if (PICK.fresh && PICK.fit) {
+    PICK.crop = defaultCrop();
+    PICK.fresh = false;
+  }
+  applyView();
+  refreshCropView();
+}
+
+/* 窗口缩放 / 面板尺寸变化后，画面显示区域会变，缩放比例与裁切框都要跟着重新贴合 */
+function refitStage() {
+  if ($('pickModal').hidden || !$('pickImg').naturalWidth) return;
+  if (drag) return;
+  PICK.base = baseSize();
+  applyView();
+}
+window.addEventListener('resize', refitStage);
+if (window.ResizeObserver) new ResizeObserver(refitStage).observe($('pickStage'));
+
 function showFrame() {
   const seq = ++PICK.seq;
   $('pickStageHint').hidden = false;
@@ -1502,11 +2779,14 @@ function showFrame() {
     if (seq !== PICK.seq) return;
     $('pickImg').src = probeImg.src;
     $('pickStageHint').hidden = true;
+    syncStage();
+    loadStrip();          // 主帧拿到之后再一张张补缩略图
   };
   probeImg.onerror = () => {
     if (seq !== PICK.seq) return;
     $('pickStageHint').hidden = false;
     $('pickStageHint').textContent = '这一帧抓不下来，换个时间点再试';
+    loadStrip();
   };
   probeImg.src = frameUrl(PICK.path, PICK.t, 0);
 }
@@ -1525,10 +2805,217 @@ $('pickRange').addEventListener('change', () => { clearTimeout(pickTimer); showF
 $('pickBack').addEventListener('click', () => selectFrame(PICK.t - 1, true));
 $('pickFwd').addEventListener('click', () => selectFrame(PICK.t + 1, true));
 
+/* ---------- 取景框：拖框内平移、拖四角缩放、空白处拖出新框 ---------- */
+
+let drag = null;
+
+function stagePoint(e) {
+  const r = $('pickStage').getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function normPoint(p, free) {
+  const f = PICK.fit;
+  if (!f) return { x: 0, y: 0 };
+  const x = (p.x - f.left) / f.width;
+  const y = (p.y - f.top) / f.height;
+  if (free) return { x, y };        // 拖动中不夹紧，指针滑出画面也不会卡住框
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
+function applyResize(handle, n) {
+  const s = drag.start, k = drag.k;
+  const west = handle.includes('w'), north = handle.includes('n');
+  const ax = west ? s.x + s.w : s.x;     // 不动的竖边
+  const ay = north ? s.y + s.h : s.y;    // 不动的横边
+  let w = Math.max(0.03, west ? ax - n.x : n.x - ax);
+  let h = Math.max(0.03, north ? ay - n.y : n.y - ay);
+  if (k) {                                // 锁定比例时取变化更大的一边做主导
+    if (w / k > h) h = w / k; else w = h * k;
+  }
+  w = Math.min(w, west ? ax : 1 - ax);
+  h = Math.min(h, north ? ay : 1 - ay);
+  if (k) {
+    if (w / k > h) w = h * k; else h = w / k;
+  }
+  PICK.crop = clampCrop({ x: west ? ax - w : ax, y: north ? ay - h : ay, w, h });
+  placeBox();
+  refreshCropView();
+}
+
+function applyNewBox(n) {
+  const k = drag.k, a = drag.anchor;
+  let w = Math.abs(n.x - a.x), h = Math.abs(n.y - a.y);
+  if (k) {
+    if (w / k > h) h = w / k; else w = h * k;
+  }
+  w = Math.max(0.03, w);
+  h = Math.max(0.03, h);
+  PICK.crop = clampCrop({
+    x: n.x >= a.x ? a.x : a.x - w,
+    y: n.y >= a.y ? a.y : a.y - h,
+    w, h,
+  });
+}
+
+function insideImage(p) {
+  const f = PICK.fit;
+  return !!f && p.x >= f.left && p.x <= f.left + f.width
+    && p.y >= f.top && p.y <= f.top + f.height;
+}
+
+$('pickStage').addEventListener('pointerdown', e => {
+  if ($('pickModal').hidden || !PICK.fit || !$('pickImg').naturalWidth) return;
+  if (e.target.closest('.pick-zoom')) return;
+  const p = stagePoint(e);
+  // 中键 / 空格 + 左键：随时可以拖画面平移，哪怕指针压在取景框上
+  if ((e.button === 1 || (e.button === 0 && spaceHeld)) && PICK.zoom > 1.001) {
+    drag = { mode: 'pan', at: p, start: { ...PICK.pan } };
+    $('pickStage').classList.add('panning');
+    $('pickStage').setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+  if (e.button !== 0) return;
+  const handle = e.target.dataset ? e.target.dataset.h : null;
+  const onBox = !!e.target.closest('.pick-box');
+
+  if (PICK.cropMode === 'none') {
+    // 整帧模式没有框，放大后只允许拖画面平移
+    if (PICK.zoom > 1.001) drag = { mode: 'pan', at: p, start: { ...PICK.pan } };
+  } else if (handle) {
+    drag = { mode: 'resize', handle, start: { ...PICK.crop }, k: pickNormRatio() };
+  } else if (onBox) {
+    drag = { mode: 'move', at: p, start: { ...PICK.crop } };
+    $('pickBox').classList.add('dragging');
+  } else if (!e.altKey && (PICK.zoom > 1.001 || !insideImage(p))) {
+    // 放大后拖空白处＝平移画面；黑边里也不许画框（原来会把框拽到画面边缘）
+    drag = { mode: 'pan', at: p, start: { ...PICK.pan } };
+    $('pickStage').classList.add('panning');
+  } else {
+    const n = normPoint(p);
+    drag = { mode: 'new', anchor: n, k: pickNormRatio() };
+    PICK.crop = clampCrop({ x: n.x, y: n.y, w: 0.03, h: 0.03 });
+    placeBox();
+  }
+  if (!drag) return;
+  $('pickStage').setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+
+$('pickStage').addEventListener('pointermove', e => {
+  if (!drag) return;
+  const p = stagePoint(e);
+  if (drag.mode === 'pan') {
+    PICK.pan.x = drag.start.x + (p.x - drag.at.x);
+    PICK.pan.y = drag.start.y + (p.y - drag.at.y);
+    applyView();
+    return;
+  }
+  if (drag.mode === 'move') {
+    // 用像素位移换算，和缩放比例无关；超出画面由 clampCrop 收口
+    const f = PICK.fit;
+    const dx = f && f.width ? (p.x - drag.at.x) / f.width : 0;
+    const dy = f && f.height ? (p.y - drag.at.y) / f.height : 0;
+    PICK.crop = clampCrop({
+      x: drag.start.x + dx, y: drag.start.y + dy,
+      w: drag.start.w, h: drag.start.h,
+    });
+    placeBox();
+    refreshCropView();
+    return;
+  }
+  const n = normPoint(p, true);   // 自由坐标，出界交给 clampCrop 收口
+  if (drag.mode === 'resize') {
+    applyResize(drag.handle, n);
+  } else {
+    applyNewBox(n);
+    placeBox();
+    refreshCropView();
+  }
+});
+
+['pointerup', 'pointercancel'].forEach(ev =>
+  $('pickStage').addEventListener(ev, () => {
+    drag = null;
+    $('pickBox').classList.remove('dragging');
+    $('pickStage').classList.remove('panning');
+  }));
+
+/* ---------- 缩放：滚轮以指针为中心，按钮以画面中心 ---------- */
+$('pickStage').addEventListener('wheel', e => {
+  if ($('pickModal').hidden || !$('pickImg').naturalWidth) return;
+  e.preventDefault();
+  setZoom(PICK.zoom * (e.deltaY < 0 ? 1.16 : 1 / 1.16), stagePoint(e));
+}, { passive: false });
+
+$('pickZoomIn').addEventListener('click', () => setZoom(PICK.zoom * 1.25));
+$('pickZoomOut').addEventListener('click', () => setZoom(PICK.zoom / 1.25));
+$('pickZoomFit').addEventListener('click', resetView);
+
+/* 空格按住 = 临时平移模式（取景框盖住大半个画面时很有用） */
+document.addEventListener('keydown', e => {
+  if ($('pickModal').hidden || e.key !== ' ') return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''))) return;
+  if (!spaceHeld) { spaceHeld = true; syncZoomLabel(); }
+  e.preventDefault();
+});
+document.addEventListener('keyup', e => {
+  if (e.key !== ' ' || !spaceHeld) return;
+  spaceHeld = false;
+  syncZoomLabel();
+});
+window.addEventListener('blur', () => {
+  if (!spaceHeld) return;
+  spaceHeld = false;
+  syncZoomLabel();
+});
+
+$('pickCropBar').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-crop]');
+  if (!btn || btn.disabled || btn.dataset.crop === PICK.cropMode) return;
+  setCropMode(btn.dataset.crop);
+});
+
+$('pickCropReset').addEventListener('click', () => {
+  PICK.crop = defaultCrop();
+  PICK.fresh = false;
+  placeBox();
+  refreshCropView();
+});
+
+/* 勾了哪种图，就只让对应的取景比例可选；刚勾上的那种自动成为取景对象 */
+function syncCropModes(prefer) {
+  const manual = { poster: $('pickPosterOn').checked, fanart: $('pickFanartOn').checked };
+  document.querySelectorAll('#pickCropBar button[data-crop]').forEach(b => {
+    const key = b.dataset.crop;
+    b.disabled = key in manual ? !manual[key] : false;
+  });
+  if (prefer && manual[prefer]) { setCropMode(prefer); return; }
+  if (manual[PICK.cropMode] === false) {
+    setCropMode(manual.poster ? 'poster' : (manual.fanart ? 'fanart' : 'free'));
+  }
+}
+$('pickPosterOn').addEventListener('change', () => syncCropModes('poster'));
+$('pickFanartOn').addEventListener('change', () => syncCropModes('fanart'));
+$('pickThumbOn').addEventListener('change', () => syncCropModes());
+
+window.addEventListener('resize', refitStage);
+
+// 画面真正解码完成后才知道原始尺寸，这时候再量一次取景区域
+$('pickImg').addEventListener('load', syncStage);
+
 function closePicker() {
   $('pickModal').hidden = true;
   PICK.seq++;
   PICK.path = '';
+  drag = null;
+  PICK.zoom = 1;
+  PICK.pan = { x: 0, y: 0 };
+  PICK.base = null;
+  spaceHeld = false;
+  clearTimeout(cropTimer);
+  $('pickCropView').removeAttribute('src');
 }
 $('btnClosePick').addEventListener('click', closePicker);
 $('pickModal').addEventListener('click', e => {
@@ -1551,10 +3038,15 @@ $('btnPickApply').addEventListener('click', async () => {
   const btn = $('btnPickApply');
   btn.disabled = true;
   btn.textContent = '生成中…';
+  // 取景框只作用于它对应的那种图：海报模式只裁海报，背景图模式只裁背景图
+  const box = PICK.cropMode === 'none' ? null
+    : [PICK.crop.x, PICK.crop.y, PICK.crop.w, PICK.crop.h].map(v => Number(v.toFixed(4)));
   try {
     const r = await post('/api/frames/apply', {
       path: PICK.path, seconds: PICK.t, kinds,
       refresh: $('pickRefreshOn').checked,
+      crop: box,
+      crop_for: PICK.cropMode === 'free' ? 'all' : PICK.cropMode,
     });
     toast(r.message);
     closePicker();
@@ -1563,7 +3055,7 @@ $('btnPickApply').addEventListener('click', async () => {
     toast(e.message, true);
     btn.disabled = false;
   } finally {
-    btn.textContent = '使用这一帧';
+    btn.textContent = PICK.cropMode === 'none' ? '使用整帧' : '确定裁切';
   }
 });
 
@@ -1586,8 +3078,14 @@ async function loadAccount() {
   const enabled = account.auth_enabled;
   $('btnAccount').hidden = !enabled;
   $('btnLogoutTop').hidden = !enabled;
-  $('btnAccount').textContent = enabled ? '账号 · ' + account.username : '账号';
+  $('btnAccount').textContent = enabled ? '账号 · ' + account.username : '设置';
   $('pwNotice').hidden = !(enabled && account.default_password);
+  $('accUser').value = enabled ? account.username : '';
+  $('setAccHint').textContent = enabled
+    ? `当前账号 ${account.username}，登录状态保持 ${Math.round(account.session_hours / 24)} 天`
+      + (account.default_password ? ' · 还是默认密码，建议改掉' : '')
+    : '当前没有启用登录（web.auth.enabled = false）';
+  $('btnSaveAccount').disabled = !enabled;
 }
 
 function accMsg(text, kind) {
@@ -1598,19 +3096,15 @@ function accMsg(text, kind) {
 }
 
 function openAccount() {
-  if (!account || !account.auth_enabled) { toast('当前没有启用登录', true); return; }
-  accMsg('');
-  $('accUser').value = account.username;
-  $('accCurrent').value = '';
-  $('accNew').value = '';
-  $('accConfirm').value = '';
-  $('accountModal').hidden = false;
-  $('accUser').focus();
+  switchTab('settings');
+  const card = $('setAccount');
+  if (card) card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  setTimeout(() => { if ($('accCurrent')) $('accCurrent').focus(); }, 140);
 }
-function closeAccount() { $('accountModal').hidden = true; }
 
 async function saveAccount() {
   const btn = $('btnSaveAccount');
+  if (!account || !account.auth_enabled) { accMsg('当前没有启用登录，无需改账号', 'err'); return; }
   const username = $('accUser').value.trim();
   const current = $('accCurrent').value;
   const next = $('accNew').value;
@@ -1630,19 +3124,17 @@ async function saveAccount() {
     const r = await post('/api/account', body);
     account.username = r.username;
     account.default_password = r.default_password;
-    $('btnAccount').textContent = '账号 · ' + r.username;
-    $('pwNotice').hidden = !r.default_password;
     $('accCurrent').value = '';
     $('accNew').value = '';
     $('accConfirm').value = '';
     accMsg(r.message || '已保存', 'ok');
     toast(r.message || '账号已更新');
-    setTimeout(closeAccount, 1200);
+    loadAccount();
   } catch (e) {
     accMsg(e.message, 'err');
   } finally {
     btn.disabled = false;
-    btn.textContent = '保存';
+    btn.textContent = '保存账号';
   }
 }
 
@@ -1655,28 +3147,580 @@ async function logout() {
 
 $('btnAccount').addEventListener('click', openAccount);
 $('btnOpenAccount').addEventListener('click', openAccount);
-$('btnCloseAccount').addEventListener('click', closeAccount);
 $('btnSaveAccount').addEventListener('click', saveAccount);
 $('btnLogout').addEventListener('click', logout);
 $('btnLogoutTop').addEventListener('click', logout);
-$('accountModal').addEventListener('click', e => {
-  if (e.target === $('accountModal')) closeAccount();
-});
 document.addEventListener('keydown', e => {
+  // 选帧面板里用方向键微调取景框（Shift 加速），比鼠标拖更准
+  if (!$('pickModal').hidden && PICK.cropMode !== 'none'
+      && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || ''))) {
+    const step = e.shiftKey ? 0.02 : 0.004;
+    const d = {
+      ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+      ArrowUp: [0, -step], ArrowDown: [0, step],
+    }[e.key];
+    if (d) {
+      PICK.crop = clampCrop({
+        x: PICK.crop.x + d[0], y: PICK.crop.y + d[1],
+        w: PICK.crop.w, h: PICK.crop.h,
+      });
+      placeBox();
+      refreshCropView();
+      e.preventDefault();
+      return;
+    }
+  }
   if (e.key !== 'Escape') return;
   if (!$('pickModal').hidden) { closePicker(); return; }
-  if (!$('previewModal').hidden) { $('previewModal').hidden = true; return; }
-  if (!$('accountModal').hidden) closeAccount();
+  if (!$('previewModal').hidden) { $('previewModal').hidden = true; }
 });
 $('accConfirm').addEventListener('keydown', e => {
   if (e.key === 'Enter') saveAccount();
 });
+
+/* ---------- 设置 ---------- */
+
+function setMsg(text, kind) {
+  const el = $('setSaveMsg');
+  if (!text) { el.textContent = ''; el.style.color = ''; return; }
+  el.textContent = text;
+  el.style.color = kind === 'err' ? 'var(--err)' : (kind === 'ok' ? 'var(--ok)' : '');
+}
+
+function mapToText(map) {
+  return Object.entries(map || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+}
+
+/* 路径映射按「容器内路径=媒体服务器路径」逐行解析，空行忽略 */
+function textToMap(text) {
+  const out = {};
+  (text || '').split('\n').forEach(line => {
+    const raw = line.trim();
+    if (!raw || raw.startsWith('#')) return;
+    const at = raw.indexOf('=');
+    if (at <= 0) return;
+    const left = raw.slice(0, at).trim();
+    const right = raw.slice(at + 1).trim();
+    if (left) out[left] = right;
+  });
+  return out;
+}
+
+function serverEditorHtml(s, index) {
+  return `<div class="srv-edit" data-idx="${index}">
+    <div class="srv-top">
+      <label class="switch"><input type="checkbox" data-f="enabled"
+        ${s.enabled ? 'checked' : ''}> 启用</label>
+      <span class="srv-name">${esc(s.name || '新服务器')}</span>
+      <span class="grow"></span>
+      <button class="tiny danger" data-srvdel="${index}">删除</button>
+    </div>
+    <div class="set-grid">
+      <label class="fld"><span>名称</span>
+        <input type="text" data-f="name" value="${esc(s.name || '')}" placeholder="jellyfin-1"></label>
+      <label class="fld"><span>类型</span>
+        <select data-f="type">
+          <option value="auto"${s.type === 'auto' ? ' selected' : ''}>自动识别</option>
+          <option value="jellyfin"${s.type === 'jellyfin' ? ' selected' : ''}>Jellyfin</option>
+          <option value="emby"${s.type === 'emby' ? ' selected' : ''}>Emby</option>
+        </select></label>
+      <label class="fld wide"><span>服务器地址</span>
+        <input type="text" data-f="url" value="${esc(s.url || '')}"
+               placeholder="http://192.168.1.10:8096" spellcheck="false"></label>
+      <label class="fld wide"><span>API 密钥</span>
+        <input type="password" data-f="key" autocomplete="new-password"
+               placeholder="${s.has_key ? '已配置，留空表示不修改' : '还没配置，粘贴 API 密钥'}"></label>
+      <label class="fld wide"><span>路径映射（每行一条：容器内路径=媒体服务器路径）</span>
+        <textarea rows="2" data-f="map" spellcheck="false"
+          placeholder="/media=/vol1/1000/LitePan/strm">${esc(mapToText(s.path_map))}</textarea>
+        <small>两边路径不一致时必须配，否则刷新图片时匹配不到条目。一致就留空。</small></label>
+    </div>
+    <div class="set-grid">
+      <label class="switch"><input type="checkbox" data-f="refresh"
+        ${s.refresh_after !== false ? 'checked' : ''}> 刮完自动刷新图片</label>
+      <label class="switch"><input type="checkbox" data-f="scan"
+        ${s.scan_after ? 'checked' : ''}> 刮完触发媒体库扫描</label>
+      <label class="switch"><input type="checkbox" data-f="insecure"
+        ${s.insecure ? 'checked' : ''}> 允许自签名 https 证书</label>
+    </div>
+  </div>`;
+}
+
+function renderSrvEditor() {
+  const list = (S.settings && S.settings.servers) || [];
+  const box = $('srvEditor');
+  if (!list.length) {
+    box.innerHTML = '<div class="set-note">还没有配置媒体服务器。只生成文件不联动播放器的话可以不加；'
+      + '要自动刷新海报就点右上角「添加服务器」。</div>';
+    return;
+  }
+  box.innerHTML = list.map((s, i) => serverEditorHtml(s, i)).join('');
+}
+
+/* 把编辑器里的内容读回成 /api/settings 需要的结构 */
+function collectServers() {
+  return [...document.querySelectorAll('#srvEditor .srv-edit')].map(row => {
+    const val = f => row.querySelector(`[data-f="${f}"]`);
+    return {
+      name: val('name').value.trim(),
+      type: val('type').value,
+      enabled: val('enabled').checked,
+      url: val('url').value.trim(),
+      api_key: val('key').value.trim(),
+      path_map: textToMap(val('map').value),
+      refresh_after: val('refresh').checked,
+      scan_after: val('scan').checked,
+      insecure: val('insecure').checked,
+    };
+  });
+}
+
+async function loadSettings() {
+  let data;
+  try {
+    data = await api('/api/settings');
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  S.settings = data;
+  const scan = data.scan || {}, scrape = data.scrape || {};
+  $('setRoots').value = (scan.roots || []).join('\n');
+  $('setConcurrency').value = scan.concurrency ?? 3;
+  $('setTimeout').value = scan.timeout ?? 240;
+  $('setProbeTimeout').value = scan.probe_timeout ?? 20;
+  $('setMode').value = scan.mode || 'manual';
+  $('setRecursive').checked = scan.recursive !== false;
+  if (S.auto.tasks.length === 0) loadAutomation();   // 老配置里可能还留着全局间隔
+
+  $('setPosterMode').value = scrape.poster_mode || 'crop';
+  $('setOverwrite').value = scrape.overwrite || 'missing';
+  $('setQuality').value = scrape.jpeg_quality ?? 92;
+  $('setNfo').checked = scrape.write_nfo !== false;
+  $('setPosterOn').checked = scrape.write_poster !== false;
+  $('setFanartOn').checked = scrape.write_fanart !== false;
+  $('setThumbOn').checked = !!scrape.thumb;
+  $('setImageHint').textContent = scrape.images || '';
+
+  $('setFileHint').textContent = `保存到 ${data.config_file}`;
+  $('setFileHint').title = data.config_file;
+  $('setFileHint').style.color = '';
+  setMsg('');
+  renderSrvEditor();
+}
+
+$('btnSrvAdd').addEventListener('click', () => {
+  if (!S.settings) return;
+  S.settings.servers = [...collectServers(), {
+    name: '', type: 'auto', enabled: true, url: '', api_key: '', has_key: false,
+    path_map: {}, refresh_after: true, verify_after: true, scan_after: false,
+    insecure: false,
+  }];
+  renderSrvEditor();
+  const rows = document.querySelectorAll('#srvEditor .srv-edit');
+  const last = rows[rows.length - 1];
+  if (last) last.querySelector('[data-f="name"]').focus();
+});
+
+$('srvEditor').addEventListener('click', e => {
+  const del = e.target.closest('[data-srvdel]');
+  if (!del) return;
+  const row = del.closest('.srv-edit');
+  const name = row.querySelector('[data-f="name"]').value.trim() || '这台服务器';
+  if (!confirm(`移除「${name}」？保存设置后才会真正生效。`)) return;
+  S.settings.servers = collectServers();
+  S.settings.servers.splice(Number(del.dataset.srvdel), 1);
+  renderSrvEditor();
+});
+
+/* ---------- 自动化 ---------- */
+
+function fmtWhen(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const p = n => String(n).padStart(2, '0');
+  const stamp = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const diff = ts * 1000 - Date.now();
+  const mins = Math.round(Math.abs(diff) / 60000);
+  const human = mins < 1 ? '马上'
+    : mins < 60 ? `${mins} 分钟`
+    : mins < 1440 ? `${Math.floor(mins / 60)} 小时 ${mins % 60} 分`
+    : `${Math.floor(mins / 1440)} 天 ${Math.floor((mins % 1440) / 60)} 小时`;
+  if (diff < 0) return mins < 1 ? `${stamp}（刚刚）` : `${stamp}（${human}前）`;
+  return `${stamp}（${human}后）`;
+}
+
+/* 顶部工具栏那一行摘要，跟着 /api/status 每 2 秒刷新 */
+function renderAutoSummary(sch) {
+  if (!sch) return;
+  const n = sch.count || 0, on = sch.enabled_count || 0;
+  const box = $('autoSummary');
+  if (!n) {
+    box.textContent = '暂无任务';
+  } else {
+    const parts = [`${n} 条任务（启用 ${on} 条）`];
+    if (on) parts.push(`下次 ${fmtWhen(sch.next_run)}`);
+    if (sch.busy) parts.push('当前有任务在跑，到点的顺延到下一轮');
+    box.textContent = parts.join(' · ');
+  }
+  const auto = $('autoAutostart');
+  if (auto && document.activeElement !== auto) auto.checked = !!sch.autostart;
+  $('tabAutoCount').textContent = n ? `(${n})` : '';
+}
+
+function fmtInterval(min) {
+  const n = Number(min) || 0;
+  if (n % 1440 === 0) return n === 1440 ? '每天' : `每 ${n / 1440} 天`;
+  if (n % 60 === 0) return n === 60 ? '每小时' : `每 ${n / 60} 小时`;
+  return `每 ${n} 分钟`;
+}
+
+async function loadAutomation() {
+  let data;
+  try {
+    data = await api('/api/automation');
+  } catch (e) {
+    $('autoList').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  S.auto.tasks = data.tasks || [];
+  S.auto.roots = data.roots || [];
+  S.auto.lastLoad = Date.now();
+  renderAutomation(data.status || {});
+  renderAutoSummary({ ...(data.status || {}), count: S.auto.tasks.length,
+    enabled_count: S.auto.tasks.filter(t => t.enabled).length,
+    autostart: data.autostart });
+}
+
+function renderAutomation(sch) {
+  const list = $('autoList');
+  const tasks = S.auto.tasks;
+  if (!tasks.length) {
+    list.innerHTML = `<div class="empty auto-empty">
+      <div>还没有自动化任务</div>
+      <div class="tips">选一个媒体库或文件夹 + 设个间隔，到点就会自动扫库、刮削新出现的 strm</div>
+      <button class="tiny primary" data-act="add">+ 新建任务</button>
+    </div>`;
+    return;
+  }
+  list.innerHTML = tasks.map(t => {
+    const scope = t.scope
+      ? `<code title="${esc(t.scope)}">${esc(t.scope)}</code>`
+      : '<span>全部媒体库</span>';
+    const tags = [
+      `<span class="pill accent">${esc(fmtInterval(t.interval_minutes))}</span>`,
+      `<span class="pill">${t.mode === 'full' ? '全量重刮' : '增量'}</span>`,
+      t.enabled ? '<span class="pill on">启用中</span>' : '<span class="pill">已停用</span>',
+      sch.running_task === t.id ? '<span class="pill on">正在跑</span>' : '',
+    ].join('');
+    const next = t.enabled ? `下次 <b>${esc(fmtWhen(t.next_run))}</b>` : '已停用，不会自动跑';
+    const last = t.last_run
+      ? `上次 <b>${esc(fmtWhen(t.last_run))}</b>｜${esc(t.last_result || '—')}`
+      : '还没自动跑过';
+    return `<div class="auto-card${t.enabled ? '' : ' off'}" data-id="${esc(t.id)}">
+      <div class="a-main">
+        <div class="a-title"><span class="a-name">${esc(t.name)}</span>${tags}</div>
+        <div class="a-scope">监控 ${scope}</div>
+        <div class="a-meta">${next}　·　${last}　·　共跑过 ${t.runs || 0} 次</div>
+      </div>
+      <div class="a-acts">
+        <button class="tiny" data-act="run" data-id="${esc(t.id)}"
+                title="不等定时点，马上按这条任务的设置跑一轮">立即执行</button>
+        <button class="tiny" data-act="toggle" data-id="${esc(t.id)}">
+          ${t.enabled ? '停用' : '启用'}</button>
+        <button class="tiny" data-act="edit" data-id="${esc(t.id)}">编辑</button>
+        <button class="tiny" data-act="del" data-id="${esc(t.id)}">删除</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+$('autoList').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  if (btn.dataset.act === 'add') { openAutoModal(null); return; }
+  const id = btn.dataset.id;
+  const task = S.auto.tasks.find(t => t.id === id);
+  if (!task) return;
+  const act = btn.dataset.act;
+
+  if (act === 'edit') { openAutoModal(task); return; }
+  if (act === 'run') {
+    btn.disabled = true;
+    btn.textContent = '触发中…';
+    try {
+      const r = await post('/api/automation/run', { id });
+      toast(r.message || '已触发', r.started !== true);
+      S.auto.tasks = r.tasks || S.auto.tasks;
+      renderAutomation(r.status || {});
+      renderAutoSummary(r.status);
+      pollStatus();
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '立即执行';
+    }
+    return;
+  }
+  if (act === 'toggle') {
+    try {
+      const r = await post('/api/automation/toggle', { id, enabled: !task.enabled });
+      S.auto.tasks = r.tasks || S.auto.tasks;
+      renderAutomation(r.status || {});
+      renderAutoSummary(r.status);
+      toast(r.message || '已切换');
+    } catch (err) {
+      toast(err.message, true);
+    }
+    return;
+  }
+  if (act === 'del') {
+    if (!confirm(`删除自动化任务「${task.name}」？已生成的海报 / NFO 不会动。`)) return;
+    try {
+      const r = await post('/api/automation/delete', { id });
+      S.auto.tasks = r.tasks || [];
+      renderAutomation(r.status || {});
+      renderAutoSummary(r.status);
+      toast(r.message || '已删除');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+});
+
+/* ---- 新建 / 编辑任务的弹窗 ---- */
+
+function autoMsg(text, kind) {
+  const el = $('autoMsg');
+  el.className = 'msg-line show' + (kind ? ' ' + kind : '');
+  el.textContent = text || '';
+  if (!text) el.className = 'msg-line';
+}
+
+function setAutoScope(scope) {
+  S.auto.scope = scope || '';
+  $('autoScopePick').textContent = S.auto.scope ? '已选当前目录' : '已选全部媒体库';
+  $('autoScopeAll').classList.toggle('on', !S.auto.scope);
+  $('autoScopeHere').classList.toggle(
+    'on', !!S.auto.scope && S.auto.scope === S.auto.browse);
+  $('autoScopeHint').innerHTML = S.auto.scope
+    ? `到点只刮 <code>${esc(S.auto.scope)}</code> 里（含子目录）的 strm`
+    : '到点扫所有媒体库目录；只看某个文件夹就点进去再「设为当前目录」';
+  const here = $('autoScopeHere');
+  here.title = S.auto.browse ? `把 ${S.auto.browse} 设为监控范围` : '';
+}
+
+async function browseAuto(path) {
+  let data;
+  try {
+    data = await api('/api/automation/browse?path=' + encodeURIComponent(path || ''));
+  } catch (e) {
+    $('autoDirs').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  if (data.ok === false) {
+    $('autoDirs').innerHTML = `<div class="empty">${esc(data.message || '读不到目录')}</div>`;
+    return;
+  }
+  S.auto.browse = data.path || '';
+  S.auto.roots = data.roots || S.auto.roots;
+
+  // 多个媒体库时给出切换入口：一眼能看出在哪个库里挑目录
+  $('autoRoots').innerHTML = (S.auto.roots || []).map(r => {
+    const name = r.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || r;
+    const on = S.auto.browse === r
+      || S.auto.browse.startsWith(r.replace(/[\\/]+$/, '') + '/');
+    return `<button class="tiny${on ? ' on' : ''}" data-go="${esc(r)}"
+              title="${esc(r)}">媒体库 · ${esc(name)}</button>`;
+  }).join('');
+
+  // 面包屑：从命中的媒体库根往下拼
+  const root = (S.auto.roots || []).find(r =>
+    S.auto.browse === r || S.auto.browse.startsWith(r.replace(/[\\/]+$/, '') + '/'));
+  const bits = [];
+  if (root) {
+    bits.push(`<button data-go="${esc(root)}">${esc(root)}</button>`);
+    const rest = S.auto.browse.slice(root.length).replace(/^[\\/]+/, '');
+    if (rest) {
+      let cursor = root;
+      rest.split(/[\\/]+/).filter(Boolean).forEach(part => {
+        cursor += '/' + part;
+        bits.push('<span class="sep">/</span>');
+        bits.push(`<button data-go="${esc(cursor)}">${esc(part)}</button>`);
+      });
+    }
+  } else {
+    bits.push(`<button data-go="${esc(S.auto.browse)}">${esc(S.auto.browse || '/')}</button>`);
+  }
+  $('autoCrumbs').innerHTML = bits.join('');
+
+  const rows = [];
+  if (data.parent) rows.push(`<button data-go="${esc(data.parent)}"><span class="up">↑</span> 上一级</button>`);
+  (data.dirs || []).forEach(d =>
+    rows.push(`<button data-go="${esc(d.path)}"><span class="up">▸</span> ${esc(d.name)}</button>`));
+  $('autoDirs').innerHTML = rows.length ? rows.join('')
+    : '<div class="empty">这个目录下面没有子目录了</div>';
+  setAutoScope(S.auto.scope);
+}
+
+$('autoCrumbs').addEventListener('click', e => {
+  const b = e.target.closest('[data-go]');
+  if (b) browseAuto(b.dataset.go);
+});
+$('autoRoots').addEventListener('click', e => {
+  const b = e.target.closest('[data-go]');
+  if (b) browseAuto(b.dataset.go);
+});
+$('autoDirs').addEventListener('click', e => {
+  const b = e.target.closest('[data-go]');
+  if (b) browseAuto(b.dataset.go);
+});
+
+function openAutoModal(task) {
+  const editing = !!task;
+  S.auto.editing = editing ? task.id : null;
+  $('autoModalTitle').textContent = editing ? '编辑自动化任务' : '新建自动化任务';
+  $('autoName').value = editing ? task.name : '';
+  $('autoInterval').value = editing ? task.interval_minutes : 360;
+  $('autoMode').value = editing ? task.mode : 'incremental';
+  $('autoEnabled').checked = editing ? !!task.enabled : true;
+  setAutoScope(editing ? task.scope : '');
+  autoMsg('');
+  $('autoModal').hidden = false;
+  browseAuto((editing && task.scope) || (S.auto.roots[0] || ''));
+  setTimeout(() => $('autoName').focus(), 30);
+}
+
+function closeAutoModal() {
+  $('autoModal').hidden = true;
+  S.auto.editing = null;
+}
+
+$('btnAutoAdd').addEventListener('click', () => {
+  if (!S.auto.roots.length && S.auto.lastLoad === 0) loadAutomation();
+  openAutoModal(null);
+});
+$('btnCloseAuto').addEventListener('click', closeAutoModal);
+$('btnAutoCancel').addEventListener('click', closeAutoModal);
+$('autoModal').addEventListener('click', e => {
+  if (e.target === $('autoModal')) closeAutoModal();
+});
+$('btnAutoRefresh').addEventListener('click', () => loadAutomation());
+
+$('autoScopeAll').addEventListener('click', () => setAutoScope(''));
+$('autoScopeHere').addEventListener('click', () => {
+  if (!S.auto.browse) return;
+  setAutoScope(S.auto.browse);
+});
+
+$('autoChips').addEventListener('click', e => {
+  const chip = e.target.closest('[data-min]');
+  if (!chip) return;
+  $('autoInterval').value = Number(chip.dataset.min);
+});
+
+$('autoAutostart').addEventListener('change', async e => {
+  const on = e.target.checked;
+  try {
+    const r = await post('/api/automation/autostart', { enabled: on });
+    toast(on ? '容器启动后会先跑一轮整库' : '容器启动后不再自动跑', false);
+    renderAutoSummary({ ...(r.status || {}), count: S.auto.tasks.length,
+      enabled_count: S.auto.tasks.filter(t => t.enabled).length, autostart: r.autostart });
+  } catch (err) {
+    e.target.checked = !on;
+    toast(err.message, true);
+  }
+});
+
+$('btnAutoSave').addEventListener('click', async () => {
+  const btn = $('btnAutoSave');
+  const name = $('autoName').value.trim();
+  const interval = Number($('autoInterval').value);
+  if (!interval || interval < 5) { autoMsg('间隔至少 5 分钟', 'err'); return; }
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const body = {
+      name, scope: S.auto.scope || '',
+      mode: $('autoMode').value,
+      interval_minutes: interval,
+      enabled: $('autoEnabled').checked,
+    };
+    if (S.auto.editing) body.id = S.auto.editing;
+    const r = await post('/api/automation/save', body);
+    S.auto.tasks = r.tasks || [];
+    renderAutomation(r.status || {});
+    renderAutoSummary(r.status);
+    closeAutoModal();
+    toast(r.message || '任务已保存');
+  } catch (e) {
+    autoMsg(e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存任务';
+  }
+});
+
+function settingsPayload(roots) {
+  return {
+    scan: {
+      roots,
+      recursive: $('setRecursive').checked,
+      concurrency: Number($('setConcurrency').value),
+      timeout: Number($('setTimeout').value),
+      probe_timeout: Number($('setProbeTimeout').value),
+      mode: $('setMode').value,
+    },
+    scrape: {
+      poster_mode: $('setPosterMode').value,
+      overwrite: $('setOverwrite').value,
+      jpeg_quality: Number($('setQuality').value),
+      write_nfo: $('setNfo').checked,
+      write_poster: $('setPosterOn').checked,
+      write_fanart: $('setFanartOn').checked,
+      thumb: $('setThumbOn').checked,
+    },
+    servers: collectServers(),
+  };
+}
+
+async function saveSettings(btn, label) {
+  const roots = $('setRoots').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!roots.length) { setMsg('媒体库目录至少要留一个', 'err'); toast('媒体库目录不能为空', true); return null; }
+  const text = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const r = await post('/api/settings', settingsPayload(roots));
+    setMsg(r.message || '已保存', r.ok === false ? 'err' : 'ok');
+    toast(r.message || '设置已保存', r.ok === false);
+    S.settings = r;
+    renderSrvEditor();
+    srvCache = '';
+    pollStatus();
+    loadAutomation();       // 媒体库目录可能改了，自动化的监控范围要跟着重算
+    if (S.tab === 'tasks') loadTasks(true);
+    if (S.tab === 'files') { S.files.sig = ''; loadFiles(true); }
+    return r;
+  } catch (e) {
+    setMsg(e.message, 'err');
+    toast(e.message, true);
+    return null;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label || text;
+  }
+}
+
+$('btnSaveSettings').addEventListener('click', () => saveSettings($('btnSaveSettings'), '保存设置'));
 
 /* ---------- 启动 ---------- */
 
 loadAccount();
 pollStatus();
 loadTasks(true);
+loadAutomation();
 const timer = setInterval(pollStatus, 2000);
 </script>
 </body>

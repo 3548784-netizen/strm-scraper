@@ -16,8 +16,13 @@ framecache/
 auth.json
 auth.json.*
 
+# 本地测试环境（tools/devserver.py 生成的视频与状态库）
+.devdata/
+.devdata_real/
+
 # 编辑器 / 系统
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+.devdata_auth/

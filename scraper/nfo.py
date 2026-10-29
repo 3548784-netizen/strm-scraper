@@ -26,10 +26,32 @@ QUALITY_TAGS = re.compile(
 )
 
 
+# 资源站的广告前缀：``【mtcang.net】`` / ``[www.98T.la]`` / ``www.98T.la@``
+# 只认带回点域名的那一段，避免把正常的【】片名削掉。
+_TLDS = r"com|net|org|cc|la|tv|me|xyz|top|vip|cn|info|club|app|io|co|link|site|pro"
+SITE_BRACKET = re.compile(
+    rf"^\s*[\[【]\s*[^】\]]{{0,60}}?(?:\.(?:{_TLDS})\b)[^】\]]{{0,20}}\s*[\]】]\s*",
+    re.I,
+)
+SITE_AT = re.compile(
+    rf"^\s*(?:https?://)?(?:www\.)?[\w.\-]+\.(?:{_TLDS})@\s*",
+    re.I,
+)
+SITE_URL = re.compile(r"^\s*https?://\S+\s+", re.I)
+# 紧跟站名后面的营销词，一并去掉：``【精品】``、``[推荐]``
+PROMO_TAG = re.compile(
+    r"^\s*[\[【]\s*(?:精品|高清|超清|原画|推荐|首发|独家|原创|自拍|合集|搬运|完整版?)\s*[\]】]\s*"
+)
+
+
 def display_title(stem: str) -> str:
     """从去掉了 .strm 的文件名推出干净的标题。
 
-    例：``片名.AVI`` → ``片名``；``片名.2024.1080p`` → ``片名.2024``
+    例：``片名.AVI`` → ``片名``；``片名.2024.1080p`` → ``片名.2024``；
+    ``www.98T.la@片名 (1)`` → ``片名 (1)``；``【mtcang.net】【精品】片名`` → ``片名``。
+
+    只剥开头明显是资源站广告的那几段（域名、URL、紧邻的营销词），
+    片名里的括号、年份、序号一律保留。
     """
     name = stem.strip()
     if not name:
@@ -43,9 +65,19 @@ def display_title(stem: str) -> str:
             continue
         break
 
+    while True:
+        before = name
+        for pattern in (SITE_URL, SITE_BRACKET, SITE_AT, PROMO_TAG):
+            name = pattern.sub("", name, count=1)
+        if name == before:
+            break
+
     cleaned = QUALITY_TAGS.sub("", name)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ._-")
-    return cleaned or stem
+    if not cleaned:
+        return stem    # 整段都是广告词（少见），宁可保留原名
+    return cleaned
+
 
 
 def build_nfo(info: MediaInfo, title: str, added: datetime | None = None) -> str:

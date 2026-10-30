@@ -1674,8 +1674,7 @@ async function loadGroups(force) {
       + (data.truncated ? '（只显示前 400 个）' : '')
     : (S.status === 'all' && !S.q ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录');
 
-  const sig = JSON.stringify(S.groups) + '|' + [...S.openDirs].join('|')
-    + '|' + JSON.stringify([...S.groupItems].map(([k, v]) => [k, v.map(x => x.status)]));
+  const sig = groupsSig();
   if (!force && sig === S.taskSig) return;
   S.taskSig = sig;
   renderGroups();
@@ -1696,21 +1695,166 @@ async function loadGroupFiles(dir, silent) {
   }
 }
 
-async function toggleGroup(dir) {
-  if (S.openDirs.has(dir)) {
-    S.openDirs.delete(dir);
-    S.groupItems.delete(dir);
-  } else {
-    S.openDirs.add(dir);
-    S.pinnedDirs.delete(dir);   // 已经点开看过了，「刚选择」的提示可以收掉
-    if (!S.groupItems.has(dir)) S.groupItems.set(dir, []);
-    await loadGroupFiles(dir);
+/* ---------- 折叠行的滚动锚点 ---------- */
+/* 整表重渲染（定时刷新）和展开/收起都会改变内容高度。浏览器只会保留
+   scrollTop 这个数字，它下面的内容早就换人了 —— 表现就是"页面一跳"。
+   所以动手前后各记一次「视野最上面那几行是谁、离顶边多远」，改完把位置
+   校准回去，用户盯着的那一行就钉在原地。 */
+
+function rowKey(row) {
+  if (row.dataset.group) return 'g:' + row.dataset.group;
+  if (row.dataset.path) return 'f:' + row.dataset.path;
+  return '';
+}
+
+function captureAnchor() {
+  const wrap = document.querySelector('.tablewrap');
+  if (!wrap) return null;
+  const top = wrap.getBoundingClientRect().top;
+  const marks = [];
+  for (const row of $('taskBody').rows) {
+    const box = row.getBoundingClientRect();
+    if (box.bottom <= top + 1) continue;   // 完全在视野上方的不算
+    const key = rowKey(row);
+    if (key) marks.push({ key, delta: box.top - top });
+    if (marks.length >= 8) break;          // 多记几行，防上面那行正好被收起
   }
-  S.taskSig = '';
-  renderGroups();
+  return { marks: marks, scroll: wrap.scrollTop };
+}
+
+function restoreAnchor(anchor) {
+  const wrap = document.querySelector('.tablewrap');
+  if (!wrap || !anchor) return;
+  const top = wrap.getBoundingClientRect().top;
+  const byKey = new Map();
+  for (const row of $('taskBody').rows) {
+    const key = rowKey(row);
+    if (key) byKey.set(key, row);
+  }
+  for (const mark of anchor.marks) {
+    const row = byKey.get(mark.key);
+    if (!row) continue;                    // 这一行被收起了，试下一行
+    const delta = row.getBoundingClientRect().top - top;
+    if (Math.abs(delta - mark.delta) > 1) wrap.scrollTop += delta - mark.delta;
+    return;
+  }
+  // 一行都对不上（比如换了一页），退回原来的滚动位置，交给浏览器夹取
+  wrap.scrollTop = anchor.scroll;
+}
+
+/* ---------- 分组的增量展开 / 收起 ---------- */
+
+function findGroupRow(dir) {
+  for (const row of $('taskBody').querySelectorAll('tr.grouprow')) {
+    if (row.dataset.group === dir) return row;
+  }
+  return null;
+}
+
+function groupRowsOf(dir) {
+  const out = [];
+  for (const row of $('taskBody').querySelectorAll('tr[data-in]')) {
+    if (row.dataset.in === dir) out.push(row);
+  }
+  return out;
+}
+
+function clearGroupRows(dir) {
+  for (const row of groupRowsOf(dir)) row.remove();
+}
+
+function groupNoteRow(dir, text) {
+  return `<tr class="gitem" data-in="${esc(dir)}"><td></td><td></td>`
+    + `<td colspan="8"><div class="empty">${esc(text)}</div></td></tr>`;
+}
+
+// 每批插多少行：一次插 200 行会让点击到上屏之间空等，拆开后第一屏立刻出来
+const GROUP_CHUNK = 40;
+let groupRenderSeq = 0;
+
+function insertGroupRows(groupRow, dir) {
+  const seq = ++groupRenderSeq;          // 新的渲染开始，旧的批次自动作废
+  const items = S.groupItems.get(dir) || [];
+  if (!items.length) {
+    groupRow.insertAdjacentHTML('afterend', groupNoteRow(dir, '这个文件夹暂时没有记录'));
+    return;
+  }
+  let index = 0;
+  let cursor = groupRow;
+  const step = () => {
+    if (seq !== groupRenderSeq || !S.openDirs.has(dir)) return;
+    const html = [];
+    const end = Math.min(items.length, index + GROUP_CHUNK);
+    for (; index < end; index += 1) {
+      html.push(itemRowHtml(items[index], { inside: true, dir: dir }));
+    }
+    if (index >= items.length && items.length >= 200) {
+      html.push(groupNoteRow(dir, '只显示前 200 个文件'));
+    }
+    cursor.insertAdjacentHTML('afterend', html.join(''));
+    // 游标挪到这批的最后一行，下一批接着往后插
+    let last = cursor;
+    while (last.nextElementSibling && last.nextElementSibling.classList.contains('gitem')) {
+      last = last.nextElementSibling;
+    }
+    cursor = last;
+    if (index < items.length) requestAnimationFrame(step);
+  };
+  step();
+}
+
+function updateGroupsMeta() {
   $('taskMeta').textContent = S.groups.length
     ? `共 ${S.groups.length} 个文件夹${S.openDirs.size ? `，已展开 ${S.openDirs.size} 个` : ''}`
     : '没有符合条件的记录';
+}
+
+// 当前渲染结果对应的数据指纹：展开/收起后同步更新，免得下一轮轮询误判成
+// "数据变了"又把整张表重建一遍
+function groupsSig() {
+  return JSON.stringify(S.groups) + '|' + [...S.openDirs].join('|')
+    + '|' + JSON.stringify([...S.groupItems].map(([k, v]) => [k, v.map(x => x.status)]));
+}
+
+async function toggleGroup(dir) {
+  const groupRow = findGroupRow(dir);
+  if (!groupRow) return;
+  const anchor = captureAnchor();
+
+  if (S.openDirs.has(dir)) {
+    // 收起：只删这一组的行，别的组和滚动位置都不动
+    S.openDirs.delete(dir);
+    S.groupItems.delete(dir);
+    clearGroupRows(dir);
+    groupRow.classList.remove('gopen');
+    updateGroupsMeta();
+    updateTaskSelInfo();
+    restoreAnchor(anchor);
+    S.taskSig = groupsSig();     // 现状已经画在屏幕上了，别让轮询再重建一遍
+    return;
+  }
+
+  S.openDirs.add(dir);
+  S.pinnedDirs.delete(dir);        // 已经点开看过了，「刚选择」的提示可以收掉
+  groupRow.classList.add('gopen');
+  groupRow.classList.remove('pinned');
+  const pin = groupRow.querySelector('.tagpin');
+  if (pin) pin.remove();
+  S.groupItems.set(dir, []);
+  // 先占一行，网络慢的时候也不会像没反应
+  groupRow.insertAdjacentHTML('afterend', groupNoteRow(dir, '正在读取文件…'));
+
+  await loadGroupFiles(dir);
+
+  // 等数据期间可能被定时刷新整表重建过，重新找一次行；不想展开了就直接退出
+  if (!S.openDirs.has(dir)) return;
+  const row = findGroupRow(dir) || groupRow;
+  clearGroupRows(dir);
+  insertGroupRows(row, dir);
+  updateGroupsMeta();
+  updateTaskSelInfo();
+  restoreAnchor(anchor);
+  S.taskSig = groupsSig();
 }
 
 function groupStatus(g) {
@@ -1758,12 +1902,14 @@ function groupRowHtml(g, open) {
 
 function renderGroups() {
   const body = $('taskBody');
+  groupRenderSeq += 1;                   // 打断还没插完的分批
   if (!S.groups.length) {
     body.innerHTML = `<tr><td colspan="10"><div class="empty">${esc(
       S.status === 'all' && !S.q ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录')}</div></td></tr>`;
     updateTaskSelInfo();
     return;
   }
+  const anchor = captureAnchor();
   const rows = [];
   for (const g of S.groups) {
     const open = S.openDirs.has(g.path);
@@ -1771,13 +1917,11 @@ function renderGroups() {
     if (!open) continue;
     const items = S.groupItems.get(g.path) || [];
     if (!items.length) {
-      rows.push(`<tr class="gitem"><td></td><td></td><td colspan="8"><div class="empty">这个文件夹暂时没有记录</div></td></tr>`);
+      rows.push(groupNoteRow(g.path, '这个文件夹暂时没有记录'));
       continue;
     }
-    items.forEach(it => rows.push(itemRowHtml(it, { inside: true })));
-    if (items.length >= 200) {
-      rows.push(`<tr class="gitem"><td></td><td></td><td colspan="8"><div class="empty">只显示前 200 个文件</div></td></tr>`);
-    }
+    items.forEach(it => rows.push(itemRowHtml(it, { inside: true, dir: g.path })));
+    if (items.length >= 200) rows.push(groupNoteRow(g.path, '只显示前 200 个文件'));
   }
   body.innerHTML = rows.join('');
   updateTaskSelInfo();
@@ -1787,8 +1931,10 @@ function renderGroups() {
     if (first) {
       first.scrollIntoView({ block: 'nearest' });
       S.pinnedScrolled = true;
+      return;
     }
   }
+  restoreAnchor(anchor);
 }
 
 /* ---------- 任务行渲染（平铺与会话内共用） ---------- */
@@ -1809,7 +1955,8 @@ function itemRowHtml(it, opts = {}) {
   }
   const picked = S.taskSel.has(it.path);
   return `<tr data-path="${esc(it.path)}"${
-      opts.inside ? ' class="gitem"' : (picked ? ' class="sel"' : '')}>
+      opts.inside ? ` class="gitem" data-in="${esc(opts.dir || '')}"`
+        : (picked ? ' class="sel"' : '')}>
     <td>${opts.inside ? ''
       : `<input class="check" type="checkbox" data-tpick="${esc(it.path)}"${
           picked ? ' checked' : ''}>`}</td>

@@ -549,6 +549,7 @@ python tools/selftest_ui.py          # 界面回归：勾选、暂停、选帧�
 python tools/selftest_auth.py        # 登录 / 改账号：自己起独立环境，跑完自动清理
 python tools/check_thumbs.py         # 缩略图接口：小图尺寸、比例、缓存头、越界拦截
 python tools/check_list_images.py    # 列表走小图、预览走原图（需要 Edge）
+python tools/check_dirview.py        # 按文件夹视图：展开/收起滚动不跳、大文件夹不卡（需要 Edge）
 ```
 
 想拿自己的真实素材（比如从 115 导出的 strm 目录）验收，不用改配置：

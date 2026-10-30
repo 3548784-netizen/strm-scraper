@@ -552,21 +552,6 @@ python tools/check_real_ui.py        # 按这套素材跑：勾文件夹、齐�
 
 `--media-root` 只把扫描根指过去，不会生成或删除素材目录里的东西；`--data` 把状态库、日志另放一处，跟默认环境互不干扰。加 `--reset` 会清掉上一轮生成的图片和 NFO（`.strm` 不动）。
 
-## 发版
-
-版本号唯一来源是 `scraper/version.py`（界面顶栏会显示当前版本）。发一条新版本：
-
-```bash
-python tools/release.py 1.0.0   # 或 patch / minor / major 自动递增
-```
-
-脚本会改版本号 → 提交 → 打 `v1.0.0` 标签 → 推送（`--no-push` 只在本地打标签，`--dry-run` 只打印动作）。推上去之后 CI 自动完成：
-
-1. 构建并推送版本镜像：`3548784/strm-scraper:1.0.0`（另有 `1.0` 跟随小版本、`latest` 跟随主线，GHCR 同步）
-2. 用上一个标签到这个标签之间的提交记录生成说明，创建对应的 GitHub Release
-
-改完代码想看看发版链路是否完好：`python tools/check_release.py --live`。
-
 ## 许可
 
 MIT。项目只处理你自己合法拥有的媒体文件，不提供任何内容源。

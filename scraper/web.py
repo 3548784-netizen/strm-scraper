@@ -23,7 +23,6 @@ from .nfo import display_title
 from .picker import FramePicker
 from .scheduler import Scheduler, TaskNotFound
 from .state import StateStore
-from .version import __version__ as APP_VERSION
 from .worker import Runner, ScrapeResult, process
 
 log = logging.getLogger(__name__)
@@ -310,7 +309,6 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
     @app.get("/api/status")
     def status():
         snapshot = runner.snapshot()
-        snapshot["version"] = APP_VERSION
         snapshot["servers"] = pool.snapshot()
         snapshot["roots"] = cfg.scan.roots
         snapshot["overwrite"] = cfg.scrape.overwrite

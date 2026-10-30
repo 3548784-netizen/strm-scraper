@@ -338,6 +338,12 @@
   .seg button:hover:not(.on):not(:disabled) { background: var(--surface-3); color: var(--text); }
   .seg button + button { border-left: 1px solid var(--line); }
   .seg button.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
+  /* 分段控件里的数量：比文字弱一档，用等宽数字免得点切换时按钮宽度跳动 */
+  .seg button .n {
+    margin-left: 4px; font-size: var(--fs-2xs); font-weight: 400;
+    color: var(--text-4); font-variant-numeric: tabular-nums;
+  }
+  .seg button.on .n { color: var(--accent); opacity: .8; }
   /* 容器 overflow:hidden 会剪掉外扩的焦点环，段内改成内嵌描边 */
   .seg button:focus-visible { outline-offset: -2px; }
 
@@ -1111,6 +1117,13 @@
       <span class="grow"></span>
       <!-- 右：列表控制 -->
       <div class="tb-ops">
+        <div class="seg" id="fileState" title="只看某种状态；计数基于当前目录已加载的文件">
+          <button class="on" data-fstate="all">全部</button>
+          <button data-fstate="ok">刮削成功</button>
+          <button data-fstate="new">未刮削</button>
+          <button data-fstate="failed">失败</button>
+        </div>
+        <span class="tb-sep"></span>
         <div class="seg" id="fileSort" title="排序方式；点当前选中项可切换正序 / 倒序">
           <button data-sort="name">名称</button>
           <button data-sort="added">添加时间</button>
@@ -1131,7 +1144,7 @@
             <th style="width:56px">海报</th>
             <th style="width:82px">背景图</th>
             <th style="width:46px">NFO</th>
-            <th style="width:82px">状态</th>
+            <th style="width:92px">状态</th>
             <th style="width:240px">备注</th>
             <th style="width:196px"></th>
           </tr>
@@ -1498,6 +1511,8 @@ const S = {
   files: {
     path: '', q: '', sel: new Set(), data: null, sig: '',
     sort: { key: 'added', order: 'desc' },
+    // 状态筛选：只在已经拿到的这一屏数据里过滤，不重新请求接口
+    filter: 'all',
     // 勾文件夹时用：dirPaths 记每个目录展开出来的路径，dirSel 是这些路径的并集
     dirPaths: new Map(), dirSel: new Set(),
   },
@@ -1567,6 +1582,29 @@ const STATUS_TEXT = {
   skipped: '已跳过', new: '未登记', idle: '空闲', scanning: '扫描中',
   paused: '已暂停', stopping: '正在停止',
 };
+
+/* 文件管理的状态以「产物在不在」为准，而不是照着任务历史的原话抄。
+   同一个文件在任务里可能是 ok（这次刮的）或者 skipped（产物已存在，跳过），
+   对使用者来说都等于「刮过了」，直接照抄会让人以为没干活。 */
+const FILE_STATE_TEXT = {
+  ok: '刮削成功', failed: '刮削失败', running: '刮削中', new: '未刮削',
+};
+function fileStateOf(f) {
+  const art = f.artifacts || {};
+  // 正在跑和这次失败的，比「有没有产物」更需要被看见
+  if (f.status === 'running' || f.status === 'failed') return f.status;
+  // 只要海报、背景图、NFO 里有任意一个，就说明刮削真的产出过东西；
+  // 任务历史里的 ok（这次刮的）和 skipped（产物已存在）在文件这里是一回事
+  if (art.poster || art.fanart || art.nfo) return 'ok';
+  return 'new';
+}
+function fileStateHint(f) {
+  const art = f.artifacts || {};
+  const mark = v => (v ? '有' : '无');
+  const base = `海报 ${mark(art.poster)} · 背景图 ${mark(art.fanart)} · NFO ${mark(art.nfo)}`;
+  if (fileStateOf(f) === 'new' && f.status === 'skipped') return base + '（任务记录为已跳过）';
+  return base;
+}
 
 function imgUrl(path, kind, version, width) {
   // v 用文件字节数：图片重新生成后大小基本都会变，借此绕过浏览器缓存
@@ -2383,6 +2421,21 @@ $('taskSort').addEventListener('click', e => {
   });
 });
 
+$('fileState').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-fstate]');
+  if (!btn || btn.dataset.fstate === S.files.filter) return;
+  S.files.filter = btn.dataset.fstate;
+  [...$('fileState').querySelectorAll('button')].forEach(b =>
+    b.classList.toggle('on', b.dataset.fstate === S.files.filter));
+  if (S.files.data && S.files.data.ok) {
+    renderFiles(S.files.data);
+    updateFileSelInfo();
+    $('fileBody').scrollTop = 0;
+    const wrap = document.querySelector('.pane.active .tablewrap');
+    if (wrap) wrap.scrollTop = 0;
+  }
+});
+
 $('fileSort').addEventListener('click', e => {
   const btn = e.target.closest('button[data-sort]');
   if (!btn) return;
@@ -2564,6 +2617,30 @@ $('crumbs').addEventListener('click', e => {
   loadFiles(true);
 });
 
+/* 状态筛选：只看这一屏，不重新请求接口——文件状态本来就随列表一起返回了 */
+function fileMatchesState(f) {
+  const want = S.files.filter;
+  if (!want || want === 'all') return true;
+  return fileStateOf(f) === want;
+}
+const FILE_STATE_LABEL = { all: '全部', ok: '刮削成功', new: '未刮削', failed: '失败' };
+
+function paintFileStateCounts(files) {
+  const n = { all: files.length, ok: 0, new: 0, failed: 0 };
+  files.forEach(f => { const st = fileStateOf(f); if (n[st] !== undefined) n[st] += 1; });
+  [...$('fileState').querySelectorAll('button[data-fstate]')].forEach(b => {
+    const k = b.dataset.fstate;
+    b.innerHTML = `${FILE_STATE_LABEL[k]}<span class="n">${n[k]}</span>`;
+    b.title = k === 'all'
+      ? `当前目录共 ${n.all} 个 strm`
+      : `${FILE_STATE_LABEL[k]}：${n[k]} 个` + (k !== 'ok' && n[k] ? '，点一下只看这些' : '');
+  });
+}
+
+function visibleFiles() {
+  return ((S.files.data && S.files.data.files) || []).filter(fileMatchesState);
+}
+
 function renderFiles(data) {
   const body = $('fileBody');
   const rows = [];
@@ -2583,7 +2660,8 @@ function renderFiles(data) {
     </tr>`);
   });
 
-  (data.files || []).forEach(f => {
+  const shown = (data.files || []).filter(fileMatchesState);
+  shown.forEach(f => {
     const art = f.artifacts || {};
     const checked = S.files.sel.has(f.path) ? 'checked' : '';
     const reason = f.reason
@@ -2598,7 +2676,8 @@ function renderFiles(data) {
       <td>${thumbCell(f.path, art.poster, 'poster')}</td>
       <td>${thumbCell(f.path, art.fanart, 'fanart')}</td>
       <td class="num">${art.nfo ? fmtBytes(art.nfo) : '<span class="nothing">—</span>'}</td>
-      <td><span class="st ${f.status}">${STATUS_TEXT[f.status] || f.status}</span></td>
+      <td><span class="st ${fileStateOf(f)}" title="${esc(fileStateHint(f))}"
+            >${FILE_STATE_TEXT[fileStateOf(f)] || f.status}</span></td>
       <td>${reason}</td>
       <td><div class="rowbtns">
         <button class="tiny" data-act="pick">选帧</button>
@@ -2609,15 +2688,21 @@ function renderFiles(data) {
   });
 
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="9"><div class="empty">${
-      data.truncated ? '文件太多，只显示了前 500 个' : '这个目录里没有 strm 文件'}</div></td></tr>`;
+    const tip = S.files.filter !== 'all' && (data.files || []).length
+      ? `当前筛选下没有文件（这个目录共 ${(data.files || []).length} 个 strm）`
+      : (data.truncated ? '文件太多，只显示了前 500 个' : '这个目录里没有 strm 文件');
+    body.innerHTML = `<tr><td colspan="9"><div class="empty">${tip}</div></td></tr>`;
   } else {
     body.innerHTML = rows.join('');
   }
 
-  $('fileMeta').textContent =
-    `${(data.dirs || []).length} 个目录 · ${(data.files || []).length} 个 strm`
-    + (data.truncated ? '（已截断）' : '');
+  const total = (data.files || []).length;
+  const dirN = (data.dirs || []).length;
+  paintFileStateCounts(data.files || []);
+  const cut = data.truncated ? '（已截断）' : '';
+  $('fileMeta').textContent = S.files.filter === 'all'
+    ? `${dirN} 个目录 · ${total} 个 strm${cut}`
+    : `${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个 strm${cut}`;
 }
 
 function updateFileSelInfo() {
@@ -2631,7 +2716,8 @@ function updateFileSelInfo() {
   $('btnFileRescrape').disabled = n === 0;
   $('btnFileDel').disabled = n === 0;
   if (n === 0) closeFileMenu();
-  const files = (S.files.data && S.files.data.files) || [];
+  // 全选只勾「这一屏看得见的」：筛选到未刮削时，全选就该只选未刮削的
+  const files = visibleFiles();
   const dirs = (S.files.data && S.files.data.dirs) || [];
   // 全选要连文件夹一起看：没展开过的目录不算全选，空目录不影响
   const allSel = (files.length > 0 || dirs.length > 0)
@@ -2712,7 +2798,7 @@ $('fileBody').addEventListener('change', e => {
 });
 
 $('fileAll').addEventListener('change', async e => {
-  const files = (S.files.data && S.files.data.files) || [];
+  const files = visibleFiles();   // 只对当前筛选下看得见的文件生效
   const dirs = (S.files.data && S.files.data.dirs) || [];
   const box = e.target;
   box.disabled = true;

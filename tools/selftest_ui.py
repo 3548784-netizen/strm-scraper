@@ -83,26 +83,41 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1200)
 
     print("========== 1. 文件夹勾选 & 全选的状态机 ==========")
+    # 每个文件夹有几个 strm 由测试媒体库决定，别写死数字：勾文件夹是递归选中的，
+    # 期望数量直接取文件夹行上的计数（那本来就是含子目录的总数）
+    def dir_n() -> list[int]:
+        return pg.evaluate("""() => [...document.querySelectorAll('#fileBody tr.dirrow')]
+            .map(tr => Number((tr.querySelector('.cnt')?.textContent || '0')
+                              .replace(/[^0-9]/g, '')))""")
+
+    ns = dir_n()
+    n1 = ns[0]
+    n12 = sum(ns[:2])
+    n_all = sum(ns) + pg.evaluate("() => (S.files.data.files || []).length")
     dboxes = pg.query_selector_all("#fileBody input[data-dirpick]")
     dboxes[0].click(); pg.wait_for_timeout(900)
-    check("勾 1 个文件夹 → 2 项", "2 项" in pg.inner_text("#fileSelInfo"),
+    check(f"勾 1 个文件夹 → {n1} 项", f"{n1} 项" in pg.inner_text("#fileSelInfo"),
           pg.inner_text("#fileSelInfo").replace("\n", " "))
-    check("全部勾上时全选框才勾", pg.is_checked("#fileAll") is False)
+    check("只勾了一部分时全选框不勾", pg.is_checked("#fileAll") is False)
 
     dboxes[1].click(); pg.wait_for_timeout(1200)
-    check("勾 2 个文件夹 → 6 项", "6 项" in pg.inner_text("#fileSelInfo"),
+    check(f"勾 2 个文件夹 → {n12} 项", f"{n12} 项" in pg.inner_text("#fileSelInfo"),
           pg.inner_text("#fileSelInfo").replace("\n", " "))
-    check("全选框自动勾上", pg.is_checked("#fileAll"))
+    check("还有没勾的文件夹时全选框不勾", pg.is_checked("#fileAll") is False)
 
-    pg.click("#fileAll"); pg.wait_for_timeout(1000)
+    pg.click("#fileAll"); pg.wait_for_timeout(2500)
+    check(f"全选 → {n_all} 项", f"{n_all} 项" in pg.inner_text("#fileSelInfo")
+          and pg.is_checked("#fileAll"), pg.inner_text("#fileSelInfo").replace("\n", " "))
+
+    pg.click("#fileAll"); pg.wait_for_timeout(1200)
     check("取消全选 → 0 项", "0 项" in pg.inner_text("#fileSelInfo"),
           pg.inner_text("#fileSelInfo").replace("\n", " "))
     check("取消全选后文件夹也清空",
           not any(x.is_checked() for x in pg.query_selector_all("#fileBody input[data-dirpick]")))
 
-    pg.click("#fileAll"); pg.wait_for_timeout(2000)
-    check("再全选 → 6 项",
-          "6 项" in pg.inner_text("#fileSelInfo") and pg.is_checked("#fileAll"),
+    pg.click("#fileAll"); pg.wait_for_timeout(2500)
+    check(f"再全选 → {n_all} 项",
+          f"{n_all} 项" in pg.inner_text("#fileSelInfo") and pg.is_checked("#fileAll"),
           pg.inner_text("#fileSelInfo").replace("\n", " "))
 
     print("========== 2. 勾文件夹后批量刮削（自动刷新） ==========")

@@ -419,6 +419,11 @@
   .st.running { color: var(--warn-ink); background: var(--warn-soft); border-color: rgba(217, 162, 39, .28); }
   .st.skipped { color: var(--text-2); background: var(--surface-3); border-color: var(--line); }
   .st.new { color: var(--text-3); background: var(--surface-3); border-color: var(--line); }
+  /* 文件夹特有的两态：partial=还有没刮的（蓝色，表示「活没干完」，与运行中的黄区分）；
+     empty=这个文件夹里压根没有 strm，不该染任何颜色去抢注意力 */
+  .st.part { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(76, 141, 255, .28); }
+  .st.empty { color: var(--text-3); background: transparent; border-color: transparent; }
+  .dirrow .st.dirst { font-variant-numeric: tabular-nums; }
   .reason { color: var(--err-ink); font-size: var(--fs-2xs); max-width: 300px; display: inline-block;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   .reason.mute { color: var(--text-3); }
@@ -2625,15 +2630,70 @@ function fileMatchesState(f) {
 }
 const FILE_STATE_LABEL = { all: '全部', ok: '刮削成功', new: '未刮削', failed: '失败' };
 
-function paintFileStateCounts(files) {
-  const n = { all: files.length, ok: 0, new: 0, failed: 0 };
-  files.forEach(f => { const st = fileStateOf(f); if (n[st] !== undefined) n[st] += 1; });
+/* 文件夹的状态：范围是整个文件夹（含子目录），判定口径和文件一致——以产物为准。
+   一个文件夹里往往是一整季或者一整套，所以除了「全刮完 / 一个没刮」这一头一尾，
+   中间态直接写出进度（已刮 3/5），比笼统的「部分刮削」更能说明还剩多少活。 */
+function dirStateOf(d) {
+  const total = d.count || 0;
+  const ok = d.scraped || 0;
+  if (!total) return 'empty';
+  if (ok >= total) return 'ok';
+  return ok > 0 ? 'part' : 'new';
+}
+function dirStateText(d) {
+  const total = d.count || 0;
+  const ok = d.scraped || 0;
+  if (!total) return '无 strm';
+  if (ok >= total) return '刮削成功';
+  if (ok > 0) return `已刮 ${ok}/${total}`;
+  return '未刮削';
+}
+function dirStateHint(d) {
+  const total = d.count || 0;
+  const ok = d.scraped || 0;
+  if (!total) return '这个文件夹（含子目录）里没有 strm';
+  return `共 ${total} 个 strm（含子目录）· 已刮 ${ok} · 未刮 ${total - ok}`;
+}
+// 筛选要连文件夹一起过滤，否则「筛未刮削」会漏掉整个没刮的剧集目录。
+// 归属只算一个桶：全刮完的文件夹才算「刮削成功」，还剩活的（含刮了一半的）
+// 都归到「未刮削」，这样各桶数量相加正好等于「全部」；「失败」只看文件。
+function dirMatchesState(d) {
+  const want = S.files.filter;
+  if (!want || want === 'all') return true;
+  const st = dirStateOf(d);
+  if (want === 'ok') return st === 'ok';
+  if (want === 'new') return st === 'new' || st === 'part';
+  return false;
+}
+
+/* 角标数量：文件和文件夹一起算（根目录下往往只有文件夹，只数文件的话
+   角标会全是 0，看着像没东西可筛，点进去却有一堆行） */
+function fileStateCounts() {
+  const files = (S.files.data && S.files.data.files) || [];
+  const dirs = (S.files.data && S.files.data.dirs) || [];
+  const n = { all: files.length + dirs.length, ok: 0, new: 0, failed: 0 };
+  files.forEach(f => {
+    const st = fileStateOf(f);
+    if (n[st] !== undefined) n[st] += 1;
+  });
+  dirs.forEach(d => {
+    const st = dirStateOf(d);
+    if (st === 'ok') n.ok += 1;
+    else if (st === 'new' || st === 'part') n.new += 1;
+  });
+  return n;
+}
+
+function paintFileStateCounts() {
+  const n = fileStateCounts();
+  const dirN = ((S.files.data && S.files.data.dirs) || []).length;
+  const fileN = ((S.files.data && S.files.data.files) || []).length;
   [...$('fileState').querySelectorAll('button[data-fstate]')].forEach(b => {
     const k = b.dataset.fstate;
     b.innerHTML = `${FILE_STATE_LABEL[k]}<span class="n">${n[k]}</span>`;
     b.title = k === 'all'
-      ? `当前目录共 ${n.all} 个 strm`
-      : `${FILE_STATE_LABEL[k]}：${n[k]} 个` + (k !== 'ok' && n[k] ? '，点一下只看这些' : '');
+      ? `当前目录共 ${fileN} 个 strm、${dirN} 个文件夹`
+      : `${FILE_STATE_LABEL[k]}：${n[k]} 项（含文件夹）`;
   });
 }
 
@@ -2645,8 +2705,9 @@ function renderFiles(data) {
   const body = $('fileBody');
   const rows = [];
 
-  (data.dirs || []).forEach(d => {
+  (data.dirs || []).filter(dirMatchesState).forEach(d => {
     const st = dirPickState(d.path);
+    const ds = dirStateOf(d);
     rows.push(`<tr class="dirrow${st === 'all' ? ' sel' : ''}">
       <td><input class="check" type="checkbox" data-dirpick="${esc(d.path)}"
                  title="选中这个文件夹里的所有 strm"${st === 'all' ? ' checked' : ''}></td>
@@ -2655,8 +2716,11 @@ function renderFiles(data) {
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
         </svg>${esc(d.name)}</span>
-        <span class="cnt">${d.count ? d.count + ' 个 strm' : ''}</span></td>
-      <td class="num" colspan="7"></td>
+        <span class="cnt" title="含子目录">${d.count ? d.count + ' 个 strm' : ''}</span></td>
+      <td class="num" colspan="4"></td>
+      <td><span class="st dirst ${ds}" title="${esc(dirStateHint(d))}"
+            >${dirStateText(d)}</span></td>
+      <td colspan="2"></td>
     </tr>`);
   });
 
@@ -2688,8 +2752,9 @@ function renderFiles(data) {
   });
 
   if (!rows.length) {
-    const tip = S.files.filter !== 'all' && (data.files || []).length
-      ? `当前筛选下没有文件（这个目录共 ${(data.files || []).length} 个 strm）`
+    const all = data.files || [];
+    const tip = S.files.filter !== 'all' && (all.length || (data.dirs || []).length)
+      ? `当前筛选下没有内容（这个目录共 ${all.length} 个 strm、${(data.dirs || []).length} 个文件夹）`
       : (data.truncated ? '文件太多，只显示了前 500 个' : '这个目录里没有 strm 文件');
     body.innerHTML = `<tr><td colspan="9"><div class="empty">${tip}</div></td></tr>`;
   } else {
@@ -2698,11 +2763,12 @@ function renderFiles(data) {
 
   const total = (data.files || []).length;
   const dirN = (data.dirs || []).length;
-  paintFileStateCounts(data.files || []);
+  const dirShown = (data.dirs || []).filter(dirMatchesState).length;
+  paintFileStateCounts();
   const cut = data.truncated ? '（已截断）' : '';
   $('fileMeta').textContent = S.files.filter === 'all'
     ? `${dirN} 个目录 · ${total} 个 strm${cut}`
-    : `${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个 strm${cut}`;
+    : `${dirShown} / ${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个 strm${cut}`;
 }
 
 function updateFileSelInfo() {

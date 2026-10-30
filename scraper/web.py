@@ -60,20 +60,62 @@ def _size_of(value: int | None) -> str:
     return f"{value / 1024:.0f}KB"
 
 
-def _count_strm(directory: Path, wanted: set[str]) -> int:
-    """数一下这个目录里直接有几个 strm，文件管理页用来提示。"""
-    count = 0
-    try:
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                try:
-                    if entry.is_file() and Path(entry.name).suffix.lower() in wanted:
-                        count += 1
-                except OSError:
-                    continue
-    except OSError:
-        return 0
-    return count
+# 不需要往下走的目录：隐藏目录、群晖缩略图、Node 依赖、回收站
+SKIP_DIR_NAMES = {"@eaDir", "__pycache__", "node_modules", "$RECYCLE.BIN", "#recycle"}
+
+
+def _skip_dir_name(name: str) -> bool:
+    return name.startswith(".") or name in SKIP_DIR_NAMES
+
+
+# 目录汇总单次最多数这么多 strm：媒体库动辄上万文件，不能让列表请求被拖住
+DIR_SUMMARY_LIMIT = 5000
+
+
+def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
+    """数一遍目录（含子目录）里的 strm，顺便算出刮过几个。
+
+    为什么要连子目录一起数：文件夹行的勾选框是递归选中的（点一下把这个
+    文件夹里所有 strm 都选上），状态如果只数这一层，就会出现「勾得上 40 个、
+    状态写着 0 个」的矛盾。
+
+    「刮过」的口径和列表里的状态列一致：海报 / 背景图 / NFO 任一存在即算。
+    产物和 strm 同目录同名前缀，所以先 scandir 拿到文件名集合、再用集合判断，
+    不用给每个文件单独 stat 四次——几千个文件时差别很明显。
+    """
+    total = 0
+    scraped = 0
+    stack = [directory]
+    while stack and total < DIR_SUMMARY_LIMIT:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                names: set[str] = set()
+                subs: list[Path] = []
+                for entry in entries:
+                    try:
+                        if entry.is_dir():
+                            if not _skip_dir_name(entry.name):
+                                subs.append(Path(entry.path))
+                        else:
+                            names.add(entry.name.lower())
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+        stack.extend(subs)
+
+        for name in names:
+            if name in IGNORED_NAMES or Path(name).suffix.lower() not in wanted:
+                continue
+            total += 1
+            stem = name.rsplit(".", 1)[0]
+            if (f"{stem}.nfo" in names or f"{stem}-poster.jpg" in names
+                    or f"{stem}-fanart.jpg" in names):
+                scraped += 1
+            if total >= DIR_SUMMARY_LIMIT:
+                break
+    return {"count": total, "scraped": scraped}
 
 
 def _as_int(value, low: int, high: int, label: str) -> int:
@@ -554,9 +596,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         raise HTTPException(403, "该路径不在扫描目录内，已拒绝")
 
     def _skip_dir(name: str) -> bool:
-        return name.startswith(".") or name in (
-            "@eaDir", "__pycache__", "node_modules", "$RECYCLE.BIN", "#recycle",
-        )
+        return _skip_dir_name(name)
 
     # ---------- 单条立即执行 ----------
 
@@ -736,8 +776,9 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
             if group:
                 for info in part:
+                    summary = _dir_summary(info["entry"], wanted)
                     dirs.append({"name": info["name"], "path": str(info["entry"]),
-                                 "count": _count_strm(info["entry"], wanted),
+                                 "count": summary["count"], "scraped": summary["scraped"],
                                  "mtime": info["mtime"]})
                 continue
             for info in part:

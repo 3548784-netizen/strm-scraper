@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,6 +84,108 @@ def iter_sources(roots: list[str], extensions: list[str], recursive: bool = True
                 path = Path(current) / name
                 if path.suffix.lower() in wanted:
                     yield path
+
+
+def scan_rows(roots: list[str], extensions: list[str], recursive: bool = True,
+              progress=None, workers: int = 4) -> list[tuple[str, int, float]]:
+    """一次遍历拿到（路径, 大小, 修改时间），尽量少打系统调用。
+
+    比 ``iter_sources`` + 逐条 ``stat`` 快很多：``os.scandir`` 在 Windows /
+    SMB 上会顺带把大小和修改时间带回来（``DirEntry.stat`` 直接读目录项，
+    不再单独发一次 stat 请求），文件越多省得越多——几千个文件的媒体库
+    启动那一下要等几十秒，主要就是耗在逐个 stat 上。
+
+    多个扫描根目录之间用线程并发（网络盘上 IO 等待可以重叠）。
+    """
+    wanted = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
+    counter = {"n": 0}
+    lock = threading.Lock()
+
+    def bump(delta: int) -> None:
+        """累加已发现数量；每 200 个才回调一次，别把回调本身变成负担。"""
+        with lock:
+            counter["n"] += delta
+            total = counter["n"]
+            report = progress is not None and total % 200 < delta
+        if report:
+            progress(total)
+
+    def walk_one(root: str) -> list[tuple[str, int, float]]:
+        found: list[tuple[str, int, float]] = []
+        base = Path(root)
+        if not base.is_dir():
+            log.warning("扫描根目录不存在，已跳过：%s", base)
+            return found
+        if not recursive:
+            try:
+                entries = list(os.scandir(base))
+            except OSError as exc:
+                log.warning("读取目录失败，已跳过：%s（%s）", base, exc)
+                return found
+            for entry in entries:
+                row = _row_of(entry, wanted, want_dir=False)
+                if row:
+                    found.append(row)
+                    bump(1)
+            return found
+
+        stack = [str(base)]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                if not _skip_scan_dir(entry.name):
+                                    stack.append(entry.path)
+                                continue
+                            row = _row_of(entry, wanted, want_dir=True)
+                        except OSError:
+                            continue
+                        if row:
+                            found.append(row)
+                            bump(1)
+            except OSError as exc:
+                log.warning("读取目录失败，已跳过：%s（%s）", current, exc)
+        return found
+
+    result: list[tuple[str, int, float]] = []
+    if len(roots) > 1 and workers > 1:
+        with ThreadPoolExecutor(max_workers=min(workers, len(roots))) as pool:
+            for chunk in pool.map(walk_one, roots):
+                result.extend(chunk)
+    else:
+        for root in roots:
+            result.extend(walk_one(root))
+    if progress:
+        progress(len(result))
+    return result
+
+
+# 遍历时跳过的目录（群晖缩略图、回收站之类）
+_SKIP_DIRS = {"@eaDir", "__pycache__", "node_modules", "$RECYCLE.BIN", "#recycle"}
+
+
+def _skip_scan_dir(name: str) -> bool:
+    return name.startswith(".") or name in _SKIP_DIRS
+
+
+def _row_of(entry: os.DirEntry, wanted: set[str], want_dir: bool):
+    """目录项转成（路径, 大小, 修改时间）；不感兴趣的返回 None。"""
+    name = entry.name
+    if want_dir and name.lower() in IGNORED_NAMES:
+        return None
+    suffix = os.path.splitext(name)[1].lower()
+    if suffix not in wanted:
+        return None
+    try:
+        stat = entry.stat(follow_symlinks=False)
+    except OSError:
+        return None
+    # 精度和 signature() 保持一致：两处存进库的时间戳必须同量级，
+    # 否则同一个文件在「扫描登记」和「处理完回写」时会看起来像变过
+    return (entry.path, stat.st_size, round(stat.st_mtime, 3))
 
 
 def product_state(target: Target, want_nfo: bool, want_poster: bool,

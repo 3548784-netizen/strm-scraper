@@ -345,10 +345,12 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         dir_path: str = Query("", alias="dir"),
         page: int = Query(1, ge=1),
         size: int = Query(30, ge=1, le=200),
+        sort: str = Query("added"),
+        order: str = Query("desc"),
     ):
         rows = store.items(
             status=status_filter, keyword=keyword, dir_path=dir_path,
-            limit=size, offset=(page - 1) * size,
+            limit=size, offset=(page - 1) * size, sort=sort, order=order,
         )
         return {
             "page": page,
@@ -366,6 +368,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                     "duration": round(row.duration, 1),
                     "attempts": row.attempts,
                     "updated": int(row.updated),
+                    "added": int(row.added),
                     "frame_at": round(row.frame_at, 2),
                     "artifacts": artifacts(build_target(Path(row.path))),
                 }
@@ -378,9 +381,12 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         status_filter: str = Query("all", alias="status"),
         keyword: str = Query("", alias="q"),
         limit: int = Query(400, ge=1, le=2000),
+        sort: str = Query("added"),
+        order: str = Query("desc"),
     ):
         """任务列表的「按文件夹」视图：每个文件夹一行，带组内进度。"""
-        groups = store.dir_groups(status_filter, keyword, limit=limit)
+        groups = store.dir_groups(status_filter, keyword, limit=limit,
+                                  sort=sort, order=order)
         roots = sorted((str(Path(r).resolve()) for r in cfg.scan.roots), key=len, reverse=True)
         for group in groups:
             group["rel"] = ""
@@ -643,7 +649,8 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     @app.get("/api/files")
     def list_files(path: str = Query(""), q: str = Query(""),
-                   limit: int = Query(500, ge=1, le=2000)):
+                   limit: int = Query(500, ge=1, le=2000),
+                   sort: str = Query("added"), order: str = Query("desc")):
         roots = _roots()
         if not roots:
             return {
@@ -684,39 +691,63 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         truncated = False
 
         try:
-            entries = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+            entries = list(current.iterdir())
         except OSError as exc:
             raise HTTPException(500, f"读取目录失败：{exc}") from exc
 
+        # 先把每个条目的信息取全再排序：排序要在截断（limit）之前做，
+        # 否则「取前 500 个再排序」等于随机挑 500 个
+        infos: list[dict] = []
         for entry in entries:
             name = entry.name
             try:
                 is_dir = entry.is_dir()
             except OSError:
                 continue
-            if is_dir:
-                if _skip_dir(name):
-                    continue
-                if keyword and keyword not in name.lower():
-                    continue
-                dirs.append({"name": name, "path": str(entry), "count": _count_strm(entry, wanted)})
+            if is_dir and _skip_dir(name):
                 continue
-
-            if name.lower() in IGNORED_NAMES or entry.suffix.lower() not in wanted:
+            if not is_dir and (name.lower() in IGNORED_NAMES
+                               or entry.suffix.lower() not in wanted):
                 continue
             if keyword and keyword not in name.lower():
                 continue
-            if len(file_rows) >= limit:
-                truncated = True
-                break
             try:
                 stat = entry.stat()
                 size, mtime = stat.st_size, round(stat.st_mtime, 1)
             except OSError:
                 size, mtime = 0, 0.0
-            file_rows.append({
-                "path": str(entry), "name": name, "size": size, "mtime": mtime,
+            infos.append({
+                "entry": entry, "name": name, "is_dir": is_dir,
+                "size": size, "mtime": mtime,
             })
+
+        descending = str(order).lower() == "desc"
+        if sort == "size":
+            key = lambda info: (info["size"], info["name"].lower())
+        elif sort == "added":
+            # 「添加时间」用文件修改时间：网盘下载 / 转存后基本就是这个时间
+            key = lambda info: (info["mtime"], info["name"].lower())
+        else:
+            key = lambda info: info["name"].lower()
+        # 文件夹永远排在文件前面，两组各自按选择的规则排
+        for group in (True, False):
+            part = [i for i in infos if i["is_dir"] is group]
+            part.sort(key=key, reverse=descending)
+
+            if group:
+                for info in part:
+                    dirs.append({"name": info["name"], "path": str(info["entry"]),
+                                 "count": _count_strm(info["entry"], wanted),
+                                 "mtime": info["mtime"]})
+                continue
+            for info in part:
+                if len(file_rows) >= limit:
+                    truncated = True
+                    break
+                file_rows.append({
+                    "path": str(info["entry"]), "name": info["name"],
+                    "size": info["size"], "mtime": info["mtime"],
+                })
 
         status_map = store.get_many(row["path"] for row in file_rows)
         for row in file_rows:

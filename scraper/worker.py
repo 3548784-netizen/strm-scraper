@@ -13,7 +13,7 @@ from typing import Callable, Iterable
 
 from . import frames, nfo, picker, probe, throttle
 from .config import Config
-from .media import (Target, artifacts, build_target, iter_sources, product_state,
+from .media import (Target, artifacts, build_target, product_state, scan_rows,
                     signature)
 from .state import Item, StateStore
 
@@ -180,6 +180,9 @@ class Runner:
         self.last_error = ""
         self.last_message = ""
         self.mode = ""
+        # 扫描阶段已发现的文件数：文件多时启动那一下要好几秒，
+        # 透到界面上至少能看出它在动，而不是像卡住了
+        self.scanned = 0
         # 只跑这些路径（文件管理里勾选的范围）；None 表示整库待处理都跑
         self._only: set[str] | None = None
         # 本轮是否强制覆盖已有产物（文件管理里的「开始重刮」）
@@ -209,6 +212,7 @@ class Runner:
             self.current.clear()
             self.started_at = time.time()
             self.finished_at = 0.0
+            self.scanned = 0
             self.last_error = ""
             self.last_message = ""
             self.state = "scanning"
@@ -312,6 +316,7 @@ class Runner:
                 "processed": self.processed,
                 "succeeded": self.succeeded,
                 "failed": self.failed,
+                "scanned": self.scanned,
                 "active": sorted(self.current),
                 "concurrency": self.cfg.scan.concurrency,
                 "elapsed": round(elapsed, 1),
@@ -378,10 +383,11 @@ class Runner:
                 self.store.reset_one(path)
             return len(rows)
 
-        rows = []
-        for source in iter_sources(cfg.scan.roots, cfg.scan.extensions, cfg.scan.recursive):
-            size, mtime = signature(source)
-            rows.append((str(source), size, mtime))
+        started = time.monotonic()
+        rows = scan_rows(cfg.scan.roots, cfg.scan.extensions, cfg.scan.recursive,
+                         progress=self._note_scan)
+        if not rows:
+            return 0
         added = self.store.ensure(rows)
 
         if full:
@@ -391,17 +397,46 @@ class Runner:
         else:
             # 增量：失败的自动重试；成功的只要产物缺失也会重新入队
             self.store.reset(("failed",))
-            for path, size, mtime in rows:
-                item = self.store.get(path)
-                if item and item.status in ("ok", "skipped"):
-                    target = build_target(Path(path))
-                    complete, _ = product_state(
-                        target, cfg.scrape.write_nfo, cfg.scrape.write_poster,
-                        cfg.scrape.write_fanart, cfg.scrape.thumb.enabled,
-                    )
-                    if not complete:
-                        self.store.reset_one(path)
+            # 一次批量取状态：逐个 get() 几千个文件就是几千次查询
+            known = self.store.get_many(path for path, _s, _m in rows)
+            stale: list[str] = []
+            for path, _size, _mtime in rows:
+                item = known.get(path)
+                if not item or item.status not in ("ok", "skipped"):
+                    continue
+                stale.append(path)
+            for path in self._missing_products(stale):
+                self.store.reset_one(path)
+
+        log.info("扫描完成：%s 个文件，新增 %s 个，用时 %.1f 秒",
+                 len(rows), added, time.monotonic() - started)
+        self.scanned = len(rows)
         return added
+
+    def _note_scan(self, count: int) -> None:
+        """扫描进度回调，只存个数字，不写日志（文件多时会刷屏）。"""
+        self.scanned = count
+
+    def _missing_products(self, paths: list[str]) -> list[str]:
+        """挑出「状态是已完成、但产物已经不在了」的条目。
+
+        每个文件要看好几个产物文件在不在，网络盘上逐个串行 stat 很慢，
+        这里并发查（只是 stat，不占 CPU）。
+        """
+        cfg = self.cfg
+        if not paths:
+            return []
+
+        def check(path: str) -> str:
+            target = build_target(Path(path))
+            complete, _ = product_state(
+                target, cfg.scrape.write_nfo, cfg.scrape.write_poster,
+                cfg.scrape.write_fanart, cfg.scrape.thumb.enabled,
+            )
+            return "" if complete else path
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return [path for path in pool.map(check, paths) if path]
 
     def _drain(self) -> list[str]:
         """取空待处理队列，返回刮削成功的路径。

@@ -24,6 +24,11 @@ MIN_BRIGHTNESS = 12.0
 # 轮询 ffmpeg 是否退出的间隔。取 0.2 秒，暂停时最多这么久就能收到中断
 _POLL_SECONDS = 0.2
 
+# 采样点全部失败时依次尝试的位置（秒）。只试 0 秒不够：不少片子开头是
+# 黑场或纯色片头，亮度判定会直接判它无效，于是明明能出帧却报"全部失败"。
+# 往后挪几秒就常常有画面了。
+FALLBACK_SECONDS = (0.0, 1.0, 3.0, 5.0, 8.0)
+
 
 class FrameError(RuntimeError):
     """抓帧失败。"""
@@ -193,31 +198,60 @@ def capture_best(source: str, duration: float, positions: list[float],
         if not ok:
             if _aborted(abort):
                 raise CaptureAborted("任务已暂停")
+            log.debug("位置 %.2f（%.1fs）抓帧失败", ratio, seconds)
             continue
 
         score = sharpness(target)
         if score is None:
+            log.debug("位置 %.2f（%.1fs）帧不可用（黑屏 / 纯色），换下一个", ratio, seconds)
             _drop(target)
             continue
         frames.append((target, score))
 
     if not frames:
-        # 兜底：有的源只能在开头正常出帧
-        fallback = workdir / "f_fallback.jpg"
-        if capture(source, 0.0, fallback, timeout=timeout, fast_seek=True, abort=abort):
-            score = sharpness(fallback)
-            if score is not None:
-                frames.append((fallback, score))
+        frames.extend(_fallback_frames(source, duration, workdir, timeout, abort))
 
     if not frames:
         raise FrameError(
-            f"{len(positions)} 个时间点全部抓帧失败：链接可能已失效、源站拒绝 Range 请求，"
+            f"{len(positions)} 个时间点全部抓帧失败，兜底位置（"
+            + " / ".join(f"{s:g}s" for s in FALLBACK_SECONDS)
+            + "）也没有可用画面：链接可能已失效、源站拒绝 Range 请求，"
             "或视频编码无法解码（看 DEBUG 日志里的 ffmpeg 输出）"
         )
 
     log.debug("采样 %s 帧，成功 %s 帧", len(positions), len(frames))
     frames.sort(key=lambda item: item[1], reverse=True)
     return frames[0][0], len(frames)
+
+
+def _fallback_frames(source: str, duration: float, workdir: Path, timeout: int,
+                     abort: threading.Event | None) -> list[tuple[Path, float]]:
+    """采样点全部失败后的兜底：从开头往后挪着试，直到拿到一帧有画面的。
+
+    很多源的片头是黑场 / 纯色 / 渐入，0 秒这一帧会被亮度判定筛掉，但往后
+    几秒就是正常画面。原来只试 0 秒，于是这类文件白报"全部失败"，用户
+    手选一次 0:03 就成功了。这里按 :data:`FALLBACK_SECONDS` 依次尝试。
+    """
+    for offset in FALLBACK_SECONDS:
+        if duration > 0 and offset >= duration:
+            break
+        if _aborted(abort):
+            raise CaptureAborted("任务已暂停")
+        if not throttle.GUARD.wait(abort):
+            raise CaptureAborted("任务已暂停")
+
+        fallback = workdir / "f_fallback.jpg"
+        if not capture(source, offset, fallback, timeout=timeout,
+                       fast_seek=True, abort=abort):
+            continue
+        score = sharpness(fallback)
+        if score is None:
+            log.debug("兜底 %.1fs 是黑屏 / 纯色，再往后试", offset)
+            _drop(fallback)
+            continue
+        log.info("采样点全部失败，兜底在 %.1fs 抓到可用画面", offset)
+        return [(fallback, score)]
+    return []
 
 
 def sharpness(path: Path) -> float | None:

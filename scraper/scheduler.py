@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from .config import Config
-from .media import iter_sources
+from .media import scan_rows
 from .state import StateStore
 from .worker import Runner
 
@@ -257,7 +257,7 @@ class Scheduler:
         """把监控目录展开成 strm 列表（递归子目录）。"""
         if not self._scope_exists(scope):
             return []
-        return [str(p) for p in iter_sources(
+        return [row[0] for row in scan_rows(
             [scope], self.cfg.scan.extensions, recursive=True)]
 
     def _load(self) -> None:

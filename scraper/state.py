@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS items (
     duration  REAL    NOT NULL DEFAULT 0,
     attempts  INTEGER NOT NULL DEFAULT 0,
     updated   REAL    NOT NULL DEFAULT 0,
-    frame_at  REAL    NOT NULL DEFAULT 0
+    frame_at  REAL    NOT NULL DEFAULT 0,
+    added     REAL    NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 
@@ -61,6 +62,8 @@ class Item:
     updated: float = 0.0
     # 手动选定的帧位置（秒），0 表示交给程序自动挑
     frame_at: float = 0.0
+    # 加入任务列表的时间，用来按「添加时间」排序（updated 每次处理都会变）
+    added: float = 0.0
 
     @property
     def name(self) -> str:
@@ -88,6 +91,15 @@ class StateStore:
             self._conn.execute(
                 "ALTER TABLE items ADD COLUMN frame_at REAL NOT NULL DEFAULT 0"
             )
+        if "added" not in columns:
+            # 老库没有「加入时间」这一列：用 updated 兜底，至少不会全是 0
+            self._conn.execute(
+                "ALTER TABLE items ADD COLUMN added REAL NOT NULL DEFAULT 0"
+            )
+            self._conn.execute("UPDATE items SET added = updated WHERE added = 0")
+        # 索引要在补列之后建（老库没有这一列时建索引会直接报错）
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_items_added ON items(added)")
+        self._conn.create_function("fname", 1, _sql_basename)
 
     def close(self) -> None:
         with self._lock:
@@ -97,15 +109,19 @@ class StateStore:
 
     def ensure(self, sources: Iterable[tuple[str, int, float]]) -> int:
         """登记扫描到的文件，返回新增数量。已有记录不动。"""
-        added = 0
+        now = time.time()
+        rows = [(path, size, mtime, now, now) for path, size, mtime in sources]
+        if not rows:
+            return 0
         with self._lock:
-            for path, size, mtime in sources:
-                cur = self._conn.execute(
-                    "INSERT OR IGNORE INTO items(path, size, mtime, status, updated) "
-                    "VALUES(?,?,?, 'pending', ?)",
-                    (path, size, mtime, time.time()),
-                )
-                added += cur.rowcount
+            before = self._conn.total_changes
+            # executemany 一次打包，几千个文件也只有一次往返
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO items(path, size, mtime, status, updated, added) "
+                "VALUES(?,?,?, 'pending', ?, ?)",
+                rows,
+            )
+            added = self._conn.total_changes - before
             self._conn.commit()
         return added
 
@@ -272,7 +288,8 @@ class StateStore:
         return [_row_to_item(r) for r in found[:limit]]
 
     def items(self, status: str | None = None, keyword: str = "",
-              dir_path: str = "", limit: int = 50, offset: int = 0) -> list[Item]:
+              dir_path: str = "", limit: int = 50, offset: int = 0,
+              sort: str = "added", order: str = "desc") -> list[Item]:
         sql = "SELECT * FROM items WHERE 1=1"
         args: list = []
         if status and status != "all":
@@ -285,7 +302,7 @@ class StateStore:
             # 先按前缀粗筛，再由 parent_dir 精确到这一层（避免带进子目录）
             sql += " AND path LIKE ?"
             args.append(f"{dir_path}%")
-        sql += " ORDER BY updated DESC"
+        sql += " ORDER BY " + _order_by(sort, order)
         if not dir_path:
             sql += " LIMIT ? OFFSET ?"
             args += [limit, offset]
@@ -317,12 +334,14 @@ class StateStore:
         return len(rows)
 
     def dir_groups(self, status: str | None = None, keyword: str = "",
-                   limit: int = 400) -> list[dict]:
+                   limit: int = 400, sort: str = "added", order: str = "desc") -> list[dict]:
         """按所在文件夹聚合，任务列表的「按文件夹」视图用。
 
         状态筛选只影响参与统计的记录（比如只看失败时，只列出有失败项的文件夹）。
+        ``sort`` 传 name / added 时按文件夹名或最新加入时间排，不传则按
+        「正在跑的 → 有失败的 → 有待处理的」这个行动优先级排。
         """
-        sql = "SELECT path, status, updated FROM items WHERE 1=1"
+        sql = "SELECT path, status, updated, added FROM items WHERE 1=1"
         args: list = []
         if status and status != "all":
             sql += " AND status=?"
@@ -334,7 +353,7 @@ class StateStore:
             rows = self._conn.execute(sql, args).fetchall()
 
         groups: dict[str, dict] = {}
-        for path, st, updated in rows:
+        for path, st, updated, added in rows:
             key = parent_dir(path)
             group = groups.get(key)
             if group is None:
@@ -342,20 +361,36 @@ class StateStore:
                     "path": key, "name": dir_label(key),
                     "total": 0, "pending": 0, "running": 0,
                     "ok": 0, "skipped": 0, "failed": 0, "updated": 0.0,
+                    "added": 0.0,
                 }
             group["total"] += 1
             if st in group:
                 group[st] += 1
             if updated and updated > group["updated"]:
                 group["updated"] = float(updated)
+            if added and added > group["added"]:
+                group["added"] = float(added)
 
         result = list(groups.values())
         for group in result:
             group["done"] = group["ok"] + group["skipped"]
             group["pct"] = round(100 * group["done"] / group["total"]) if group["total"] else 0
-        # 正在跑的排最前，其次有失败的，再其次还有待处理的
-        result.sort(key=lambda g: (-g["running"], -g["failed"], -g["pending"], g["path"].lower()))
+        if sort == "name":
+            result.sort(key=lambda g: g["name"].lower(), reverse=(order == "desc"))
+        elif sort == "added":
+            result.sort(key=lambda g: (g["added"], g["name"].lower()),
+                        reverse=(order == "desc"))
+        elif sort == "updated":
+            # 用户点了「最近处理」就得按时间排，不能再套行动优先级，
+            # 否则点了和不点看起来一模一样
+            result.sort(key=lambda g: (g["updated"], g["name"].lower()),
+                        reverse=(order == "desc"))
+        else:
+            # 正在跑的排最前，其次有失败的，再其次还有待处理的
+            result.sort(key=lambda g: (-g["running"], -g["failed"], -g["pending"],
+                                       g["path"].lower()))
         return result[:limit]
+
 
     def paths(self, statuses: tuple[str, ...] = ("ok", "skipped"),
               limit: int = 2000) -> list[str]:
@@ -397,7 +432,32 @@ class StateStore:
             self._conn.commit()
 
 
+def _sql_basename(path: str) -> str:
+    """给 SQLite 用的取文件名函数（按名称排序时只看文件名，不看目录）。"""
+    if not path:
+        return ""
+    cut = max(path.rfind("/"), path.rfind("\\"))
+    return path[cut + 1:] if cut >= 0 else path
+
+
+def _order_by(sort: str, order: str) -> str:
+    """拼 ORDER BY 片段。合法值之外一律退回「最近处理优先」。"""
+    direction = "ASC" if str(order).lower() == "asc" else "DESC"
+    if sort == "name":
+        # 名称排序用 fname()：整条路径排会把同目录的文件打散，看着更像乱序
+        return f"fname(path) COLLATE NOCASE {direction}, path {direction}"
+    if sort == "added":
+        # 一批文件是同时入库的（added 完全相同），这时按入库先后（rowid）兜底，
+        # 而不是按文件名，否则「添加时间」看着和「名称」一模一样
+        return f"added {direction}, rowid {direction}"
+    if sort == "status":
+        return f"status {direction}, updated DESC, path ASC"
+    # 时间戳相同的行必须有确定的先后（否则翻页会出现重复 / 漏行）
+    return f"updated {direction}, path ASC"
+
+
 def _row_to_item(row: sqlite3.Row) -> Item:
+    keys = row.keys()
     return Item(
         path=row["path"],
         size=row["size"],
@@ -408,5 +468,6 @@ def _row_to_item(row: sqlite3.Row) -> Item:
         duration=row["duration"],
         attempts=row["attempts"],
         updated=row["updated"],
-        frame_at=row["frame_at"] if "frame_at" in row.keys() else 0.0,
+        frame_at=row["frame_at"] if "frame_at" in keys else 0.0,
+        added=row["added"] if "added" in keys else row["updated"],
     )

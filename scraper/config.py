@@ -298,10 +298,14 @@ class Config:
                 raise ValueError(f"配置文件格式不对，顶层应该是字典：{candidate}")
             # 老版本用的是单个 jellyfin 段，自动转成 servers 列表
             legacy = loaded.pop("jellyfin", None)
-            notes = _migrate_stale_defaults(loaded)
+            notes, changed = _migrate_stale_defaults(loaded)
             raw = _deep_merge(raw, loaded)
             if legacy and not raw.get("servers"):
                 raw["servers"] = [_legacy_server(legacy)]
+            if changed:
+                # 改完顺手写回文件：迁移只在内存生效的话，每次启动都会重复
+                # 提示同一件事，用户还会以为设置没保存
+                _persist_migrations(candidate, changed)
 
         raw = _apply_env(raw)
         cfg = _from_dict(cls, raw)
@@ -477,33 +481,96 @@ class Config:
         return "，".join(parts)
 
 
-def _migrate_stale_defaults(raw: dict) -> list[str]:
+def _migrate_stale_defaults(raw: dict) -> tuple[list[str], list[tuple[str, str, Any, Any]]]:
     """把配置文件里**仍然等于旧默认值**的项迁成新默认值。
 
     只认旧默认值本身：这些基本都是照旧示例抄下来的，不是有人特意调过；
-    写成别的值一律不动。返回给用户看的说明。
+    写成别的值一律不动。返回（给用户看的说明, 需要写回文件的改动）。
     """
     notes: list[str] = []
+    changed: list[tuple[str, str, Any, Any]] = []
     scan = raw.get("scan")
     if isinstance(scan, dict):
         if scan.get("timeout") == 240:
             scan["timeout"] = 30
+            changed.append(("scan", "timeout", 240, 30))
             notes.append(
                 "抓帧超时从 240 秒收到 30 秒（这是单个时间点抓一帧的超时）："
                 "网盘源超过 30 秒基本就是被限流或链接废了，再等只会拖住整个队列"
             )
         if scan.get("probe_timeout") == 20:
             scan["probe_timeout"] = 8
+            changed.append(("scan", "probe_timeout", 20, 8))
             notes.append("探测超时从 20 秒收到 8 秒，失效链接能更快放掉")
 
     scrape = raw.get("scrape")
     if isinstance(scrape, dict) and scrape.get("frames") == 5:
         scrape["frames"] = 2
+        changed.append(("scrape", "frames", 5, 2))
         notes.append(
             "采样帧数从 5 改成 2（取位置列表两端 0.15 / 0.75）：单文件抓帧次数少 60%，"
             "整库速度快一倍以上，海报质量基本没差别；想更挑剔改回 5 即可"
         )
-    return notes
+    return notes, changed
+
+
+def _persist_migrations(path: Path, changed: list[tuple[str, str, Any, Any]]) -> None:
+    """把迁移后的值写回 yaml，只动这几行，注释和其它内容原样保留。
+
+    不用 ``save()`` 重写整份文件，是因为那样会把用户写的注释全冲掉；这里
+    按「顶层段 + 键名」定位到具体一行，只替换冒号后面的值。
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("配置迁移结果没能写回 %s：%s", path, exc)
+        return
+
+    wants = {(section, key): (old, new) for section, key, old, new in changed}
+    hit: set[tuple[str, str]] = set()
+    section = ""
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and not line[0].isspace():
+            head = stripped.split(":", 1)[0].strip()
+            section = head
+        else:
+            for (want_section, key), (old, new) in wants.items():
+                if section != want_section or (want_section, key) in hit:
+                    continue
+                if not stripped.startswith(key + ":"):
+                    continue
+                prefix, sep, tail = line.partition(":")
+                value_part = tail
+                comment = ""
+                if "#" in value_part:
+                    value_part, comment = value_part.split("#", 1)
+                    comment = "#" + comment
+                try:
+                    current = yaml.safe_load(value_part) if yaml else value_part.strip()
+                except Exception:
+                    continue
+                if current != old:
+                    continue
+                ending = "\n" if line.endswith("\n") else ""
+                line = f"{prefix}: {new}{' ' + comment.strip() if comment else ''}{ending}"
+                hit.add((want_section, key))
+        out.append(line)
+
+    if not hit:
+        log.info("配置里没找到需要写回的旧默认值（%s），只按内存值运行", path)
+        return
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text("".join(out), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("配置迁移结果没能写回 %s：%s", path, exc)
+        return
+    log.info("已把 %s 项迁移后的默认值写回 %s（注释与其它设置未改动）",
+             len(hit), path)
+
 
 
 def _legacy_server(legacy: dict) -> dict:

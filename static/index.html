@@ -1481,16 +1481,23 @@ const STATUS_TEXT = {
   paused: '已暂停', stopping: '正在停止',
 };
 
-function imgUrl(path, kind, version) {
+function imgUrl(path, kind, version, width) {
   // v 用文件字节数：图片重新生成后大小基本都会变，借此绕过浏览器缓存
+  // width 传了就取服务端压好的小图（列表用），不传是原图（预览、选帧用）
   return `/api/files/image?kind=${encodeURIComponent(kind)}`
-    + `&path=${encodeURIComponent(path)}&v=${encodeURIComponent(version || 0)}`;
+    + `&path=${encodeURIComponent(path)}&v=${encodeURIComponent(version || 0)}`
+    + (width ? `&w=${width}` : '');
 }
 function thumbCell(path, exists, kind) {
   if (!exists) return '<span class="nothing">—</span>';
-  const cls = kind === 'poster' ? 'thumb' : 'thumb wide';
-  return `<img class="${cls}" loading="lazy" data-preview="${esc(path)}" data-kind="${kind}"
-            data-v="${exists}" src="${esc(imgUrl(path, kind, exists))}"
+  // 格子只有 34×51 / 60×34，按 2x 屏取图就够了；原图 1000×1500 纯属浪费带宽
+  const wide = kind !== 'poster';
+  const w = wide ? 144 : 96;
+  const cls = wide ? 'thumb wide' : 'thumb';
+  const box = wide ? 'width="60" height="34"' : 'width="34" height="51"';
+  return `<img class="${cls}" loading="lazy" decoding="async" ${box}
+            data-preview="${esc(path)}" data-kind="${kind}"
+            data-v="${exists}" src="${esc(imgUrl(path, kind, exists, w))}"
             onerror="this.style.visibility='hidden'">`;
 }
 

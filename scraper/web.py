@@ -23,6 +23,7 @@ from .nfo import display_title
 from .picker import FramePicker
 from .scheduler import Scheduler, TaskNotFound
 from .state import StateStore
+from .thumbs import ThumbCache
 from .worker import Runner, ScrapeResult, process
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,11 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # 页面本体每次都回源校验：升级镜像后浏览器别拿旧前端（新按钮点不到、样式对不上）
 NO_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
+# 缩略图/原图的缓存策略：URL 里带着图片的字节数（重新出图后基本都会变），
+# 所以可以放心长时间缓存——翻页、列表重渲染都不会再打网络。留一天是为了
+# 万一重出图后字节数恰好没变，也能自己恢复，不用等用户手动强制刷新。
+IMAGE_CACHE = {"Cache-Control": "private, max-age=86400"}
 
 # 不需要登录就能访问的路径
 PUBLIC_PATHS = {"/login", "/api/login", "/api/auth-info", "/api/health", "/favicon.ico"}
@@ -139,6 +145,8 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
     throttle = LoginThrottle()
     # 选帧缓存放在 state.db 旁边，跟着 /config 一起持久化
     picker = FramePicker(cfg, Path(cfg.storage.state_db).parent / "framecache")
+    # 列表缩略图：原图太大，按需压成几十像素宽的小图缓存起来
+    thumbs = ThumbCache(Path(cfg.storage.state_db).parent / "thumbs")
     manual_refresh: dict = {"running": False, "done": 0, "total": 0, "message": ""}
     # 定时自动化：main.py 里已经建好并启动了；单独调 create_app 时兜一个
     sched = scheduler or Scheduler(cfg, runner, store)
@@ -806,15 +814,22 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         }
 
     @app.get("/api/files/image")
-    def file_image(path: str = Query(...), kind: str = Query("poster")):
+    def file_image(path: str = Query(...), kind: str = Query("poster"),
+                   w: int = Query(0, ge=0, le=512)):
+        """海报 / 背景图 / 缩略图。
+
+        列表里只用几十像素，`w` 传像素宽度时改发服务端压好的小图（几十 KB
+        而不是上百 KB 的原图，条目多的时候差别是几十兆）；不传 `w` 就是原图，
+        预览弹窗和选帧用。
+        """
         source = _within_roots(path)
         target = build_target(source)
         picked = {"poster": target.poster, "fanart": target.fanart,
                   "thumb": target.thumb}.get(kind)
         if not picked or not picked.is_file():
             raise HTTPException(404, "图片还没生成")
-        return FileResponse(picked, media_type="image/jpeg",
-                            headers={"Cache-Control": "private, max-age=60"})
+        served = thumbs.get(picked, w) if w else picked
+        return FileResponse(served, media_type="image/jpeg", headers=IMAGE_CACHE)
 
     @app.post("/api/files/delete")
     def files_delete(payload: dict):

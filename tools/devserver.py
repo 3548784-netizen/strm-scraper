@@ -296,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         for name in ("state.db", "state.db-journal", "auth.json"):
             (DATA / name).unlink(missing_ok=True)
         shutil.rmtree(DATA / "framecache", ignore_errors=True)
+        shutil.rmtree(DATA / "thumbs", ignore_errors=True)
         # 产物写在素材目录里，重跑前清掉，别让上一轮的结果影响判断
         for leftover in ("*.nfo", "*.jpg", "*.png", "*-poster.*", "*-fanart.*"):
             for path in MEDIA.rglob(leftover):

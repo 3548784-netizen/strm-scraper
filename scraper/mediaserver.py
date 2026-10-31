@@ -252,22 +252,29 @@ class MediaServerClient:
         return index
 
     def refresh_item(self, item_id: str) -> None:
-        """重建单个条目的图片。
+        """让条目重新检查一遍图片，有就更新、没有就补上。
 
+        **不能带 ``ReplaceAllImages``，也不能用 ``ImageRefreshMode=FullRefresh``**
+        —— 那等于在界面上勾「替换所有图像」：服务器会先把条目的图片删掉
+        （删的就是媒体目录里 ``<名字>-poster.jpg`` / ``-fanart.jpg`` 这些
+        文件本身），再去图像源重新抓一份。刮削器的图就是这么被清空的，
+        尤其是刚刮完、图片刚写进去的时候。
+
+        这里只要求「重新校验图片」：本地已经有图就直接用上，没有才去补。
         body 和 query 各写一份：Jellyfin 12.x 只认 body，Emby 对 query 更稳，
         两边都给才不会有一边静默失败。
         """
         query = urllib.parse.urlencode({
             "MetadataRefreshMode": "Default",
-            "ImageRefreshMode": "FullRefresh",
+            "ImageRefreshMode": "Default",
             "ReplaceAllMetadata": "false",
-            "ReplaceAllImages": "true",
+            "ReplaceAllImages": "false",
         })
         body = {
             "MetadataRefreshMode": "Default",
-            "ImageRefreshMode": "FullRefresh",
+            "ImageRefreshMode": "Default",
             "ReplaceAllMetadata": False,
-            "ReplaceAllImages": True,
+            "ReplaceAllImages": False,
         }
         self._request(f"/Items/{item_id}/Refresh?{query}", "POST", body)
 

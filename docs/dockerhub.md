@@ -87,7 +87,7 @@ docker compose up -d
 
 比例写错会自动校正并在日志里告警，不会被媒体服务器拉伸裁切。
 
-**媒体服务器联动**：同时配置多台 Emby / Jellyfin，刮完自动重建图片缓存；三种认证头依次尝试；刷新参数同时写 body 和 query（Jellyfin 12.x 只认 body）；刷新后回查，确认识别到了图。
+**媒体服务器联动**：同时配置多台 Emby / Jellyfin，刮完自动重建图片缓存；三种认证头依次尝试；刷新参数同时写 body 和 query（Jellyfin 12.x 只认 body）；刷新后回查，确认识别到了图。刷新只做图片校验，**不会**带「替换所有图像」——那个选项会把媒体目录里的 `-poster.jpg` 删掉再重抓，刮好的图会被清空。
 
 **设置与日志**：扫描目录、并发、超时、海报模式、采样帧数、JPEG 质量、Emby / Jellyfin 地址与密钥、账号密码都能在网页里改，保存即生效。日志三路输出（控制台 / 滚动文件 / 网页实时），可按级别和关键字筛选、一键下载；`docker exec strm-scraper python -m scraper.main --doctor` 一次查完 ffmpeg、目录、状态库、服务器连通性。
 

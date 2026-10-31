@@ -43,6 +43,12 @@ GH_TOKEN = os.environ.get("GH_TOKEN", "")
 SHA_PREFIX = "sha-"
 UA = {"User-Agent": "strm-scraper-prune"}
 
+# 已废弃的版本号标签。10-29 那版短暂用过的语义化版本号体系，当天就回滚了，
+# 镜像停在四天前，留着只会让人拉错。它们和某个旧 sha 标签挂在同一个版本上，
+# GHCR 不支持单独摘标签，只能把整条版本一起删。
+# 已经清干净了，这段可以删掉。
+LEGACY_TAGS = {"1.0", "1.0.0", "v1.0.0"}
+
 
 def _req(url: str, headers: dict | None = None, data: bytes | None = None,
          method: str | None = None) -> urllib.request.Request:
@@ -78,6 +84,8 @@ def pick_keep(tags: list[tuple[str, str]], protected: set[str]) -> tuple[set[str
                   key=lambda x: x[1], reverse=True)  # 新的在前
     keep = set(protected) | {n for n, _ in shas[:KEEP]}
     drop = [n for n, _ in shas if n not in keep]
+    # 历史废弃的版本号标签也不留（不在保护名单里的才算）
+    drop += [n for n, _ in tags if n in LEGACY_TAGS and n not in protected]
     return keep, drop
 
 
@@ -167,6 +175,27 @@ def gh_delete(version_id: int) -> bool:
         return False
 
 
+def plan_versions(versions: list[dict], drop: list[str]) -> dict[int, list[str]]:
+    """决定哪几个版本可以整条删。
+
+    只有当一个版本挂的所有标签都在删除名单里才能删——GHCR 删的是版本不是
+    标签，同版本还挂着 latest 的话，硬删会连正在用的那一版一起抹掉。
+    """
+    drop_set = set(drop)
+    victims: dict[int, list[str]] = {}
+    for v in versions:
+        tags = v.get("metadata", {}).get("container", {}).get("tags") or []
+        hit = [t for t in tags if t in drop_set]
+        if not hit:
+            continue
+        others = [t for t in tags if t not in drop_set]
+        if others:
+            print(f"  跳过 {' '.join(hit)}：同版本还挂着 {' '.join(others)}")
+            continue
+        victims[v["id"]] = hit
+    return victims
+
+
 def prune_ghcr(protected: set[str]) -> None:
     print("== GHCR ==")
     if not GH_TOKEN:
@@ -178,13 +207,11 @@ def prune_ghcr(protected: set[str]) -> None:
         print(f"  列版本失败 HTTP {e.code}，跳过（不影响本次发布）")
         return
 
-    # 摊平成 (tag, 时间)，一个版本可能挂多个 tag
+    # 摊平成 (tag, 时间) 交给统一的保留策略，一个版本可能挂多个 tag
     flat: list[tuple[str, str]] = []
-    owner: dict[str, dict] = {}
     for v in versions:
         for t in (v.get("metadata", {}).get("container", {}).get("tags") or []):
             flat.append((t, v["created_at"]))
-            owner[t] = v
     print(f"  当前 {len(versions)} 个版本 / {len(flat)} 个标签")
 
     keep, drop = pick_keep(flat, protected)
@@ -194,15 +221,7 @@ def prune_ghcr(protected: set[str]) -> None:
         return
 
     # 一个版本里只要还有别的 tag 挂着，就不能整条删
-    victims: dict[int, list[str]] = {}
-    for tag in drop:
-        v = owner[tag]
-        others = [t for t in (v.get("metadata", {}).get("container", {}).get("tags") or [])
-                  if t not in drop]
-        if others:
-            print(f"  跳过 {tag}：同版本还挂着 {' '.join(others)}")
-            continue
-        victims.setdefault(v["id"], []).append(tag)
+    victims = plan_versions(versions, drop)
 
     print(f"  待删 {len(victims)} 个版本："
           f"{' '.join(t for ts in victims.values() for t in ts)}")

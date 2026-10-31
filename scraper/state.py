@@ -29,6 +29,15 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 文件夹封面的「指定来源」：某一层用哪张图当封面，这里记一笔。
+-- 不记的话每次补封面都会退回「子树里按名字排第一张」，合集类目录就总会
+-- 挑到用户不想要的那张。source 为空表示恢复自动。
+CREATE TABLE IF NOT EXISTS folder_art (
+    folder  TEXT PRIMARY KEY,
+    source  TEXT NOT NULL DEFAULT '',
+    updated REAL NOT NULL DEFAULT 0
+);
 """
 
 # pending: 待处理 / running: 处理中 / ok: 已生成 / skipped: 产物齐全无需处理
@@ -214,6 +223,41 @@ class StateStore:
                                 or where.startswith(base + "\\")):
                 result.append(path)
         return result
+
+    # ---------- 文件夹封面的指定来源 ----------
+
+    def set_folder_art(self, folder: str, source: str) -> None:
+        """指定某一层文件夹用哪张图当封面；source 传空就是恢复自动。"""
+        folder = folder.rstrip("/\\")
+        if not folder:
+            return
+        with self._lock:
+            if not source:
+                self._conn.execute("DELETE FROM folder_art WHERE folder=?", (folder,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO folder_art(folder, source, updated) VALUES(?,?,?) "
+                    "ON CONFLICT(folder) DO UPDATE SET source=excluded.source, "
+                    "updated=excluded.updated",
+                    (folder, source, time.time()),
+                )
+            self._conn.commit()
+
+    def get_folder_art(self, folder: str) -> str:
+        """这一层指定的封面，没有就返回空串。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT source FROM folder_art WHERE folder=?", (folder.rstrip("/\\"),)
+            ).fetchone()
+        return row["source"] if row else ""
+
+    def folder_art_map(self) -> dict[str, str]:
+        """一次性取出全部指定关系，列表接口拿来做标记，避免逐行查库。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT folder, source FROM folder_art WHERE source <> ''"
+            ).fetchall()
+        return {row["folder"]: row["source"] for row in rows}
 
     def set_frame_at(self, path: str, seconds: float) -> None:
         """记住手选的帧位置，之后重刮也用这一帧；传 0 表示恢复自动选帧。"""

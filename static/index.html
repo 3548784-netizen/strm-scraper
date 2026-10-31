@@ -347,6 +347,10 @@
   /* 容器 overflow:hidden 会剪掉外扩的焦点环，段内改成内嵌描边 */
   .seg button:focus-visible { outline-offset: -2px; }
 
+  /* 工具栏里的次要小按钮组（展开全部 / 收起全部） */
+  .tb-mini { display: flex; gap: var(--s2); align-items: center; }
+  .tb-mini[hidden] { display: none; }
+
   /* 任务列表的文件夹行 */
   tr.grouprow td { background: var(--surface); border-bottom: 1px solid var(--line); }
   tr.grouprow:hover td { background: var(--surface-2); }
@@ -359,7 +363,15 @@
     color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-line);
     white-space: nowrap; flex: none;
   }
-  .gwrap { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+  /* 目录树的行：缩进量由 --ind 控制（每层 16px），层级靠缩进 + 左侧小横线表达 */
+  .gwrap {
+    display: flex; align-items: center; gap: var(--s3); min-width: 0;
+    position: relative; padding-left: var(--ind, 0px);
+  }
+  .gwrap.nest::before {
+    content: ''; position: absolute; left: calc(var(--ind, 0px) - 12px); top: 50%;
+    width: 9px; height: 1px; background: var(--text-4);
+  }
   .gwrap .grow { flex: 1; }
   .gbtn {
     display: flex; align-items: center; gap: var(--s2); min-width: 0; height: auto;
@@ -424,9 +436,60 @@
   .st.part { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(76, 141, 255, .28); }
   .st.empty { color: var(--text-3); background: transparent; border-color: transparent; }
   .dirrow .st.dirst { font-variant-numeric: tabular-nums; }
+  /* 多层文件夹提示：Emby 里那一层会变成「文件夹条目」，只认 folder.jpg。
+     缺的时候用琥珀色提醒（可修），补好了就用中性灰收掉注意力。 */
+  .foldertag { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs);
+               padding: 1px 7px; border-radius: var(--r-pill); border: 1px solid transparent;
+               white-space: nowrap; vertical-align: middle; }
+  .foldertag.miss { color: var(--warn-ink); background: var(--warn-soft); border-color: rgba(217, 162, 39, .28); }
+  .foldertag.done { color: var(--text-3); background: var(--surface-3); border-color: var(--line); }
+  .foldertag + .reason, .reason + .foldertag { margin-left: var(--s2); }
   .reason { color: var(--err-ink); font-size: var(--fs-2xs); max-width: 300px; display: inline-block;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   .reason.mute { color: var(--text-3); }
+  /* 海报生成进度条：贴在文件列表上方，回答「当前目录还有多少张海报没生成」。
+     和状态列分开：状态说的是「刮没刮过」，这里只认 xxx-poster.jpg 在不在。 */
+  .pstrip {
+    display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+    padding: var(--s2) var(--s4); border-bottom: 1px solid var(--line);
+    background: var(--surface-2); font-size: var(--fs-xs); color: var(--text-2);
+  }
+  .pstrip[hidden] { display: none; }
+  .pstrip .grow { flex: 1; }
+  .pstrip .plabel { display: inline-flex; align-items: center; gap: 5px; color: var(--text);
+                    font-weight: 500; }
+  .pstrip .pbar { width: 150px; height: 6px; border-radius: var(--r-pill);
+                  background: var(--surface-4); overflow: hidden; flex: none; }
+  .pstrip .pbar i { display: block; height: 100%; background: var(--accent);
+                    transition: width .3s var(--ease); }
+  .pstrip .pbar i.full { background: var(--ok); }
+  .pstrip .pnum { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 500; }
+  .pstrip .pnote { color: var(--warn-ink); }
+  .pstrip .pnote.done { color: var(--text-3); }
+  .pstrip .phint { color: var(--text-3); font-size: var(--fs-2xs); }
+  .pstrip .pspin { color: var(--accent-ink); }
+  /* 「只看未生成」是个开关，不是普通按钮，按下后要能一眼看出筛选生效了 */
+  .pstrip .ptoggle.on { background: var(--warn-soft); border-color: rgba(217, 162, 39, .45);
+                        color: var(--warn-ink); }
+
+  /* 文件行里「海报还没生成」的格子：明确写出来，而不是空一格让人猜。
+     尺寸和缩略图一致，行的节奏不会因为缺图而变得参差。 */
+  .pmiss {
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; width: 42px; height: 51px; border-radius: var(--r-xs);
+    color: var(--warn-ink); background: var(--warn-soft);
+    border: 1px dashed rgba(217, 162, 39, .5); font-size: 10px; line-height: 1.05;
+    white-space: nowrap; vertical-align: middle;
+  }
+  .pmiss b { font-weight: 500; }
+  .pmiss.run { color: var(--accent-ink); background: var(--accent-soft);
+               border-color: var(--accent-line); }
+  /* 文件夹行里的子树海报进度：3/12 这种，缺的时候才染色 */
+  .dposter { font-variant-numeric: tabular-nums; font-size: var(--fs-2xs); white-space: nowrap; }
+  .dposter.miss { color: var(--warn-ink); }
+  .dposter.part { color: var(--accent-ink); }
+  .dposter.done { color: var(--text-3); }
+
   .thumb {
     width: 34px; height: 51px; object-fit: cover; border-radius: var(--r-xs);
     border: 1px solid var(--line); background: var(--bg-deep); display: block; cursor: pointer;
@@ -599,6 +662,40 @@
     vertical-align: middle; white-space: nowrap;
   }
   .modal-card.pick { max-width: 920px; }
+
+  /* ---------- 指定文件夹封面 ---------- */
+  .modal-card.art-pick { max-width: 780px; }
+  .art-body { max-height: 64vh; overflow: auto; }
+  .art-note { font-size: var(--fs-2xs); color: var(--text-3); line-height: 1.7; margin: 0 0 var(--s3); }
+  .art-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+              gap: var(--s3); }
+  /* 这是 button，全局按钮的固定高度 / 居中 / nowrap 都得按卡片样式重置，
+     否则高度被压成 32px，海报会从卡片里溢出来 */
+  .art-card {
+    position: relative; display: flex; flex-direction: column; gap: 5px;
+    height: auto; min-width: 0; padding: 5px; border: 1px solid var(--line);
+    border-radius: var(--r-sm); background: var(--surface-2); cursor: pointer;
+    text-align: left; white-space: normal; font: inherit;
+    align-items: stretch; justify-content: flex-start;
+  }
+  .art-card:hover { border-color: var(--accent-line); background: var(--surface-3); }
+  /* 卡片里的图不该自己接事件：拖动图片会触发浏览器原生拖拽，点起来也别扭 */
+  .art-card img, .art-card .n, .art-card .now { pointer-events: none; user-select: none; }
+  .art-card img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; display: block;
+                  border-radius: var(--r-xs); background: var(--bg-deep); }
+  .art-card .n { font-size: var(--fs-2xs); color: var(--text-2); line-height: 1.35;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .art-card .d { font-size: var(--fs-2xs); color: var(--text-3); opacity: .8; line-height: 1.3;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .art-card.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .art-card .now {
+    position: absolute; top: 9px; left: 9px; font-size: var(--fs-2xs);
+    padding: 1px 5px; border-radius: var(--r-pill); background: var(--accent); color: #fff;
+  }
+  .art-empty { padding: var(--s5) 0; text-align: center; color: var(--text-3); font-size: var(--fs-xs); }
+  .art-foot .cur { font-size: var(--fs-2xs); color: var(--text-3); max-width: 380px;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .pick-body {
     display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: var(--s4);
     padding: var(--s4) var(--s5) var(--s1);
@@ -1045,6 +1142,12 @@
         <button class="on" data-view="flat">按文件</button>
         <button data-view="dir">按文件夹</button>
       </div>
+      <div class="tb-mini" id="taskTreeOps" hidden>
+        <button class="tiny ghost" id="btnExpandAll"
+                title="把整棵目录树展开（文件列表先加载前 30 个，其余点开再看）">展开全部</button>
+        <button class="tiny ghost" id="btnCollapseAll"
+                title="全部收起，只留顶层目录">收起全部</button>
+      </div>
       <div class="seg" id="taskSort" title="排序方式；点当前选中项可切换正序 / 倒序">
         <button data-sort="updated">最近处理</button>
         <button data-sort="added">添加时间</button>
@@ -1111,6 +1214,17 @@
       <button class="tiny" id="btnFileRescrape" disabled
               title="选中的文件（含选中的文件夹及其子目录）全部重新刮削，覆盖现有的图片 / NFO">开始重刮</button>
       <div class="menu-wrap">
+        <button class="tiny" id="btnFolderArt" disabled
+                title="给每一层文件夹补 folder.jpg + poster.jpg：父目录里又套了一层时，Emby / Jellyfin 会把中间层当成文件夹条目，它只认这两个固定名字，按视频名生成的海报对那一层无效。正常刮削不会动这一步">
+          开始文件夹海报修复 ▾</button>
+        <div class="menu" id="folderArtMenu" hidden>
+          <div class="menu-note" id="folderArtNote">给选中的文件夹补封面：从里层已刮好的海报出发，每一层都写 folder.jpg + poster.jpg，Emby 和 Jellyfin 都能认</div>
+          <button data-fart="miss">只补缺的（推荐的）</button>
+          <button data-fart="all">全部覆盖重建</button>
+          <button data-fart="pick" title="合集类目录里每部片子各有一张海报，父层该用哪张由你定">指定用哪张图…</button>
+        </div>
+      </div>
+      <div class="menu-wrap">
         <button class="tiny" id="btnFileDel" disabled>删除产物 ▾</button>
         <div class="menu" id="fileDelMenu" hidden>
           <div class="menu-note" id="fileDelNote">对选中的文件操作，删掉后下次刮削会重新生成</div>
@@ -1138,6 +1252,25 @@
         <span class="tb-sep"></span>
         <button class="tiny ghost" id="btnFileRefresh">刷新</button>
       </div>
+    </div>
+    <div class="pstrip" id="posterStrip" hidden>
+      <span class="plabel">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+          <circle cx="9" cy="9" r="1.6"></circle>
+          <path d="M21 15l-5-5L5 21"></path>
+        </svg>
+        海报
+      </span>
+      <span class="pnum" id="pstripNum">0 / 0</span>
+      <div class="pbar" id="pstripBar"><i style="width:0%"></i></div>
+      <span class="pnum" id="pstripPct">0%</span>
+      <span class="pnote" id="pstripNote">—</span>
+      <span class="phint" id="pstripHint"></span>
+      <span class="grow"></span>
+      <button class="tiny ghost ptoggle" id="btnPosterOnly"
+              title="只留海报还没生成的文件和文件夹；筛出来后点左上「全选」再点「开始刮削」就能补齐">只看未生成</button>
     </div>
     <div class="tablewrap">
       <table>
@@ -1418,6 +1551,27 @@
 </div>
 
 <!-- 手动选帧 -->
+<div class="modal" id="artModal" hidden>
+  <div class="modal-card art-pick">
+    <div class="modal-head">
+      <h2 id="artTitle">指定文件夹封面</h2>
+      <button class="tiny" id="btnCloseArt">关闭</button>
+    </div>
+    <div class="modal-body art-body">
+      <p class="art-note" id="artNote"></p>
+      <div class="art-grid" id="artGrid"></div>
+      <div class="art-empty" id="artEmpty" hidden></div>
+    </div>
+    <div class="modal-foot art-foot">
+      <span class="cur" id="artCur">当前：自动挑选</span>
+      <div style="display:flex;gap:var(--s2)">
+        <button class="tiny" id="btnArtAuto" title="清掉指定，下次补封面重新按顺序挑一张">恢复自动</button>
+        <button class="pick-confirm" id="btnArtApply" disabled>用这张</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="pickModal" hidden>
   <div class="modal-card pick">
     <div class="modal-head">
@@ -1500,9 +1654,15 @@ const S = {
   lastTasks: 0,
   // 任务列表视图：flat 平铺 / dir 按文件夹
   tasksView: 'flat',
-  groups: [],
-  openDirs: new Set(),
+  // 按文件夹视图是一棵目录树：tree 是顶层节点，nodeByPath 用来按路径找节点，
+  // openNodes 记哪些节点是展开的
+  tree: [],
+  nodeByPath: new Map(),
+  openNodes: new Set(),
   groupItems: new Map(),
+  groupCount: 0,
+  treeTruncated: false,
+  treeSeedKey: '',
   // 刚从文件管理选中的文件夹：置顶 + 标记，方便一眼看到
   pinnedDirs: new Set(),
   pinnedScrolled: false,
@@ -1518,6 +1678,8 @@ const S = {
     sort: { key: 'added', order: 'desc' },
     // 状态筛选：只在已经拿到的这一屏数据里过滤，不重新请求接口
     filter: 'all',
+    // 海报筛选：和状态筛选是两条独立的轴（刮过但没有海报的文件也存在）
+    posterOnly: false,
     // 勾文件夹时用：dirPaths 记每个目录展开出来的路径，dirSel 是这些路径的并集
     dirPaths: new Map(), dirSel: new Set(),
   },
@@ -1629,6 +1791,109 @@ function thumbCell(path, exists, kind) {
             data-preview="${esc(path)}" data-kind="${kind}"
             data-v="${exists}" src="${esc(imgUrl(path, kind, exists, w))}"
             onerror="this.style.visibility='hidden'">`;
+}
+
+/* ---------- 海报生成状态（文件管理与任务列表共用） ---------- */
+
+/* 只认 xxx-poster.jpg 在不在。「刮没刮过」和「有没有海报」不是一回事：
+   关过海报开关、或者海报下载失败但 NFO / 背景图拿到了，都会出现
+   「状态=刮削成功，海报却空着」。所以这两条轴分开算，不互相顶替。 */
+function posterStateOf(f) {
+  const art = f.artifacts || {};
+  if (art.poster) return 'done';
+  if (f.status === 'running') return 'running';
+  if (f.status === 'failed') return 'failed';
+  return 'new';
+}
+
+function posterWhy(f) {
+  const st = posterStateOf(f);
+  if (st === 'running') return '正在生成海报';
+  if (st === 'failed') return `上次刮削失败${f.reason ? '：' + f.reason : ''}，海报没能生成`;
+  if (f.status === 'skipped') return '任务记录为已跳过，但海报文件不在';
+  if ((f.artifacts || {}).nfo) return '有 NFO 但没有海报（可能关过海报开关）';
+  return '还没刮削，所以没有海报';
+}
+
+/* 已生成的给缩略图（点开可放大），未生成的在同一个格子里写明「未生成」，
+   尺寸和缩略图一致，行的节奏不会因为缺图变得参差。 */
+function posterCell(f) {
+  const st = posterStateOf(f);
+  if (st === 'done') return thumbCell(f.path, f.artifacts.poster, 'poster');
+  const run = st === 'running';
+  return `<span class="pmiss${run ? ' run' : ''}" title="${esc(f.name)}：${esc(posterWhy(f))}">`
+    + `<b>${run ? '生成中' : '未生成'}</b></span>`;
+}
+
+/* 文件夹行：整支子树的海报进度。count / poster 都是后端递归数出来的，
+   所以收起着也知道里面还有几张没生成。 */
+function dirPosterCell(d) {
+  const total = d.count || 0;
+  const ok = d.poster || 0;
+  if (!total) return '';
+  const cls = ok >= total ? 'done' : (ok > 0 ? 'part' : 'miss');
+  const tail = ok >= total ? '全部已生成'
+    : `${total - ok} 个未生成，展开后能看到是哪些`;
+  return `<span class="dposter ${cls}" title="这个文件夹（含子目录）共 ${total} 个 strm，`
+    + `${ok} 个已有海报，${tail}">${ok}/${total}</span>`;
+}
+
+/* 当前这一屏的海报统计：这一层的 strm + 各个子目录（递归）里的 strm。
+   子目录的 count 已经含孙目录，和这一层的 files 不重叠，直接相加不会重复计。 */
+function posterStats(data) {
+  const files = (data && data.files) || [];
+  const dirs = (data && data.dirs) || [];
+  const out = { total: 0, done: 0, missing: 0, running: 0, failed: 0, dirsMissing: 0 };
+  files.forEach(f => {
+    out.total += 1;
+    const st = posterStateOf(f);
+    if (st === 'done') { out.done += 1; return; }
+    out.missing += 1;
+    if (st === 'running') out.running += 1;
+    if (st === 'failed') out.failed += 1;
+  });
+  dirs.forEach(d => {
+    const total = d.count || 0;
+    const ok = Math.min(d.poster || 0, total);
+    out.total += total;
+    out.done += ok;
+    out.missing += total - ok;
+    if (total > ok) out.dirsMissing += 1;
+  });
+  return out;
+}
+
+function paintPosterStrip(data) {
+  const strip = $('posterStrip');
+  const st = posterStats(data);
+  const pct = st.total ? Math.round(100 * st.done / st.total) : 0;
+  $('pstripNum').textContent = `${st.done} / ${st.total}`;
+  $('pstripPct').textContent = pct + '%';
+  const bar = $('pstripBar').firstElementChild;
+  bar.style.width = pct + '%';
+  bar.classList.toggle('full', st.total > 0 && !st.missing);
+
+  const note = $('pstripNote');
+  note.classList.toggle('done', !st.missing);
+  if (!st.total) note.textContent = '这一屏没有 strm';
+  else if (!st.missing) note.textContent = '全部已生成';
+  else {
+    note.textContent = `${st.missing} 个未生成`
+      + (st.failed ? ` · ${st.failed} 个上次失败` : '')
+      + (S.files.posterOnly ? '（已筛出）' : '');
+  }
+
+  // 「当前生成进度」既要看总量，也要看这一刻有没有在跑
+  $('pstripHint').textContent = st.running
+    ? `正在生成 ${st.running} 个…`
+    : (S.files.posterOnly && st.missing ? '点左上「全选」再「开始刮削」就能一次补齐' : '');
+
+  const btn = $('btnPosterOnly');
+  btn.hidden = !st.missing;
+  btn.classList.toggle('on', S.files.posterOnly);
+  btn.textContent = S.files.posterOnly
+    ? `显示全部 (${st.total})` : `只看未生成 (${st.missing})`;
+  strip.hidden = !st.total;
 }
 
 /* ---------- 标签页 ---------- */
@@ -1798,42 +2063,95 @@ async function loadTasks(force) {
   renderTasks(data.items);
 }
 
-/* ---------- 按文件夹视图 ---------- */
+/* ---------- 按文件夹视图：目录树 ---------- */
+/* 这一屏和文件管理里一层层点进去的是同一棵树：媒体库 → 分类 → 片名 → 文件。
+   后端把中间层补齐了（只含子目录、自己没放视频的那几层），这里只管「哪些节点
+   是展开的」和渲染。收起的分支也带着整支子树的汇总，不点开也知道跑到哪了。 */
+
+function indexTree(tree) {
+  const map = new Map();
+  const walk = nodes => nodes.forEach(n => {
+    map.set(n.path, n);
+    walk(n.children || []);
+  });
+  walk(tree);
+  return map;
+}
+
+// 从某个节点一路往上到顶层，展开定位时用
+function ancestorsOf(path) {
+  const out = [];
+  let node = S.nodeByPath.get(path);
+  while (node) {
+    out.push(node.path);
+    node = node.parent ? S.nodeByPath.get(node.parent) : null;
+  }
+  return out;
+}
+
+/* 默认展开到哪一层：顶层，以及「只有一个子目录、自己又不含视频」的传递链。
+   后者是「媒体库/电影/某合集」这种没有信息量的中转层，一层层点开纯属浪费。 */
+function seedOpenNodes() {
+  // 同一组筛选条件下只铺一次，之后展开状态归用户管 —— 否则用户点了「收起全部」，
+  // 下一轮轮询又会自动展开回去
+  const key = `${S.status}|${S.q}`;
+  if (S.treeSeedKey === key) return;
+  S.treeSeedKey = key;
+  const forced = !!S.q.trim() || (S.status && S.status !== 'all');
+  const open = new Set();
+  const walk = (nodes, top) => {
+    for (const n of nodes) {
+      const pass = !n.hasItems && (n.children || []).length === 1;
+      if (forced || top || pass) open.add(n.path);
+      walk(n.children || [], false);
+    }
+  };
+  walk(S.tree, true);
+  // 筛到具体条件时结果本来就不多，直接摊到文件这层，省得再一个个点
+  if (forced && S.groupCount <= 12) {
+    for (const [path, node] of S.nodeByPath) if (node.hasItems) open.add(path);
+  }
+  S.openNodes = open;
+}
 
 async function loadGroups(force) {
   const seq = ++tasksSeq;
+  S.lastTasks = Date.now();      // 和按文件视图一样节流，别每次都重新拉整棵树
   const params = new URLSearchParams({
     status: S.status, q: S.q, limit: '400',
     sort: S.taskSort.key, order: S.taskSort.order,
   });
   let data;
   try {
-    data = await api('/api/items/groups?' + params.toString());
+    data = await api('/api/items/tree?' + params.toString());
   } catch (e) {
     return;
   }
   if (seq !== tasksSeq) return;
-  S.groups = data.groups || [];
 
-  // 刚从文件管理选中的文件夹排到最前，别的仍按「进行中 / 失败 / 待处理」排
-  if (S.pinnedDirs.size) {
-    const pinned = [], rest = [];
-    for (const g of S.groups) (S.pinnedDirs.has(g.path) ? pinned : rest).push(g);
-    S.groups = pinned.concat(rest);
+  S.tree = data.nodes || [];
+  S.groupCount = data.total || 0;
+  S.treeTruncated = !!data.truncated;
+  S.nodeByPath = indexTree(S.tree);
+  seedOpenNodes();
+  // 刚在文件管理里选中的文件夹：祖先全打开，不然它藏在收起的分支里根本看不见。
+  // 它自己不展开 —— 里面的文件等用户点开再看，和以前的行为一致
+  for (const path of S.pinnedDirs) {
+    for (const up of ancestorsOf(path).slice(1)) S.openNodes.add(up);
   }
 
-  // 已经展开的目录，组内进度也要跟着更新
-  await Promise.all([...S.openDirs].map(d => loadGroupFiles(d, true)));
+  // 已经展开、这一层又直接放视频的，组内进度跟着刷新
+  const leaves = [...S.openNodes].filter(p => {
+    const node = S.nodeByPath.get(p);
+    return node && node.hasItems;
+  });
+  await Promise.all(leaves.map(p => loadGroupFiles(p, true)));
   if (seq !== tasksSeq) return;
 
-  const pages = S.groups.length;
   $('pageInfo').textContent = '—';
   $('btnPrev').disabled = true;
   $('btnNext').disabled = true;
-  $('taskMeta').textContent = pages
-    ? `共 ${pages} 个文件夹${S.openDirs.size ? `，已展开 ${S.openDirs.size} 个` : ''}`
-      + (data.truncated ? '（只显示前 400 个）' : '')
-    : (S.status === 'all' && !S.q ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录');
+  updateGroupsMeta();
 
   const sig = groupsSig();
   if (!force && sig === S.taskSig) return;
@@ -1904,25 +2222,34 @@ function restoreAnchor(anchor) {
   wrap.scrollTop = anchor.scroll;
 }
 
-/* ---------- 分组的增量展开 / 收起 ---------- */
+/* ---------- 目录树：展开 / 收起与行渲染 ---------- */
 
-function findGroupRow(dir) {
-  for (const row of $('taskBody').querySelectorAll('tr.grouprow')) {
-    if (row.dataset.group === dir) return row;
+function updateGroupsMeta() {
+  const n = S.groupCount || 0;
+  if (!n) {
+    $('taskMeta').textContent = S.status === 'all' && !S.q
+      ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录';
+  } else {
+    $('taskMeta').textContent = `共 ${n} 个文件夹`
+      + (S.tree.length > 1 ? ` · ${S.tree.length} 个顶层目录` : '')
+      + (S.openNodes.size ? ` · 已展开 ${S.openNodes.size} 个` : '')
+      + (S.treeTruncated ? '（只显示前 400 个）' : '');
   }
-  return null;
+  paintTreeOps();
 }
 
-function groupRowsOf(dir) {
-  const out = [];
-  for (const row of $('taskBody').querySelectorAll('tr[data-in]')) {
-    if (row.dataset.in === dir) out.push(row);
-  }
-  return out;
+function paintTreeOps() {
+  const ops = $('taskTreeOps');
+  if (ops) ops.hidden = !(S.tasksView === 'dir' && (S.groupCount || 0) > 0);
 }
 
-function clearGroupRows(dir) {
-  for (const row of groupRowsOf(dir)) row.remove();
+// 当前渲染结果对应的数据指纹：展开/收起后同步更新，免得下一轮轮询误判成
+// "数据变了"又把整张表重建一遍
+function groupsSig() {
+  const loaded = [];
+  for (const [k, v] of S.groupItems) loaded.push([k, v.map(x => x.status)]);
+  return JSON.stringify(S.tree) + '|' + [...S.openNodes].join('|')
+    + '|' + JSON.stringify(loaded);
 }
 
 function groupNoteRow(dir, text) {
@@ -1930,93 +2257,75 @@ function groupNoteRow(dir, text) {
     + `<td colspan="8"><div class="empty">${esc(text)}</div></td></tr>`;
 }
 
-// 每批插多少行：一次插 200 行会让点击到上屏之间空等，拆开后第一屏立刻出来
-const GROUP_CHUNK = 40;
-let groupRenderSeq = 0;
-
-function insertGroupRows(groupRow, dir) {
-  const seq = ++groupRenderSeq;          // 新的渲染开始，旧的批次自动作废
-  const items = S.groupItems.get(dir) || [];
-  if (!items.length) {
-    groupRow.insertAdjacentHTML('afterend', groupNoteRow(dir, '这个文件夹暂时没有记录'));
-    return;
-  }
-  let index = 0;
-  let cursor = groupRow;
-  const step = () => {
-    if (seq !== groupRenderSeq || !S.openDirs.has(dir)) return;
-    const html = [];
-    const end = Math.min(items.length, index + GROUP_CHUNK);
-    for (; index < end; index += 1) {
-      html.push(itemRowHtml(items[index], { inside: true, dir: dir }));
-    }
-    if (index >= items.length && items.length >= 200) {
-      html.push(groupNoteRow(dir, '只显示前 200 个文件'));
-    }
-    cursor.insertAdjacentHTML('afterend', html.join(''));
-    // 游标挪到这批的最后一行，下一批接着往后插
-    let last = cursor;
-    while (last.nextElementSibling && last.nextElementSibling.classList.contains('gitem')) {
-      last = last.nextElementSibling;
-    }
-    cursor = last;
-    if (index < items.length) requestAnimationFrame(step);
-  };
-  step();
-}
-
-function updateGroupsMeta() {
-  $('taskMeta').textContent = S.groups.length
-    ? `共 ${S.groups.length} 个文件夹${S.openDirs.size ? `，已展开 ${S.openDirs.size} 个` : ''}`
-    : '没有符合条件的记录';
-}
-
-// 当前渲染结果对应的数据指纹：展开/收起后同步更新，免得下一轮轮询误判成
-// "数据变了"又把整张表重建一遍
-function groupsSig() {
-  return JSON.stringify(S.groups) + '|' + [...S.openDirs].join('|')
-    + '|' + JSON.stringify([...S.groupItems].map(([k, v]) => [k, v.map(x => x.status)]));
-}
-
-async function toggleGroup(dir) {
-  const groupRow = findGroupRow(dir);
-  if (!groupRow) return;
+async function toggleNode(path) {
+  const node = S.nodeByPath.get(path);
+  if (!node) return;
   const anchor = captureAnchor();
 
-  if (S.openDirs.has(dir)) {
-    // 收起：只删这一组的行，别的组和滚动位置都不动
-    S.openDirs.delete(dir);
-    S.groupItems.delete(dir);
-    clearGroupRows(dir);
-    groupRow.classList.remove('gopen');
+  if (S.openNodes.has(path)) {
+    S.openNodes.delete(path);
+    // 收起时把这一支已经加载的文件丢掉：重新展开按当前状态再拉，
+    // 不会拿着几分钟前的进度糊在屏幕上
+    const prefix = path + pathSep(path);
+    for (const key of [...S.groupItems.keys()]) {
+      if (key === path || key.startsWith(prefix)) S.groupItems.delete(key);
+    }
+    renderGroups();
     updateGroupsMeta();
     updateTaskSelInfo();
     restoreAnchor(anchor);
-    S.taskSig = groupsSig();     // 现状已经画在屏幕上了，别让轮询再重建一遍
+    S.taskSig = groupsSig();
     return;
   }
 
-  S.openDirs.add(dir);
-  S.pinnedDirs.delete(dir);        // 已经点开看过了，「刚选择」的提示可以收掉
-  groupRow.classList.add('gopen');
-  groupRow.classList.remove('pinned');
-  const pin = groupRow.querySelector('.tagpin');
-  if (pin) pin.remove();
-  S.groupItems.set(dir, []);
-  // 先占一行，网络慢的时候也不会像没反应
-  groupRow.insertAdjacentHTML('afterend', groupNoteRow(dir, '正在读取文件…'));
+  S.openNodes.add(path);
+  S.pinnedDirs.delete(path);      // 已经点开看过了，「刚选择」的提示可以收掉
+  renderGroups();                 // 先把这一行转开，里面显示「正在读取文件…」
+  updateGroupsMeta();
+  if (node.hasItems && !S.groupItems.has(path)) {
+    await loadGroupFiles(path);
+    if (!S.openNodes.has(path)) return;   // 等数据期间又被收起了
+    renderGroups();
+    updateTaskSelInfo();
+  }
+  restoreAnchor(anchor);
+  S.taskSig = groupsSig();
+}
 
-  await loadGroupFiles(dir);
-
-  // 等数据期间可能被定时刷新整表重建过，重新找一次行；不想展开了就直接退出
-  if (!S.openDirs.has(dir)) return;
-  const row = findGroupRow(dir) || groupRow;
-  clearGroupRows(dir);
-  insertGroupRows(row, dir);
+/* 展开全部 / 收起全部。整棵树动辄上百个分支，每个含视频的层又是一次请求，
+   所以文件列表只顺带加载前 30 个，其余的层展开着、点一下再拉。 */
+async function expandTree(open) {
+  if (S.tasksView !== 'dir' || !S.tree.length) return;
+  const anchor = captureAnchor();
+  if (!open) {
+    S.openNodes = new Set();
+    renderGroups();
+    updateGroupsMeta();
+    updateTaskSelInfo();
+    restoreAnchor(anchor);
+    S.taskSig = groupsSig();
+    return;
+  }
+  let budget = 30;
+  let skipped = 0;
+  const toLoad = [];
+  for (const [path, node] of S.nodeByPath) {
+    if (!node.hasItems) { S.openNodes.add(path); continue; }
+    if (budget > 0) {
+      S.openNodes.add(path);
+      if (!S.groupItems.has(path)) toLoad.push(path);
+      budget -= 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  await Promise.all(toLoad.map(path => loadGroupFiles(path, true)));
+  renderGroups();
   updateGroupsMeta();
   updateTaskSelInfo();
   restoreAnchor(anchor);
   S.taskSig = groupsSig();
+  if (skipped) toast(`文件夹已全部展开；文件列表先加载了 30 个，其余点开再看`);
 }
 
 function groupStatus(g) {
@@ -2027,64 +2336,80 @@ function groupStatus(g) {
   return 'skipped';
 }
 
-function groupRowHtml(g, open) {
-  const st = groupStatus(g);
-  const pct = g.total ? Math.round(100 * g.done / g.total) : 0;
-  const where = g.rel !== undefined ? g.rel : g.path.replace(/[\\/][^\\/]+$/, '');
-  const pinned = S.pinnedDirs.has(g.path);
-  const checked = S.taskSelDirs.has(g.path);
+function nodeRowHtml(n, open, baseDepth) {
+  const st = groupStatus(n);
+  const pct = n.total ? Math.round(100 * n.done / n.total) : 0;
+  const pinned = S.pinnedDirs.has(n.path);
+  const checked = S.taskSelDirs.has(n.path);
+  const indent = Math.max(0, n.depth - baseDepth) * 20;
+  const kids = (n.children || []).length;
   const badges = [];
-  if (g.running) badges.push(`<span class="gbadge run">处理中 ${g.running}</span>`);
-  if (g.pending) badges.push(`<span class="gbadge wait">待处理 ${g.pending}</span>`);
-  if (g.failed) badges.push(`<span class="gbadge fail">失败 ${g.failed}</span>`);
+  if (n.running) badges.push(`<span class="gbadge run">处理中 ${n.running}</span>`);
+  if (n.pending) badges.push(`<span class="gbadge wait">待处理 ${n.pending}</span>`);
+  if (n.failed) badges.push(`<span class="gbadge fail">失败 ${n.failed}</span>`);
+  // 这一行装的是什么：只有子目录的中转层写「几个文件夹」，含视频的层写「含几个子目录」
+  const sub = n.hasItems
+    ? (kids ? `<span class="gsub">含 ${kids} 个子目录</span>` : '')
+    : `<span class="gsub">${n.dirs} 个文件夹</span>`;
   return `<tr class="grouprow${open ? ' gopen' : ''}${pinned ? ' pinned' : ''}${
-      checked ? ' sel' : ''}" data-group="${esc(g.path)}">
-    <td><input class="check" type="checkbox" data-gpick="${esc(g.path)}"
-               title="选中这个文件夹里的所有任务"${checked ? ' checked' : ''}></td>
+      checked ? ' sel' : ''}" data-group="${esc(n.path)}">
+    <td><input class="check" type="checkbox" data-gpick="${esc(n.path)}"
+               title="选中这个文件夹（含子目录）里的所有任务"${checked ? ' checked' : ''}></td>
     <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
-    <td colspan="8"><div class="gwrap">
-      <button class="gbtn" data-toggle="${esc(g.path)}" title="展开 / 收起这个文件夹">
+    <td colspan="8"><div class="gwrap${indent ? ' nest' : ''}" style="--ind:${indent}px">
+      <button class="gbtn" data-toggle="${esc(n.path)}" title="展开 / 收起这个文件夹">
         <span class="gcaret">▶</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none">
           <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
         </svg>
-        <span class="gname">${esc(g.name || g.path)}</span>
+        <span class="gname">${esc(n.name || n.path)}</span>
         ${pinned ? '<span class="tagpin">刚选择</span>' : ''}
-        ${where && where !== g.name
-          ? `<span class="gsub" title="${esc(g.path)}">${esc(where)}</span>` : ''}
+        ${sub}
       </button>
       <span class="grow"></span>
       <div class="gbar"><i class="${pct >= 100 ? 'full' : ''}" style="width:${pct}%"></i></div>
-      <span class="gnum">${g.done}/${g.total}</span>
+      <span class="gnum">${n.done}/${n.total}</span>
       ${badges.join('')}
+      ${folderArtTag(n.total, n.hasItems ? 1 : 0, n.depth, n.folder_art, n.pinned, n.pin_name)}
     </div></td>
   </tr>`;
 }
 
 function renderGroups() {
   const body = $('taskBody');
-  groupRenderSeq += 1;                   // 打断还没插完的分批
-  if (!S.groups.length) {
+  if (!S.tree.length) {
     body.innerHTML = `<tr><td colspan="10"><div class="empty">${esc(
       S.status === 'all' && !S.q ? '暂无记录，点上方「开始任务」开始第一轮刮削' : '没有符合条件的记录')}</div></td></tr>`;
     updateTaskSelInfo();
     return;
   }
   const anchor = captureAnchor();
+  const baseDepth = S.tree.reduce((min, n) => Math.min(min, n.depth), Infinity);
   const rows = [];
-  for (const g of S.groups) {
-    const open = S.openDirs.has(g.path);
-    rows.push(groupRowHtml(g, open));
-    if (!open) continue;
-    const items = S.groupItems.get(g.path) || [];
-    if (!items.length) {
-      rows.push(groupNoteRow(g.path, '这个文件夹暂时没有记录'));
-      continue;
+  const walk = nodes => {
+    for (const n of nodes) {
+      const open = S.openNodes.has(n.path);
+      rows.push(nodeRowHtml(n, open, baseDepth));
+      if (!open) continue;
+      walk(n.children || []);
+      if (!n.hasItems) continue;
+      const items = S.groupItems.get(n.path);
+      if (items === undefined) {
+        rows.push(groupNoteRow(n.path, '正在读取文件…'));
+        continue;
+      }
+      if (!items.length) {
+        rows.push(groupNoteRow(n.path, '这个文件夹暂时没有记录'));
+        continue;
+      }
+      // 文件挂在所属文件夹的名字下面（跳过分隔符和文件夹图标的位置）
+      const pad = (n.depth - baseDepth) * 20 + 34;
+      items.forEach(it => rows.push(itemRowHtml(it, { inside: true, dir: n.path, pad })));
+      if (items.length >= 200) rows.push(groupNoteRow(n.path, '只显示前 200 个文件'));
     }
-    items.forEach(it => rows.push(itemRowHtml(it, { inside: true, dir: g.path })));
-    if (items.length >= 200) rows.push(groupNoteRow(g.path, '只显示前 200 个文件'));
-  }
+  };
+  walk(S.tree);
   body.innerHTML = rows.join('');
   updateTaskSelInfo();
   // 从文件管理跳过来时，确保那个文件夹在视野里（只滚一次，别跟用户抢）
@@ -2106,10 +2431,12 @@ function itemRowHtml(it, opts = {}) {
   const st = it.status || 'pending';
   const name = it.title || it.name;
   const dir = it.path.split(/[\\/]/).slice(-2, -1)[0] || '';
+  const ftag = folderArtTag(1, 1, it.dir_depth, it.folder_art, it.folder_pin, it.pin_name);
   let reason;
   if (!it.reason) {
-    reason = st === 'ok' ? '<span class="reason mute">已生成</span>'
-      : '<span class="nothing">—</span>';
+    // 已经有文件夹封面的标签时不再叠加「已生成」或占位横杠，一列只讲一件事
+    reason = ftag ? '' : (st === 'ok' ? '<span class="reason mute">已生成</span>'
+      : '<span class="nothing">—</span>');
   } else if (st === 'failed') {
     reason = `<span class="reason" title="${esc(it.reason)}">${esc(it.reason)}</span>`;
   } else {
@@ -2123,7 +2450,8 @@ function itemRowHtml(it, opts = {}) {
       : `<input class="check" type="checkbox" data-tpick="${esc(it.path)}"${
           picked ? ' checked' : ''}>`}</td>
     <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
-    <td><div class="name" title="${esc(it.path)}">${esc(name)}${
+    <td><div class="name" title="${esc(it.path)}"${
+      opts.pad ? ` style="padding-left:${opts.pad}px"` : ''}>${esc(name)}${
       it.frame_at ? `<span class="tag">手选 ${fmtDur(it.frame_at)}</span>` : ''}
       ${opts.inside ? '' : `<span class="path">${esc(dir)}</span>`}</div></td>
     <td class="num">${fmtDur(it.duration) || '<span class="nothing">—</span>'}</td>
@@ -2131,7 +2459,7 @@ function itemRowHtml(it, opts = {}) {
     <td>${thumbCell(it.path, art.poster, 'poster')}</td>
     <td>${thumbCell(it.path, art.fanart, 'fanart')}</td>
     <td class="num">${art.nfo ? fmtBytes(art.nfo) : '<span class="nothing">—</span>'}</td>
-    <td>${reason}</td>
+    <td>${reason}${ftag}</td>
     <td>
       <div class="rowbtns">
         <button class="tiny" data-act="pick">选帧</button>
@@ -2165,29 +2493,41 @@ function updateTaskSelInfo() {
   $('btnTaskDel').disabled = !(n || d);
   if (!(n || d)) closeTaskMenu();
 
+  // 树视图只数顶层目录：勾了根就等于勾了整支，逐个节点数会让这里一直半选
   const keys = S.tasksView === 'dir'
-    ? S.groups.map(g => g.path) : S.taskRows.map(it => it.path);
+    ? S.tree.map(n => n.path) : S.taskRows.map(it => it.path);
   const has = key => (S.tasksView === 'dir' ? S.taskSelDirs.has(key) : S.taskSel.has(key));
   const hit = keys.filter(has);
   const all = keys.length > 0 && hit.length === keys.length;
   $('taskAll').checked = all;
   $('taskAll').indeterminate = !all && hit.length > 0;
 
-  // 文件夹行：整个文件夹被选中就勾上，只有组内文件被选就显示半选
+  // 文件夹行：整个文件夹被选中就勾上，只有组里的一部分被选就显示半选
   document.querySelectorAll('#taskBody input[data-gpick]').forEach(box => {
     const dir = box.dataset.gpick;
     const on = S.taskSelDirs.has(dir);
+    // 上层被勾了，这一支就是一并选中的：勾上但不再单独点（否则会出现
+    // 「父层勾着、子层空着」这种自相矛盾的显示），要取消就取消上层那一个
+    const covered = !on && ancestorsOf(dir).slice(1).some(p => S.taskSelDirs.has(p));
     let some = false;
-    if (!on) {
+    if (!on && !covered) {
       const prefix = dir.replace(/[\\/]+$/, '') + pathSep(dir);
       for (const p of S.taskSel) {
         if (p.startsWith(prefix)) { some = true; break; }
       }
+      if (!some) {
+        for (const sub of S.taskSelDirs) {
+          if (sub !== dir && sub.startsWith(prefix)) { some = true; break; }
+        }
+      }
     }
-    box.checked = on;
-    box.indeterminate = !on && some;
+    box.checked = on || covered;
+    box.indeterminate = !on && !covered && some;
+    box.disabled = covered;
+    box.title = covered ? '已随上层文件夹一起选中，取消上层即可'
+      : '选中这个文件夹（含子目录）里的所有任务';
     const tr = box.closest('tr');
-    if (tr) tr.classList.toggle('sel', on);
+    if (tr) tr.classList.toggle('sel', on || covered);
   });
   // 文件行
   document.querySelectorAll('#taskBody input[data-tpick]').forEach(box => {
@@ -2219,7 +2559,7 @@ $('taskAll').addEventListener('change', e => {
   S.taskSel.clear();
   S.taskSelDirs.clear();
   if (on) {
-    if (S.tasksView === 'dir') S.groups.forEach(g => S.taskSelDirs.add(g.path));
+    if (S.tasksView === 'dir') S.tree.forEach(n => S.taskSelDirs.add(n.path));
     else S.taskRows.forEach(it => S.taskSel.add(it.path));
   }
   updateTaskSelInfo();
@@ -2262,7 +2602,7 @@ async function deleteTasks(mode) {
     toast(r.message, !r.ok);
     S.taskSel.clear();
     S.taskSelDirs.clear();
-    S.openDirs.clear();
+    S.openNodes.clear();
     S.groupItems.clear();
     S.taskSig = '';
     loadTasks(true);
@@ -2285,7 +2625,7 @@ $('taskDelMenu').addEventListener('click', e => {
 
 $('taskBody').addEventListener('click', async e => {
   const tog = e.target.closest('[data-toggle]');
-  if (tog) { toggleGroup(tog.dataset.toggle); return; }
+  if (tog) { toggleNode(tog.dataset.toggle); return; }
   const img = e.target.closest('img[data-preview]');
   if (img) { openPreview(img.dataset.preview, img.dataset.kind, img.dataset.v); return; }
   const btn = e.target.closest('button[data-act]');
@@ -2357,6 +2697,8 @@ $('btnRetry').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 $('btnTaskRefresh').addEventListener('click', () => { S.taskSig = ''; loadTasks(true); });
+$('btnExpandAll').addEventListener('click', () => expandTree(true));
+$('btnCollapseAll').addEventListener('click', () => expandTree(false));
 $('btnPrev').addEventListener('click', () => { S.page = Math.max(1, S.page - 1); loadTasks(true); });
 $('btnNext').addEventListener('click', () => { S.page += 1; loadTasks(true); });
 
@@ -2371,6 +2713,7 @@ $('taskView').addEventListener('click', e => {
   S.taskSelDirs.clear();
   S.taskSig = '';
   S.page = 1;
+  paintTreeOps();
   loadTasks(true);
 });
 
@@ -2382,6 +2725,7 @@ function setTaskView(view) {
   document.querySelectorAll('#taskView button').forEach(b =>
     b.classList.toggle('on', b.dataset.view === view));
   S.taskSig = '';
+  paintTreeOps();
   if (S.tab === 'tasks') loadTasks(true);
 }
 
@@ -2436,6 +2780,19 @@ $('fileState').addEventListener('click', e => {
     renderFiles(S.files.data);
     updateFileSelInfo();
     $('fileBody').scrollTop = 0;
+    const wrap = document.querySelector('.pane.active .tablewrap');
+    if (wrap) wrap.scrollTop = 0;
+  }
+});
+
+/* 只看未生成：纯前端过滤，不重新请求接口。开着的时候「全选」也只勾这一屏
+   看得见的，所以「筛出来 → 全选 → 开始刮削」就能把缺的海报补齐
+   （已经生成的会被服务端按产物齐全跳过，不会重刮）。 */
+$('btnPosterOnly').addEventListener('click', () => {
+  S.files.posterOnly = !S.files.posterOnly;
+  if (S.files.data && S.files.data.ok) {
+    renderFiles(S.files.data);
+    updateFileSelInfo();
     const wrap = document.querySelector('.pane.active .tablewrap');
     if (wrap) wrap.scrollTop = 0;
   }
@@ -2521,6 +2878,7 @@ async function loadFiles(force) {
     $('crumbs').innerHTML = '<span class="crumb last">—</span>';
     $('fileBody').innerHTML = `<tr><td colspan="9"><div class="empty">${esc(data.message || '无法读取目录')}</div></td></tr>`;
     $('fileMeta').textContent = '—';
+    $('posterStrip').hidden = true;
     return;
   }
   // 选中项只保留当前目录里仍存在的（勾文件夹选中的要留着，切目录不该丢）
@@ -2624,6 +2982,8 @@ $('crumbs').addEventListener('click', e => {
 
 /* 状态筛选：只看这一屏，不重新请求接口——文件状态本来就随列表一起返回了 */
 function fileMatchesState(f) {
+  // 先过海报这条轴：两条筛选可以叠加（比如「没刮过 + 没海报」）
+  if (S.files.posterOnly && posterStateOf(f) === 'done') return false;
   const want = S.files.filter;
   if (!want || want === 'all') return true;
   return fileStateOf(f) === want;
@@ -2654,10 +3014,39 @@ function dirStateHint(d) {
   if (!total) return '这个文件夹（含子目录）里没有 strm';
   return `共 ${total} 个 strm（含子目录）· 已刮 ${ok} · 未刮 ${total - ok}`;
 }
+
+/* 多层文件夹提示。Emby 和 Jellyfin 用的是同一套取图规则：
+   目录里直接有视频 → 它是「影片」条目，认 <视频名>-poster.jpg；
+   目录里只有子目录 → 它是「文件夹」条目，只认 folder.jpg / poster.jpg / cover.jpg。
+   所以中间那几层（own === 0 的、以及第 2 层往下没直接放视频的）一定会空。
+   这里只标这些真正有风险的层，避免任务列表几百行全挂标签；
+   修复动作本身会把每一层都补齐。 */
+function folderArtTag(count, own, depth, art, pinned, pinName) {
+  if (!count || !(own === 0 || depth >= 2)) return '';
+  if (art) {
+    const by = pinned ? `（用的是你指定的 ${pinName || '那张图'}）` : '';
+    return `<span class="foldertag done" title="这一层已有 folder.jpg，Emby / Jellyfin 会拿它当文件夹封面${esc(by)}">`
+      + (pinned ? '海报已就绪 · 已指定' : '海报已就绪') + '</span>';
+  }
+  const why = own === 0
+    ? '这一层没有直接放视频，Emby / Jellyfin 会把它当成文件夹条目'
+    : `位于媒体库第 ${depth} 层，Emby / Jellyfin 会把它当成文件夹条目`;
+  const tip = pinned
+    ? `你指定过 ${pinName || '一张图'}，但这个文件不在了`
+    : `勾上它点「开始文件夹海报修复」，会从里层已有的海报出发，把每一层都补上 folder.jpg + poster.jpg；`
+      + `想用某一张特定的图，点这一行右边的「封面」挑`;
+  return `<span class="foldertag miss" title="${esc(why)}。文件夹条目只认 folder.jpg / poster.jpg，`
+    + `按视频名生成的 xxx-poster.jpg 对它无效。${esc(tip)}">缺海报</span>`;
+}
+function dirFolderArtTag(d) {
+  return folderArtTag(d.count, d.own, d.depth, d.art, d.pinned, d.pin_name);
+}
 // 筛选要连文件夹一起过滤，否则「筛未刮削」会漏掉整个没刮的剧集目录。
 // 归属只算一个桶：全刮完的文件夹才算「刮削成功」，还剩活的（含刮了一半的）
 // 都归到「未刮削」，这样各桶数量相加正好等于「全部」；「失败」只看文件。
 function dirMatchesState(d) {
+  // 只留下还有海报没生成的文件夹；一个 strm 都没有的层也别留
+  if (S.files.posterOnly && !((d.count || 0) > (d.poster || 0))) return false;
   const want = S.files.filter;
   if (!want || want === 'all') return true;
   const st = dirStateOf(d);
@@ -2697,6 +3086,10 @@ function paintFileStateCounts() {
   });
 }
 
+function visibleDirs() {
+  return ((S.files.data && S.files.data.dirs) || []).filter(dirMatchesState);
+}
+
 function visibleFiles() {
   return ((S.files.data && S.files.data.files) || []).filter(fileMatchesState);
 }
@@ -2704,6 +3097,8 @@ function visibleFiles() {
 function renderFiles(data) {
   const body = $('fileBody');
   const rows = [];
+  // 这一屏其实已经没有缺海报的了：把筛选自己撤掉，免得留下空表让人以为坏了
+  if (S.files.posterOnly && !posterStats(data).missing) S.files.posterOnly = false;
 
   (data.dirs || []).filter(dirMatchesState).forEach(d => {
     const st = dirPickState(d.path);
@@ -2717,10 +3112,16 @@ function renderFiles(data) {
           <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
         </svg>${esc(d.name)}</span>
         <span class="cnt" title="含子目录">${d.count ? d.count + ' 个 strm' : ''}</span></td>
-      <td class="num" colspan="4"></td>
+      <td class="num"></td>
+      <td>${dirPosterCell(d)}</td>
+      <td colspan="2"></td>
       <td><span class="st dirst ${ds}" title="${esc(dirStateHint(d))}"
             >${dirStateText(d)}</span></td>
-      <td colspan="2"></td>
+      <td>${dirFolderArtTag(d)}</td>
+      <td><div class="rowbtns">
+        <button class="tiny" data-artdir="${esc(d.path)}"
+                title="这一层的封面用哪张？从它包含的海报里挑一张，指定后不会再被自动挑的覆盖">封面</button>
+      </div></td>
     </tr>`);
   });
 
@@ -2728,21 +3129,23 @@ function renderFiles(data) {
   shown.forEach(f => {
     const art = f.artifacts || {};
     const checked = S.files.sel.has(f.path) ? 'checked' : '';
+    const ftag = folderArtTag(1, 1, f.dir_depth, f.folder_art, f.folder_pin, f.pin_name);
+    // 有封面标签时不再补占位横杠，免得显示成「— 海报已就绪」
     const reason = f.reason
       ? `<span class="reason${f.status === 'failed' ? '' : ' mute'}" title="${esc(f.reason)}">${esc(f.reason)}</span>`
-      : '<span class="nothing">—</span>';
+      : (ftag ? '' : '<span class="nothing">—</span>');
     rows.push(`<tr data-path="${esc(f.path)}" class="${checked ? 'sel' : ''}">
       <td><input class="check" type="checkbox" data-pick="${esc(f.path)}" ${checked}></td>
       <td><div class="name" title="${esc(f.path)}">${esc(f.name)}${
         f.frame_at ? `<span class="tag">手选 ${fmtDur(f.frame_at)}</span>` : ''}
         ${f.title && f.title !== f.name ? `<span class="path">${esc(f.title)}</span>` : ''}</div></td>
       <td class="num">${fmtBytes(f.size)}</td>
-      <td>${thumbCell(f.path, art.poster, 'poster')}</td>
+      <td>${posterCell(f)}</td>
       <td>${thumbCell(f.path, art.fanart, 'fanart')}</td>
       <td class="num">${art.nfo ? fmtBytes(art.nfo) : '<span class="nothing">—</span>'}</td>
       <td><span class="st ${fileStateOf(f)}" title="${esc(fileStateHint(f))}"
             >${FILE_STATE_TEXT[fileStateOf(f)] || f.status}</span></td>
-      <td>${reason}</td>
+      <td>${reason}${ftag}</td>
       <td><div class="rowbtns">
         <button class="tiny" data-act="pick">选帧</button>
         <button class="tiny" data-act="scrape">刮削</button>
@@ -2753,7 +3156,8 @@ function renderFiles(data) {
 
   if (!rows.length) {
     const all = data.files || [];
-    const tip = S.files.filter !== 'all' && (all.length || (data.dirs || []).length)
+    const tip = (S.files.filter !== 'all' || S.files.posterOnly)
+      && (all.length || (data.dirs || []).length)
       ? `当前筛选下没有内容（这个目录共 ${all.length} 个 strm、${(data.dirs || []).length} 个文件夹）`
       : (data.truncated ? '文件太多，只显示了前 500 个' : '这个目录里没有 strm 文件');
     body.innerHTML = `<tr><td colspan="9"><div class="empty">${tip}</div></td></tr>`;
@@ -2765,10 +3169,12 @@ function renderFiles(data) {
   const dirN = (data.dirs || []).length;
   const dirShown = (data.dirs || []).filter(dirMatchesState).length;
   paintFileStateCounts();
+  paintPosterStrip(data);
   const cut = data.truncated ? '（已截断）' : '';
-  $('fileMeta').textContent = S.files.filter === 'all'
-    ? `${dirN} 个目录 · ${total} 个 strm${cut}`
-    : `${dirShown} / ${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个 strm${cut}`;
+  const filtered = S.files.filter !== 'all' || S.files.posterOnly;
+  $('fileMeta').textContent = filtered
+    ? `${dirShown} / ${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个 strm${cut}`
+    : `${dirN} 个目录 · ${total} 个 strm${cut}`;
 }
 
 function updateFileSelInfo() {
@@ -2781,10 +3187,11 @@ function updateFileSelInfo() {
   $('btnFileScrape').disabled = n === 0;
   $('btnFileRescrape').disabled = n === 0;
   $('btnFileDel').disabled = n === 0;
-  if (n === 0) closeFileMenu();
+  $('btnFolderArt').disabled = n === 0;
+  if (n === 0) { closeFileMenu(); closeFolderArtMenu(); }
   // 全选只勾「这一屏看得见的」：筛选到未刮削时，全选就该只选未刮削的
   const files = visibleFiles();
-  const dirs = (S.files.data && S.files.data.dirs) || [];
+  const dirs = visibleDirs();
   // 全选要连文件夹一起看：没展开过的目录不算全选，空目录不影响
   const allSel = (files.length > 0 || dirs.length > 0)
     && files.every(f => S.files.sel.has(f.path))
@@ -2813,6 +3220,9 @@ function updateFileSelInfo() {
 $('fileBody').addEventListener('click', async e => {
   const img = e.target.closest('img[data-preview]');
   if (img) { openPreview(img.dataset.preview, img.dataset.kind, img.dataset.v); return; }
+
+  const artBtn = e.target.closest('button[data-artdir]');
+  if (artBtn) { openArtPicker(artBtn.dataset.artdir); return; }
 
   const dir = e.target.closest('[data-dir]');
   if (dir) {
@@ -2865,7 +3275,7 @@ $('fileBody').addEventListener('change', e => {
 
 $('fileAll').addEventListener('change', async e => {
   const files = visibleFiles();   // 只对当前筛选下看得见的文件生效
-  const dirs = (S.files.data && S.files.data.dirs) || [];
+  const dirs = visibleDirs();     // 文件夹同理：被筛掉的整支不碰
   const box = e.target;
   box.disabled = true;
   try {
@@ -2956,7 +3366,11 @@ async function scrapeSelected(force) {
     if (r.started && S.files.dirPaths.size) {
       S.pinnedDirs = new Set(S.files.dirPaths.keys());
       S.pinnedScrolled = false;
+      const was = S.tasksView;
       setTaskView('dir');
+      // 本来就在按文件夹视图时 setTaskView 会直接返回，得自己重拉一次，
+      // 否则「刚选择」那一支的祖先不会展开，也不会滚到眼前
+      if (was === 'dir') { S.taskSig = ''; loadTasks(true); }
     }
   } catch (e) {
     toast(e.message, true);
@@ -2967,6 +3381,174 @@ async function scrapeSelected(force) {
 
 $('btnFileScrape').addEventListener('click', () => scrapeSelected(false));
 $('btnFileRescrape').addEventListener('click', () => scrapeSelected(true));
+
+/* ---------- 文件夹海报修复（手动） ----------
+   Emby 里「含视频的那一层」是影片条目，中间层是文件夹条目。文件夹条目只认
+   folder.jpg 这类固定名字，按视频名生成的 xxx-poster.jpg 对它无效，所以嵌套
+   之后整条链路都没封面。这件事和多层结构有关、只对一部分库有用，因此不做进
+   刮削流程，放在这里让人手动点。 */
+
+function closeFolderArtMenu() { $('folderArtMenu').hidden = true; }
+
+$('btnFolderArt').addEventListener('click', e => {
+  e.stopPropagation();
+  const menu = $('folderArtMenu');
+  if (menu.hidden) {
+    const n = S.files.sel.size;
+    const d = S.files.dirPaths.size;
+    $('folderArtNote').textContent = d
+      ? `给选中的 ${d} 个文件夹（含子目录）补 folder.jpg，图片取自里面已刮好的海报`
+      : `按选中的 ${n} 个文件所在目录补 folder.jpg`;
+  }
+  menu.hidden = !menu.hidden;
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#folderArtMenu') && !e.target.closest('#btnFolderArt')) closeFolderArtMenu();
+});
+
+$('folderArtMenu').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-fart]');
+  if (!btn) return;
+  const dirs = [...S.files.dirPaths.keys()];
+  const paths = [...S.files.sel];
+  if (!dirs.length && !paths.length) { toast('先勾选文件夹', true); return; }
+  closeFolderArtMenu();
+  // 「指定用哪张」只对单层有意义：多选时不知道是哪一层的封面
+  if (btn.dataset.fart === 'pick') {
+    if (dirs.length === 1) { openArtPicker(dirs[0]); return; }
+    const near = paths.length ? [paths[0].replace(/[\\/][^\\/]+$/, '')] : [];
+    if (!dirs.length && near.length) { openArtPicker(near[0]); return; }
+    toast('先只勾一个文件夹，再给它挑封面', true);
+    return;
+  }
+  const force = btn.dataset.fart === 'all';
+  if (force && !confirm('把选中范围里所有 folder.jpg 重新生成一遍？已有封面会被覆盖。')) return;
+  $('btnFolderArt').disabled = true;
+  try {
+    const r = await post('/api/files/folder-poster', { dirs, paths, force });
+    toast(r.message, !r.ok);
+    S.files.sig = '';
+    setTimeout(() => loadFiles(true), 400);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    updateFileSelInfo();
+  }
+});
+
+/* ---------- 指定这一层用哪张图当封面 ----------
+   合集类目录（「某合集/第 1 部、第 2 部…」）里，父层的封面到底该用哪一部，
+   程序按名字排第一张经常猜错。所以把子树里所有能当封面的图摆出来让人点一张，
+   选定后写进库里：之后每次补封面都用这张，不会又被自动挑的覆盖。 */
+
+const S_ART = { dir: '', name: '', pick: '', pinned: '' };
+
+function closeArtPicker() { $('artModal').hidden = true; }
+
+async function openArtPicker(dirPath) {
+  S_ART.dir = dirPath;
+  S_ART.name = dirPath.split(/[\\/]/).filter(Boolean).pop() || dirPath;
+  S_ART.pick = '';
+  S_ART.pinned = '';
+  $('artTitle').textContent = `指定封面 · ${S_ART.name}`;
+  $('artCur').textContent = '当前：自动挑选';
+  $('artNote').textContent = '正在读取这个文件夹里已刮好的海报…';
+  $('artGrid').innerHTML = '';
+  $('artEmpty').hidden = true;
+  $('btnArtApply').disabled = true;
+  $('artModal').hidden = false;
+  try {
+    const r = await api(`/api/files/art-candidates?path=${encodeURIComponent(dirPath)}`);
+    renderArtCandidates(r);
+  } catch (err) {
+    $('artNote').textContent = '';
+    $('artEmpty').hidden = false;
+    $('artEmpty').textContent = err.message;
+  }
+}
+
+function renderArtCandidates(r) {
+  const items = r.items || [];
+  S_ART.pinned = r.pinned || '';
+  $('artNote').textContent = items.length
+    ? '这一层的封面用哪张？下面都是这个文件夹里已经刮好的图，靠前的更接近这一层。指定后不管补缺的还是覆盖重建，都优先用它。'
+    : '';
+  $('artEmpty').hidden = items.length > 0;
+  $('artEmpty').textContent = r.message || '这个文件夹里还没刮出可用的海报';
+  $('artCur').textContent = S_ART.pinned
+    ? `当前：已指定 ${S_ART.pinned.split(/[\\/]/).pop()}`
+    : '当前：自动挑选';
+  // 候选多半叫 www.xx@33-poster.jpg，同一批图的名字前缀完全一样，占满了
+  // 卡片宽度却毫无区分度；把公共前缀剥掉，留下一眼能分辨的尾部
+  const names = items.filter(it => it.kind === 'poster').map(it => it.name);
+  let common = names[0] || '';
+  for (const n of names) {
+    while (common && !n.startsWith(common)) common = common.slice(0, -1);
+  }
+  if (common.length < 6) common = '';
+  $('artGrid').innerHTML = items.map(it => {
+    const on = S_ART.pinned === it.path;
+    const file = (it.name.slice(common.length).replace(/\.(jpe?g|png|webp)$/i, '') || it.name);
+    const folder = (it.folder || '').split(/[\\/]/).filter(Boolean).pop() || '';
+    return `<button class="art-card${on ? ' on' : ''}" data-src="${esc(it.path)}"
+                    title="${esc(it.path)}">
+      ${on ? '<span class="now">当前</span>' : ''}
+      <img loading="lazy" decoding="async" alt=""
+           src="/api/files/art-image?path=${encodeURIComponent(it.path)}&w=192">
+      <span class="n">${esc(file)}</span>
+      ${folder ? `<span class="d">${esc(folder)}</span>` : ''}
+    </button>`;
+  }).join('');
+  // 已经指定过的那张先选上，直接点「用这张」即可
+  S_ART.pick = S_ART.pinned;
+  $('btnArtApply').disabled = !S_ART.pick;
+}
+
+$('artGrid').addEventListener('click', e => {
+  const card = e.target.closest('.art-card');
+  if (!card) return;
+  S_ART.pick = card.dataset.src;
+  document.querySelectorAll('#artGrid .art-card').forEach(c => c.classList.toggle('on', c === card));
+  $('btnArtApply').disabled = false;
+});
+
+$('btnArtApply').addEventListener('click', async () => {
+  if (!S_ART.pick) return;
+  const btn = $('btnArtApply');
+  btn.disabled = true;
+  try {
+    const r = await post('/api/files/art-pin', { dir: S_ART.dir, source: S_ART.pick });
+    toast(r.message);
+    closeArtPicker();
+    S.files.sig = '';
+    loadFiles(true);
+  } catch (err) {
+    toast(err.message, true);
+    btn.disabled = false;
+  }
+});
+
+$('btnArtAuto').addEventListener('click', async () => {
+  if (!S_ART.pinned) { closeArtPicker(); return; }
+  $('btnArtAuto').disabled = true;
+  try {
+    const r = await post('/api/files/art-pin', { dir: S_ART.dir, source: '' });
+    toast(r.message);
+    closeArtPicker();
+    S.files.sig = '';
+    loadFiles(true);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    $('btnArtAuto').disabled = false;
+  }
+});
+
+$('btnCloseArt').addEventListener('click', closeArtPicker);
+$('artModal').addEventListener('click', e => {
+  if (e.target === $('artModal')) closeArtPicker();
+});
 
 $('btnFileRefresh').addEventListener('click', () => { S.files.sig = ''; loadFiles(true); });
 
@@ -3859,6 +4441,7 @@ document.addEventListener('keydown', e => {
     }
   }
   if (e.key !== 'Escape') return;
+  if (!$('artModal').hidden) { closeArtPicker(); return; }
   if (!$('pickModal').hidden) { closePicker(); return; }
   if (!$('previewModal').hidden) { $('previewModal').hidden = true; }
 });

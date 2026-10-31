@@ -189,7 +189,22 @@ def build_library(media_port: int) -> None:
         path.write_text(url + "\n", encoding="utf-8")
 
 
-def write_config(app_port: int, auth: bool, roots: list[str] | None = None) -> Path:
+def lan_addresses() -> list[str]:
+    """列出本机的局域网 IPv4，方便手机 / 另一台机器访问测试环境。"""
+    found: list[str] = []
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and ip not in found:
+                found.append(ip)
+    except OSError:
+        pass
+    return found
+
+
+def write_config(app_port: int, auth: bool, roots: list[str] | None = None,
+                 host: str = "127.0.0.1") -> Path:
     DATA.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     config = DATA / "config.yaml"
@@ -215,7 +230,7 @@ def write_config(app_port: int, auth: bool, roots: list[str] | None = None) -> P
         "    mode: crop",
         "",
         "web:",
-        "  host: 127.0.0.1",
+        f"  host: {host}",
         f"  port: {app_port}",
         "  auth:",
         f"    enabled: {'true' if auth else 'false'}",
@@ -254,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--auth", action="store_true",
                         help="打开网页登录（默认关闭，省得每次都登）")
     parser.add_argument("--port", type=int, default=6670, help="控制台端口，默认 6670")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="控制台监听地址，默认 127.0.0.1（只有本机能访问）；"
+                             "想让手机或别的机器连进来用 0.0.0.0")
     parser.add_argument("--media-port", type=int, default=6680, help="视频源端口，默认 6680")
     parser.add_argument("--media-root", default=None,
                         help="改用已有的媒体库目录（如真实 strm 素材），不再生成测试库")
@@ -313,12 +331,20 @@ def main(argv: list[str] | None = None) -> int:
     start_media_server(media_port)
 
     app_port = free_port(args.port)
-    config = write_config(app_port, args.auth, real_roots)
+    config = write_config(app_port, args.auth, real_roots, args.host)
 
     url = f"http://127.0.0.1:{app_port}"
+    if args.host in ("0.0.0.0", "::"):
+        extra = [f"http://{ip}:{app_port}" for ip in lan_addresses()]
+    elif args.host != "127.0.0.1":
+        extra = [f"http://{args.host}:{app_port}"]
+    else:
+        extra = []
     print()
     print("=" * 62)
     print(f"  控制台    {url}")
+    for item in extra:
+        print(f"            额外可通过 {item} 访问（需放行防火墙）")
     print(f"  视频源    http://127.0.0.1:{media_port}")
     print(f"  媒体库    {MEDIA}")
     print(f"  数据      {DATA}")

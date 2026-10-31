@@ -5,6 +5,7 @@
 会反复清空刮削产物，不影响源视频。
 """
 import json
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -34,6 +35,34 @@ def post(path, data=None):
 def files(folder):
     q = urllib.parse.quote(MEDIA + "\\" + folder)
     return get("/api/files?path=" + q)["files"]
+
+
+def _use_argv_base() -> None:
+    """支持 --base / --media：多套环境并存时指定测哪一套。
+
+    只给 --base 时，扫描根从服务端读，免得测试目录和被测服务对不上。
+    """
+    global BASE, MEDIA
+    argv = sys.argv[1:]
+    want_media = None
+    for i, arg in enumerate(argv):
+        if arg == "--base" and i + 1 < len(argv):
+            BASE = argv[i + 1].rstrip("/")
+        elif arg.startswith("--base="):
+            BASE = arg.split("=", 1)[1].rstrip("/")
+        elif arg == "--media" and i + 1 < len(argv):
+            want_media = argv[i + 1]
+        elif arg.startswith("--media="):
+            want_media = arg.split("=", 1)[1]
+    if want_media:
+        MEDIA = want_media
+    elif argv:
+        roots = get("/api/files").get("roots") or []
+        if roots:
+            MEDIA = roots[0]
+
+
+_use_argv_base()
 
 
 def clear():

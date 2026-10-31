@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
+import shutil
 import threading
 import time
 import urllib.parse
@@ -22,7 +24,7 @@ from .mediaserver import ServerPool
 from .nfo import display_title
 from .picker import FramePicker
 from .scheduler import Scheduler, TaskNotFound
-from .state import StateStore
+from .state import StateStore, dir_label
 from .thumbs import ThumbCache
 from .worker import Runner, ScrapeResult, process
 
@@ -71,9 +73,23 @@ def _skip_dir_name(name: str) -> bool:
 # 目录汇总单次最多数这么多 strm：媒体库动辄上万文件，不能让列表请求被拖住
 DIR_SUMMARY_LIMIT = 5000
 
+# Emby / Jellyfin 认的「文件夹封面」文件名。
+# 按视频名生成的 xxx-poster.jpg 只对「影片条目」有效；一旦这个目录本身变成了
+# 文件夹条目（中间层、或这一层没有直接放视频），就只能靠这一组固定名字。
+FOLDER_ART_NAMES = ("folder.jpg", "poster.jpg", "cover.jpg")
+FOLDER_ART_SET = frozenset(FOLDER_ART_NAMES)
+
+# 补封面时实际写哪几个名字：folder.jpg 是两家客户端的首选，poster.jpg 作为
+# 并列的通用名一起写，兼容那些只认 poster 的库配置与皮肤；两份内容完全相同，
+# 各自独立，删掉其中一个不影响另一个。
+FOLDER_ART_WRITE = ("folder.jpg", "poster.jpg")
+
+# 候选封面只认这几种图片后缀：网页能直接显示，Emby / Jellyfin 也都吃得下
+ART_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
 
 def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
-    """数一遍目录（含子目录）里的 strm，顺便算出刮过几个。
+    """数一遍目录（含子目录）里的 strm，顺便算出刮过几个、有没有文件夹封面。
 
     为什么要连子目录一起数：文件夹行的勾选框是递归选中的（点一下把这个
     文件夹里所有 strm 都选上），状态如果只数这一层，就会出现「勾得上 40 个、
@@ -82,9 +98,18 @@ def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
     「刮过」的口径和列表里的状态列一致：海报 / 背景图 / NFO 任一存在即算。
     产物和 strm 同目录同名前缀，所以先 scandir 拿到文件名集合、再用集合判断，
     不用给每个文件单独 stat 四次——几千个文件时差别很明显。
+
+    ``poster`` 单独数「有 ``xxx-poster.jpg`` 的」，和 ``scraped`` 分开：
+    有 NFO 或背景图但没海报的文件也算没刮完，文件管理的「海报未生成」就用它。
+
+    额外返回 ``own``（直接放在这一层几个）和 ``art``（这一层有没有 folder.jpg），
+    两者都是后面判断「这个文件夹在媒体库里会不会没封面」的依据。
     """
     total = 0
     scraped = 0
+    poster = 0
+    own = 0
+    art = 0
     stack = [directory]
     while stack and total < DIR_SUMMARY_LIMIT:
         current = stack.pop()
@@ -105,17 +130,243 @@ def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
             continue
         stack.extend(subs)
 
+        here = 0
         for name in names:
             if name in IGNORED_NAMES or Path(name).suffix.lower() not in wanted:
                 continue
+            here += 1
             total += 1
             stem = name.rsplit(".", 1)[0]
+            if f"{stem}-poster.jpg" in names:
+                poster += 1
             if (f"{stem}.nfo" in names or f"{stem}-poster.jpg" in names
                     or f"{stem}-fanart.jpg" in names):
                 scraped += 1
             if total >= DIR_SUMMARY_LIMIT:
                 break
-    return {"count": total, "scraped": scraped}
+        if current == directory:
+            own = here
+            art = 1 if names & FOLDER_ART_SET else 0
+    return {"count": total, "scraped": scraped, "poster": poster,
+            "own": own, "art": art}
+
+
+def _has_folder_art(directory: Path) -> bool:
+    """这一层有没有 Emby 认的文件夹封面（folder.jpg / poster.jpg / cover.jpg）。"""
+    try:
+        with os.scandir(directory) as entries:
+            return any(entry.name.lower() in FOLDER_ART_SET for entry in entries)
+    except OSError:
+        return False
+
+
+def _tree_stats(base: Path, wanted: set[str], limit: int = 4000) -> dict[Path, dict]:
+    """一次后序遍历，算出整棵子树里每个目录的 strm 分布。
+
+    返回 ``{目录: {"own": 直接几个, "total": 含子目录几个, "art": 有没有封面}}``。
+    一次扫描就能拿到全树数据，避免逐个目录各扫一遍变成 O(n²)。
+    """
+    out: dict[Path, dict] = {}
+    budget = [limit]
+
+    def walk(current: Path, depth: int) -> int:
+        if budget[0] <= 0 or depth > 12:
+            return 0
+        try:
+            with os.scandir(current) as entries:
+                names: set[str] = set()
+                subs: list[Path] = []
+                for entry in entries:
+                    try:
+                        if entry.is_dir():
+                            if not _skip_dir_name(entry.name):
+                                subs.append(Path(entry.path))
+                        else:
+                            names.add(entry.name.lower())
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        budget[0] -= 1
+        own = sum(1 for name in names
+                  if name not in IGNORED_NAMES
+                  and Path(name).suffix.lower() in wanted)
+        total = own
+        for sub in subs:
+            total += walk(sub, depth + 1)
+        out[current] = {"own": own, "total": total,
+                        "art": 1 if names & FOLDER_ART_SET else 0}
+        return total
+
+    walk(base, 0)
+    return out
+
+
+def _first_poster(directory: Path, max_dirs: int = 60) -> Path | None:
+    """这个层（含子目录）里第一张能拿来当封面的海报。
+
+    优先用刮削器自己生成的 ``xxx-poster.jpg``；实在没有再退而求其次，
+    拿子目录里已有的 folder.jpg / poster.jpg。
+    """
+    queue = [directory]
+    seen = 0
+    fallback: Path | None = None
+    while queue and seen < max_dirs:
+        current = queue.pop(0)
+        seen += 1
+        try:
+            with os.scandir(current) as entries:
+                names: list[str] = []
+                subs: list[Path] = []
+                for entry in entries:
+                    try:
+                        if entry.is_dir():
+                            if not _skip_dir_name(entry.name):
+                                subs.append(Path(entry.path))
+                        else:
+                            names.append(entry.name)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+        for name in sorted(names):
+            low = name.lower()
+            if low.endswith("-poster.jpg"):
+                return current / name
+            if fallback is None and low in FOLDER_ART_SET:
+                fallback = current / name
+        queue.extend(subs)
+    return fallback
+
+
+def _norm_path(target: Path | str) -> str:
+    """目录 key 的规范写法：去尾部斜杠、Windows 下统一大小写。
+
+    「指定封面」这个关系要存库、列表又要拿它做比对，两边必须走同一个函数，
+    否则 Windows 上盘符大小写不一样就永远对不上，标签会显示成「没指定」。
+    """
+    return os.path.normcase(os.path.normpath(os.path.abspath(str(target))))
+
+
+def _poster_candidates(directory: Path, limit: int = 120,
+                       max_dirs: int = 200) -> list[dict]:
+    """列出这一层（含子目录）里能当封面的图，给人挑「到底用哪张」。
+
+    只收两类：刮削器生成的 ``xxx-poster.jpg``，和文件夹条目认的
+    ``folder.jpg / poster.jpg / cover.jpg``。``-fanart.jpg`` / ``-thumb.jpg``
+    是横图，混进来只会让列表更难分辨。
+
+    排序：正片海报优先于 folder.jpg —— 前者才是「这部片子」的封面，后者只是
+    上一轮补进去的副本，拿副本当封面等于把上一轮的选择再抄一遍；同一类里
+    离这一层越近越靠前。
+
+    这一层自己的 folder.jpg / poster.jpg 不算候选：那是当前的封面本身，
+    选它等于什么都没改，列出来只会挤占第一屏。
+    """
+    found: list[tuple[int, int, str, Path, int]] = []
+    queue: list[tuple[Path, int]] = [(directory, 0)]
+    seen = 0
+    while queue and seen < max_dirs and len(found) < limit * 4:
+        current, depth = queue.pop(0)
+        seen += 1
+        try:
+            with os.scandir(current) as entries:
+                names: list[str] = []
+                for entry in entries:
+                    try:
+                        if entry.is_dir():
+                            if not _skip_dir_name(entry.name):
+                                queue.append((Path(entry.path), depth + 1))
+                        elif entry.name.lower().endswith(ART_IMAGE_EXTS):
+                            names.append(entry.name)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+        for name in sorted(names):
+            low = name.lower()
+            if low.endswith("-poster.jpg"):
+                rank = 0
+            elif low in FOLDER_ART_SET:
+                if depth == 0:
+                    continue
+                rank = 1
+            else:
+                continue
+            try:
+                size = (current / name).stat().st_size
+            except OSError:
+                size = 0
+            found.append((depth, rank, low, current / name, size))
+    found.sort(key=lambda row: (row[1], row[0], row[2]))
+    items = []
+    for depth, rank, _, path, size in found[:limit]:
+        try:
+            rel = str(path.parent.relative_to(directory))
+        except ValueError:
+            rel = ""
+        items.append({"path": str(path), "name": path.name, "folder": str(path.parent),
+                      "rel": str(Path(rel) / path.name) if rel else path.name,
+                      "depth": depth, "kind": "poster" if rank == 0 else "folder",
+                      "size": size})
+    return items
+
+
+def _write_folder_art(folder: Path, force: bool,
+                      source: Path | None = None) -> dict:
+    """给这一层写 folder.jpg + poster.jpg。
+
+    ``source`` 为空就退回 ``_first_poster`` 自动挑；指定了就用指定的那张。
+    指定后每次重补都还用它，这是「父层指定用哪张」能长期生效的原因。
+
+    返回 ``written``（写了几个文件）、``skipped``（已经齐了）、
+    ``no_source``（找不到可用源图）、``failed``（写入报错）。
+    """
+    have = {name for name in FOLDER_ART_WRITE if (folder / name).is_file()}
+    todo = [name for name in FOLDER_ART_WRITE if force or name not in have]
+    if not todo:
+        return {"written": 0, "skipped": True, "no_source": False, "failed": False}
+    src = source
+    if src is None or not src.is_file():
+        src = _first_poster(folder)
+    if src is None:
+        return {"written": 0, "skipped": False, "no_source": True, "failed": False}
+    written = 0
+    for name in todo:
+        dest = folder / name
+        try:
+            # force 重建时源可能就是这层已有的 folder.jpg，别复制到自己
+            if dest.exists() and dest.resolve() == src.resolve():
+                written += 1
+                continue
+            shutil.copy2(src, dest)
+            written += 1
+            log.info("补文件夹封面：%s ← %s", dest, src.name)
+        except OSError as exc:
+            log.warning("补文件夹封面失败 %s：%s", dest, exc)
+    return {"written": written, "skipped": False, "no_source": False,
+            "failed": written == 0, "source": src}
+
+
+def _chain_to_root(target: Path, roots: list[Path]) -> list[Path]:
+    """target 自己 + 它到扫描根之间的每一层（不含根，从下往上）。
+
+    Emby 在「媒体库根 → 文件夹1 → 文件夹2 → 视频」这种结构里，会把中间那些
+    没有直接放视频的层当成文件夹条目。它们全都要有 folder.jpg 才能显示封面，
+    所以修复范围必须一路补到根的下面这一层。
+    """
+    for root in roots:
+        try:
+            rel = target.relative_to(root)
+        except ValueError:
+            continue
+        chain: list[Path] = []
+        cursor = target
+        for _ in rel.parts:
+            chain.append(cursor)
+            cursor = cursor.parent
+        return chain
+    return [target]
 
 
 def _as_int(value, low: int, high: int, label: str) -> int:
@@ -394,42 +645,65 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             status=status_filter, keyword=keyword, dir_path=dir_path,
             limit=size, offset=(page - 1) * size, sort=sort, order=order,
         )
+        depth_of = _depth_map(_roots())
+        art_cache: dict[Path, bool] = {}
+        try:
+            pins = store.folder_art_map()
+        except Exception:  # noqa: BLE001 - 老库没有这张表时按「没指定」处理
+            pins = {}
+        pin_cache: dict[Path, str] = {}
+
+        def folder_art(folder: Path) -> bool:
+            # 同一个文件夹下的几十条记录共用一次 scandir
+            if folder not in art_cache:
+                art_cache[folder] = _has_folder_art(folder)
+            return art_cache[folder]
+
+        def folder_pin(folder: Path) -> str:
+            if folder not in pin_cache:
+                pin_cache[folder] = pins.get(_norm_path(folder), "")
+            return pin_cache[folder]
+
+        items_out = []
+        for row in rows:
+            folder = Path(row.path).parent
+            depth = depth_of(folder)
+            pin = folder_pin(folder)
+            items_out.append({
+                "path": row.path,
+                "name": row.name,
+                "size": row.size,
+                "status": row.status,
+                "reason": row.reason,
+                "title": row.title,
+                "duration": round(row.duration, 1),
+                "attempts": row.attempts,
+                "updated": int(row.updated),
+                "added": int(row.added),
+                "frame_at": round(row.frame_at, 2),
+                # 只有深层目录才有「文件夹封面」这一说，浅层的不必额外 scandir
+                "dir_depth": depth,
+                "folder_art": folder_art(folder) if depth >= 2 else True,
+                "folder_pin": 1 if pin else 0,
+                "pin_name": Path(pin).name if pin else "",
+                "artifacts": artifacts(build_target(Path(row.path))),
+            })
         return {
             "page": page,
             "size": size,
             "total": store.count(status_filter, keyword, dir_path=dir_path),
             "dir": dir_path,
-            "items": [
-                {
-                    "path": row.path,
-                    "name": row.name,
-                    "size": row.size,
-                    "status": row.status,
-                    "reason": row.reason,
-                    "title": row.title,
-                    "duration": round(row.duration, 1),
-                    "attempts": row.attempts,
-                    "updated": int(row.updated),
-                    "added": int(row.added),
-                    "frame_at": round(row.frame_at, 2),
-                    "artifacts": artifacts(build_target(Path(row.path))),
-                }
-                for row in rows
-            ],
+            "items": items_out,
         }
 
-    @app.get("/api/items/groups")
-    def item_groups(
-        status_filter: str = Query("all", alias="status"),
-        keyword: str = Query("", alias="q"),
-        limit: int = Query(400, ge=1, le=2000),
-        sort: str = Query("added"),
-        order: str = Query("desc"),
-    ):
-        """任务列表的「按文件夹」视图：每个文件夹一行，带组内进度。"""
-        groups = store.dir_groups(status_filter, keyword, limit=limit,
-                                  sort=sort, order=order)
+    def _decorate_groups(groups: list[dict]) -> list[dict]:
+        """给分组补上「在媒体库里的相对路径 / 层数 / 文件夹封面 / 指定的那张封面」。"""
         roots = sorted((str(Path(r).resolve()) for r in cfg.scan.roots), key=len, reverse=True)
+        depth_of = _depth_map(_roots())
+        try:
+            pins = store.folder_art_map()
+        except Exception:  # noqa: BLE001
+            pins = {}
         for group in groups:
             group["rel"] = ""
             for root in roots:
@@ -441,8 +715,158 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                         break
                 if group["rel"]:
                     break
+            # 分组里的目录一定直接含 strm，所以只有「深层」才需要文件夹封面
+            depth = depth_of(Path(group["path"]))
+            group["depth"] = depth
+            group["folder_art"] = _has_folder_art(Path(group["path"])) if depth >= 2 else True
+            pin = pins.get(_norm_path(group["path"]), "")
+            group["pinned"] = 1 if pin else 0
+            group["pin_name"] = Path(pin).name if pin else ""
+        return groups
+
+    @app.get("/api/items/groups")
+    def item_groups(
+        status_filter: str = Query("all", alias="status"),
+        keyword: str = Query("", alias="q"),
+        limit: int = Query(400, ge=1, le=2000),
+        sort: str = Query("added"),
+        order: str = Query("desc"),
+    ):
+        """任务列表的「按文件夹」视图（平铺）：每一层含 strm 的文件夹一行。"""
+        groups = _decorate_groups(store.dir_groups(status_filter, keyword, limit=limit,
+                                                   sort=sort, order=order))
         return {
             "groups": groups,
+            "total": len(groups),
+            "truncated": len(groups) >= limit,
+            "counts": store.stats(),
+        }
+
+    _STAT_KEYS = ("total", "ok", "skipped", "failed", "pending", "running")
+
+    def _node_sort_key(node: dict, sort: str):
+        if sort == "name":
+            return node["name"].lower()
+        if sort == "added":
+            return (node["added"], node["name"].lower())
+        if sort == "updated":
+            return (node["updated"], node["name"].lower())
+        # 默认：正在跑的排最前，其次有失败的，再其次还有待处理的
+        return (-node["running"], -node["failed"], -node["pending"],
+                node["path"].lower())
+
+    def _build_tree(groups: list[dict], sort: str, order: str) -> list[dict]:
+        """把「含 strm 的文件夹」列表补成完整的目录树。
+
+        中间层（只有子目录、自己不含 strm 的那几层）在平铺视图里根本不会出现，
+        但在文件管理里是要一层层点进去的 —— 这里按扫描根把整条链路补齐，
+        每一层都带上子树汇总，收起时也能看出这一支有多少任务、跑到哪了。
+        """
+        depth_of = _depth_map(_roots())
+        nodes: dict[str, dict] = {}
+        parent_of: dict[str, str] = {}
+
+        def new_node(path: str) -> dict:
+            node = {
+                "path": path, "name": dir_label(path), "parent": "",
+                "kind": "dir", "hasItems": False, "depth": 0,
+                "children": [], "dirs": 0,
+                "total": 0, "ok": 0, "skipped": 0, "failed": 0,
+                "pending": 0, "running": 0, "done": 0, "pct": 0,
+                "added": 0.0, "updated": 0.0,
+                "folder_art": True, "pinned": 0, "pin_name": "",
+            }
+            nodes[path] = node
+            return node
+
+        for group in groups:
+            path = group["path"]
+            rel = group.get("rel") or ""
+            chain: list[str] = []
+            if rel:
+                cut = len(path) - len(rel) - 1
+                prefix = path[:cut] if cut > 0 else ""
+                sep = path[cut] if 0 <= cut < len(path) else os.sep
+                if prefix:
+                    chain.append(prefix)
+                    cur = prefix
+                    # 相对路径里混用 / 和 \ 的库也照走，按这一层的实际分隔符拼
+                    for part in rel.replace("\\", sep).replace("/", sep).split(sep):
+                        if not part:
+                            continue
+                        cur = cur + sep + part
+                        chain.append(cur)
+            if not chain:
+                chain = [path]
+
+            for index, node_path in enumerate(chain):
+                node = nodes.get(node_path) or new_node(node_path)
+                if index == 0:
+                    continue
+                key = chain[index - 1]
+                if node_path not in parent_of:
+                    parent_of[node_path] = key
+                    nodes[key]["children"].append(node_path)
+
+            leaf = nodes[path]
+            leaf["kind"] = "root" if len(chain) == 1 else "leaf"
+            leaf["hasItems"] = True
+            leaf["folder_art"] = group["folder_art"]
+            leaf["pinned"] = group["pinned"]
+            leaf["pin_name"] = group["pin_name"]
+            for name in _STAT_KEYS:
+                leaf[name] += group.get(name, 0)
+            leaf["added"] = max(leaf["added"], float(group.get("added") or 0))
+            leaf["updated"] = max(leaf["updated"], float(group.get("updated") or 0))
+
+        def rollup(node: dict) -> dict:
+            for key in node["children"]:
+                child = rollup(nodes[key])
+                for name in _STAT_KEYS:
+                    node[name] += child[name]
+                node["added"] = max(node["added"], child["added"])
+                node["updated"] = max(node["updated"], child["updated"])
+                node["dirs"] += child["dirs"]
+            if node["hasItems"]:
+                node["dirs"] += 1
+            node["done"] = node["ok"] + node["skipped"]
+            node["pct"] = round(100 * node["done"] / node["total"]) if node["total"] else 0
+            node["depth"] = depth_of(Path(node["path"]))
+            # 只有子目录的那几层在 Emby 里同样是文件夹条目，也需要 folder.jpg
+            if not node["hasItems"] and node["depth"] >= 2:
+                node["folder_art"] = _has_folder_art(Path(node["path"]))
+            return node
+
+        # 「行动优先级」本身就是从重要到次要排的，不能再按 order 翻一遍
+        desc = order == "desc" and sort in ("name", "added", "updated")
+
+        def order_tree(node: dict) -> dict:
+            kids = [order_tree(nodes[key]) for key in node["children"]]
+            kids.sort(key=lambda item: _node_sort_key(item, sort), reverse=desc)
+            node["children"] = kids
+            return node
+
+        tops = [order_tree(rollup(nodes[key]))
+                for key in nodes if key not in parent_of]
+        for node in nodes.values():
+            for child in node["children"]:
+                child["parent"] = node["path"]
+        tops.sort(key=lambda item: _node_sort_key(item, sort), reverse=desc)
+        return tops
+
+    @app.get("/api/items/tree")
+    def item_tree(
+        status_filter: str = Query("all", alias="status"),
+        keyword: str = Query("", alias="q"),
+        limit: int = Query(400, ge=1, le=2000),
+        sort: str = Query("added"),
+        order: str = Query("desc"),
+    ):
+        """任务列表的「按文件夹」视图（目录树）：结构跟文件管理里点进去的一样。"""
+        groups = _decorate_groups(store.dir_groups(status_filter, keyword, limit=limit,
+                                                   sort=sort, order=order))
+        return {
+            "nodes": _build_tree(groups, sort, order),
             "total": len(groups),
             "truncated": len(groups) >= limit,
             "counts": store.stats(),
@@ -595,6 +1019,20 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 return target
         raise HTTPException(403, "该路径不在扫描目录内，已拒绝")
 
+    def _depth_map(roots: list[Path]):
+        """返回一个算「这个目录在扫描根下第几层」的函数（直接放在根里 = 1）。"""
+
+        def depth_of(target: Path) -> int:
+            best = 0
+            for root in roots:
+                try:
+                    best = max(best, len(target.relative_to(root).parts))
+                except ValueError:
+                    continue
+            return best
+
+        return depth_of
+
     def _skip_dir(name: str) -> bool:
         return _skip_dir_name(name)
 
@@ -725,7 +1163,13 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
         wanted = {e.lower() if e.startswith(".") else f".{e.lower()}"
                   for e in cfg.scan.extensions}
+        depth_of = _depth_map(roots)
         keyword = q.strip().lower()
+        # 指定过封面的目录：一次读全表，列表里逐行判断，不额外查库
+        try:
+            pins = store.folder_art_map()
+        except Exception:  # noqa: BLE001 - 老库没这张表也不该让列表打不开
+            pins = {}
         dirs: list[dict] = []
         file_rows: list[dict] = []
         truncated = False
@@ -777,8 +1221,14 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             if group:
                 for info in part:
                     summary = _dir_summary(info["entry"], wanted)
+                    pin = pins.get(_norm_path(info["entry"]), "")
                     dirs.append({"name": info["name"], "path": str(info["entry"]),
                                  "count": summary["count"], "scraped": summary["scraped"],
+                                 "poster": summary["poster"],
+                                 "own": summary["own"], "art": summary["art"],
+                                 "depth": depth_of(info["entry"]),
+                                 "pinned": 1 if pin else 0,
+                                 "pin_name": Path(pin).name if pin else "",
                                  "mtime": info["mtime"]})
                 continue
             for info in part:
@@ -791,6 +1241,10 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 })
 
         status_map = store.get_many(row["path"] for row in file_rows)
+        # 这一屏的文件都在同一个目录里，深度、folder.jpg、指定关系只需要算一次
+        file_depth = depth_of(current)
+        file_art = _has_folder_art(current)
+        file_pin = pins.get(_norm_path(current), "")
         for row in file_rows:
             item = status_map.get(row["path"])
             row["status"] = item.status if item else "new"
@@ -798,6 +1252,10 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             row["title"] = item.title if item else ""
             row["duration"] = round(item.duration, 1) if item else 0.0
             row["frame_at"] = round(item.frame_at, 2) if item else 0.0
+            row["dir_depth"] = file_depth
+            row["folder_art"] = file_art
+            row["folder_pin"] = 1 if file_pin else 0
+            row["pin_name"] = Path(file_pin).name if file_pin else ""
             row["artifacts"] = artifacts(build_target(Path(row["path"])))
 
         return {
@@ -1028,6 +1486,212 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         head = "已开始重刮选中的" if force else "已开始刮削选中的"
         return {"ok": True, "started": True, "skipped": len(ready),
                 "message": f"{head} {len(queued)} 个文件{tail}"}
+
+    # ---------- 文件夹封面修复（手动触发） ----------
+
+    @app.post("/api/files/folder-poster")
+    def files_folder_poster(payload: dict):
+        """给多层文件夹结构补齐每一层的封面，只在这个动作被点时才执行。
+
+        Emby 与 Jellyfin 的取图规则是同一套：
+        - 目录里直接有视频 → 这个目录是「影片」条目，`<视频名>-poster.jpg` 生效；
+        - 目录里没有直接视频、只有子目录 → 它是「文件夹」条目，只认
+          ``folder.jpg`` / ``poster.jpg`` / ``cover.jpg`` 这类固定名字，
+          ``xxx-poster.jpg`` 对它完全无效。
+        多层嵌套时，中间那几层全都是文件夹条目；哪一层没封面，整条链路看起来
+        就是「海报全丢」。所以这里对**每一层**都写一份固定名字的封面
+        （``folder.jpg`` + ``poster.jpg``），哪一层落到文件夹条目都有图可用。
+
+        为什么不做进正常刮削：单层目录不需要，往每个目录都塞图会给媒体库添乱，
+        还会跟「按视频名生成的海报」抢优先级。所以这个动作必须手动触发。
+
+        修复范围：
+        - 往下：选中目录整棵子树里每一层含 strm 的目录
+        - 往上：从选中目录一直到扫描根下面那一层（中间层同样没有直接视频）
+        - 扫描根本身不写，那是库图标的事
+        """
+        data = payload or {}
+        raw_dirs = [str(p).strip() for p in (data.get("dirs") or []) if str(p).strip()]
+        raw_files = [str(p).strip() for p in (data.get("paths") or []) if str(p).strip()]
+        force = bool(data.get("force"))
+        if not raw_dirs and not raw_files:
+            raise HTTPException(400, "先勾选文件夹")
+
+        roots = _roots()
+        if not roots:
+            raise HTTPException(400, "扫描目录都不存在，检查 volume 挂载")
+        wanted = {e.lower() if e.startswith(".") else f".{e.lower()}"
+                  for e in cfg.scan.extensions}
+
+        bases: list[Path] = []
+        rejected = 0
+        for raw in raw_dirs:
+            try:
+                folder = _within_roots(raw)
+            except HTTPException:
+                rejected += 1
+                continue
+            if not folder.is_dir():
+                rejected += 1
+                continue
+            bases.append(folder)
+        for raw in raw_files:
+            try:
+                source = _within_roots(raw)
+            except HTTPException:
+                rejected += 1
+                continue
+            bases.append(source.parent)
+        if not bases:
+            raise HTTPException(400, "选中的路径都不在媒体库目录里")
+
+        def needs_art(folder: Path, total: int) -> bool:
+            """每一层只要递归含有 strm 就补 —— 不再区分「自己有没有直接放视频」。
+
+            早先只补 own==0 的中间层，实测会漏：像「电影/某片/Season 1/xxx.strm」
+            这种结构，Season 1 里直接有视频、它却是被当成季条目渲染的；而
+            「媒体库根/分类/影片/视频」里那层「分类」既没有直接视频、也不是影片，
+            同样要 folder.jpg。与其猜 Emby 把哪一层认成什么类型，不如让每一层
+            都自带一张固定名字的封面，哪一层落到文件夹条目都有图可用。
+
+            媒体库根自己永远不写：那是库图标的事，写进去会污染用户根目录。
+            """
+            return total > 0 and folder not in roots
+
+        # 每个「最高层祖先」只扫一次整棵树：一次遍历就拿到各层的 direct/total/art
+        targets: dict[Path, dict] = {}
+        tree_cache: dict[Path, dict] = {}
+        for base in bases:
+            chain = _chain_to_root(base, roots)
+            top = chain[-1] if chain else base
+            stats = tree_cache.get(top)
+            if stats is None:
+                stats = tree_cache[top] = _tree_stats(top, wanted)
+            chain_set = set(chain)
+            for folder, st in stats.items():
+                if not (folder == base or folder in chain_set
+                        or base in folder.parents):
+                    continue
+                if needs_art(folder, st["total"]):
+                    targets[folder] = st
+
+        # 有「指定封面」的层优先用指定的那张，其余照旧自动挑
+        pins = store.folder_art_map()
+        created: list[str] = []
+        kept: list[str] = []
+        no_src: list[str] = []
+        failed: list[str] = []
+        written = 0
+        pinned_used = 0
+        for folder in sorted(targets):
+            pinned = pins.get(_norm_path(folder), "")
+            src = Path(pinned) if pinned and Path(pinned).is_file() else None
+            if src is not None:
+                pinned_used += 1
+            elif pinned:
+                log.info("这一层指定的封面已不存在，退回自动挑：%s", pinned)
+            res = _write_folder_art(folder, force, src)
+            if res["skipped"]:
+                kept.append(str(folder))
+            elif res["no_source"]:
+                no_src.append(str(folder))
+            elif res["failed"]:
+                failed.append(str(folder))
+            else:
+                created.append(str(folder))
+                written += res["written"]
+
+        if not targets:
+            return {"ok": True, "created": [], "kept": [], "noSource": [],
+                    "files": 0,
+                    "message": "选中的范围里没有含 strm 的文件夹"}
+        parts: list[str] = []
+        if created:
+            parts.append(f"已补 {len(created)} 个文件夹封面（{written} 个文件）")
+            if pinned_used:
+                parts.append(f"其中 {pinned_used} 个用的是你指定的图")
+        if kept:
+            parts.append(f"{len(kept)} 个已就绪跳过")
+        if no_src:
+            parts.append(f"{len(no_src)} 个没找到可用海报（先刮削再补）")
+        if failed:
+            parts.append(f"{len(failed)} 个写入失败")
+        if rejected:
+            parts.append(f"{rejected} 个路径不在媒体库里")
+        return {
+            "ok": bool(created) or not (no_src or failed),
+            "created": created, "kept": kept, "noSource": no_src, "failed": failed,
+            "files": written, "pinned": pinned_used,
+            "message": "，".join(parts) + "；Emby / Jellyfin 里刷新元数据后生效",
+        }
+
+    # ---------- 指定某一层用哪张图当封面 ----------
+
+    @app.get("/api/files/art-candidates")
+    def files_art_candidates(path: str = Query(...)):
+        """列出这一层能拿来当封面的图，供人挑「用哪张」。
+
+        范围是整棵子树：合集目录下每部片子各有一张海报，父层该用哪张只有人
+        知道；程序按名字排第一张，经常不是想要的那张。这里把候选都摆出来，
+        配上缩略图让人点一下。
+        """
+        folder = _within_roots(path)
+        if not folder.is_dir():
+            raise HTTPException(404, "文件夹不存在")
+        items = _poster_candidates(folder)
+        return {
+            "ok": True, "dir": str(folder),
+            "pinned": store.get_folder_art(_norm_path(folder)),
+            "items": items,
+            "message": "" if items else "这个文件夹里还没刮出可用的海报",
+        }
+
+    @app.get("/api/files/art-image")
+    def files_art_image(path: str = Query(...),
+                        w: int = Query(0, ge=0, le=512)):
+        """候选封面的缩略图：媒体库内的任意一张图片。
+
+        和 ``/api/files/image`` 不同，那个是按 strm 推产物路径；这里给的是
+        目录里实际存在的图片文件（比如某部片子的 ``xxx-poster.jpg``）。
+        """
+        source = _within_roots(path)
+        if source.suffix.lower() not in ART_IMAGE_EXTS or not source.is_file():
+            raise HTTPException(404, "图片不存在")
+        served = thumbs.get(source, w) if w else source
+        media = mimetypes.guess_type(served.name)[0] or "image/jpeg"
+        return FileResponse(served, media_type=media, headers=IMAGE_CACHE)
+
+    @app.post("/api/files/art-pin")
+    def files_art_pin(payload: dict):
+        """指定 / 取消指定某一层文件夹的封面图。
+
+        指定后会立刻写一遍 folder.jpg + poster.jpg，不用再点一次修复；关系存进
+        库里，之后每次补封面（包括「只补缺的」）都优先用这张，不会又退回
+        「按名字排第一张」。
+        """
+        data = payload or {}
+        folder = _within_roots(str(data.get("dir") or ""))
+        if not folder.is_dir():
+            raise HTTPException(404, "文件夹不存在")
+        raw = str(data.get("source") or "").strip()
+        if not raw:
+            store.set_folder_art(_norm_path(folder), "")
+            return {"ok": True, "cleared": True, "pinned": "", "files": 0,
+                    "message": "已恢复自动挑选，下次补封面会重新挑一张"}
+        source = _within_roots(raw)
+        if source.suffix.lower() not in ART_IMAGE_EXTS or not source.is_file():
+            raise HTTPException(400, "这不是一张可用的图片")
+        if folder not in source.parents:
+            raise HTTPException(403, "只能选这个文件夹里的图片")
+        res = _write_folder_art(folder, True, source)
+        if res["failed"]:
+            raise HTTPException(500, "写入失败：这个目录可能没有写权限")
+        store.set_folder_art(_norm_path(folder), str(source))
+        return {
+            "ok": True, "pinned": str(source), "files": res["written"],
+            "message": f"已把「{source.name}」设为这一层的封面（{res['written']} 个文件），"
+                       "Emby / Jellyfin 里刷新元数据后生效",
+        }
 
     # ---------- 手动选帧 ----------
 

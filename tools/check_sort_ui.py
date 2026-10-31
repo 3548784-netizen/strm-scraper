@@ -13,6 +13,20 @@ import urllib.request
 from playwright.sync_api import sync_playwright
 
 BASE = "http://127.0.0.1:6670"
+
+
+def _use_argv_base() -> None:
+    """支持 --base 换个服务地址（同时起多套环境时用来指定测哪一套）。"""
+    global BASE
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--base" and i + 1 < len(argv):
+            BASE = argv[i + 1].rstrip("/")
+        elif arg.startswith("--base="):
+            BASE = arg.split("=", 1)[1].rstrip("/")
+
+
+_use_argv_base()
 FAIL: list[str] = []
 
 
@@ -97,14 +111,23 @@ def main() -> int:
         print("\n---------- 4. 按文件夹视图也跟着排 ----------")
         page.click('#taskView button[data-view="dir"]')
         page.wait_for_timeout(1500)
+        # 这一屏是目录树，顺序要按「父在前、同层按名字倒序」来比：
+        # 直接把整屏扁平排序会比错（根节点总在最前面）
+        tree = api("/api/items/tree?status=all&limit=400&sort=name&order=desc")["nodes"]
+        expected: list[str] = []
+
+        def walk(nodes):
+            for node in nodes:
+                expected.append(node["path"])
+                walk(node["children"])
+
+        walk(tree)
         groups = page.eval_on_selector_all(
             "#taskBody tr.grouprow", "els => els.map(e => e.dataset.group)")
         check("文件夹视图有分组", len(groups) >= 1, f"{len(groups)} 组")
         if len(groups) >= 2:
-            check("文件夹按名称倒序",
-                  groups == sorted(groups, key=lambda s: s.rsplit("\\", 1)[-1].lower(),
-                                   reverse=True),
-                  str([g.rsplit("\\", 1)[-1] for g in groups]))
+            check("文件夹按名称倒序（与接口返回的树一致）", groups == expected,
+                  str([g.rsplit("\\", 1)[-1] for g in groups][:6]))
         else:
             print("  ..   只有 1 个文件夹，跳过排序比对（跑全量回归后数据会被删）")
         page.click('#taskSort button[data-sort="added"]')

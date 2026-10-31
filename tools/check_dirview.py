@@ -97,6 +97,18 @@ def expand_group(page, path: str) -> dict:
 
 
 
+def open_ancestors(page, path: str) -> None:
+    """把某个文件夹上层的节点逐级展开 —— 树视图里收起的分支不渲染，行不在 DOM 里。"""
+    page.evaluate("""async (path) => {
+      const chain = ancestorsOf(path).slice(1).reverse();
+      for (const p of chain) {
+        if (S.openNodes.has(p)) continue;
+        await toggleNode(p);
+      }
+    }""", path)
+    page.wait_for_timeout(400)
+
+
 def is_open(page, path: str) -> bool:
     return page.evaluate("""(path) => {
       const row = [...document.querySelectorAll('#taskBody tr.grouprow')]
@@ -145,6 +157,7 @@ def main() -> int:
         page.wait_for_timeout(1500)
 
         print("\n---------- 1. 大文件夹展开耗时 ----------")
+        open_ancestors(page, big["path"])
         set_open(page, big["path"], False)          # 先确保是收起状态
         first_open = expand_group(page, big["path"])
         print(f"  首屏 {first_open['first']} ms，全部 {first_open['all']} ms，"
@@ -162,11 +175,12 @@ def main() -> int:
         # 展开几个中等组，把页面撑长，然后滚到中间
         opened = []
         for g in mid[:6]:
-            click_group(page, g["path"])
-            page.wait_for_timeout(350)
+            open_ancestors(page, g["path"])
+            set_open(page, g["path"], True, settle=350)
             opened.append(g["path"])
         page.wait_for_timeout(600)
         anchor = mid[4]["path"]          # 拿第 5 个组当参照物
+        open_ancestors(page, anchor)
         page.evaluate("""(path) => {
           const row = [...document.querySelectorAll('#taskBody tr.grouprow')]
             .find(r => r.dataset.group === path);
@@ -210,20 +224,49 @@ def main() -> int:
 
         print("\n---------- 5. 大组开着时点小分组：不该整表重建 ----------")
         set_open(page, big["path"], True, settle=1200)
-        marked = page.evaluate("""() => {
-          const rows = [...document.querySelectorAll('#taskBody tr.gitem')];
-          const row = rows[Math.floor(rows.length / 2)];
-          window.__keep = row;
-          return rows.length;
-        }""")
-        click_group(page, mid[6]["path"])
-        page.wait_for_timeout(900)
-        alive = page.evaluate("() => !!(window.__keep && window.__keep.isConnected)")
-        check("别的分组里的行没有被重建", alive, f"大组 {marked} 行，引用{'仍在' if alive else '已失效'}")
+        open_ancestors(page, mid[6]["path"])
+        before_rows = group_rows(page)
+        before_open = page.evaluate("""() => [...document.querySelectorAll('#taskBody tr.grouprow.gopen')]
+            .map(r => r.dataset.group)""")
+        set_open(page, mid[6]["path"], True, settle=900)
+        after_open = page.evaluate("""() => [...document.querySelectorAll('#taskBody tr.grouprow.gopen')]
+            .map(r => r.dataset.group)""")
+        check("别的分组展开状态没被重置",
+              all(p in after_open for p in before_open), f"{len(before_open)} → {len(after_open)}")
+        check("大组明细还在", group_rows(page) >= before_rows - 1,
+              f"{before_rows} → {group_rows(page)} 行")
         check("小分组展开成功", is_open(page, mid[6]["path"]))
         set_open(page, mid[6]["path"], False)
 
-        print("\n---------- 6. 收起全部后仍在可用状态 ----------")
+        print("\n---------- 6. 收起全部 / 展开全部 / 筛选自动展开 ----------")
+        page.click("#btnCollapseAll")
+        page.wait_for_timeout(500)
+        check("收起全部只剩顶层", page.evaluate(
+            "() => document.querySelectorAll('#taskBody tr.grouprow').length") == 1)
+        check("收起全部后没有明细行", group_rows(page) == 0, f"{group_rows(page)} 行")
+
+        tree = api(base, "/api/items/tree?status=all&limit=400")
+
+        def node_count(nodes) -> int:
+            return sum(1 + node_count(node["children"]) for node in nodes)
+
+        n_nodes = node_count(tree["nodes"])
+        page.click("#btnExpandAll")
+        page.wait_for_timeout(3000)
+        rows_n = page.evaluate("() => document.querySelectorAll('#taskBody tr.grouprow').length")
+        check("展开全部露出整棵树的每个节点", rows_n == n_nodes, f"{rows_n} / {n_nodes}")
+
+        page.fill("#taskSearch", "第01季")
+        page.wait_for_timeout(1600)
+        names = page.eval_on_selector_all(
+            "#taskBody tr.grouprow", "els => els.map(e => e.querySelector('.gname').textContent.trim())")
+        check("筛选命中后仍然留着祖先链路", len(names) >= 2, str(names))
+        check("没命中的兄弟分支不出现",
+              not any("第02季" in n for n in names), str(names))
+        page.fill("#taskSearch", "")
+        page.wait_for_timeout(1500)
+
+        print("\n---------- 7. 收起全部后仍在可用状态 ----------")
         for path in opened + [big["path"]]:
             set_open(page, path, False, settle=250)
         page.wait_for_timeout(400)

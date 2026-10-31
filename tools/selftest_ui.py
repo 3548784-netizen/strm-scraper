@@ -7,6 +7,7 @@
 """
 import json
 import os
+import sys
 import time
 from pathlib import Path
 import urllib.error
@@ -15,6 +16,20 @@ import urllib.request
 from playwright.sync_api import sync_playwright
 
 BASE = "http://127.0.0.1:6670"
+
+
+def _use_argv_base() -> None:
+    """支持 --base 换个服务地址（同时起多套环境时用来指定测哪一套）。"""
+    global BASE
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--base" and i + 1 < len(argv):
+            BASE = argv[i + 1].rstrip("/")
+        elif arg.startswith("--base="):
+            BASE = arg.split("=", 1)[1].rstrip("/")
+
+
+_use_argv_base()
 FAIL = []
 
 
@@ -135,7 +150,22 @@ with sync_playwright() as p:
 
     print("========== 3. 单文件刮削自动刷新 ==========")
     pg.evaluate("() => { window.confirm = () => true; }")
-    pg.click("#fileBody .dir"); pg.wait_for_timeout(1500)
+    # 过渡层（只有子目录、这一层没放 strm）点进去没有文件行，
+    # 所以挑一个「这一层直接有 strm」的目录，不按行号赌第一行是什么
+    target = pg.evaluate('''async () => {
+        const dirs = (S.files.data.dirs || []).map(d => d.path);
+        for (const p of dirs) {
+            const r = await api('/api/files?path=' + encodeURIComponent(p));
+            if ((r.files || []).length) return p;
+        }
+        return '';
+    }''')
+    if target:
+        pg.evaluate('''async (p) => {
+            S.files.path = p; S.files.sig = '';
+            await loadFiles(true);
+        }''', target)
+    pg.wait_for_timeout(1500)
     # 先删掉产物，再点行内刮削
     pg.query_selector_all('#fileBody button[data-act="clean"]')[0].click()
     pg.wait_for_timeout(1500)
@@ -202,22 +232,45 @@ with sync_playwright() as p:
 
     check("自动切到文件夹视图",
           pg.eval_on_selector("#taskView button.on", "e => e.dataset.view") == "dir")
-    groups = pg.query_selector_all("#taskBody tr.grouprow")
-    check("有分组行", len(groups) >= 2, f"{len(groups)} 组")
-    check("刚选的文件夹排第一", groups and "剧集" in groups[0].inner_text(),
-          groups[0].inner_text().replace("\n", " ") if groups else "—")
-    check("带「刚选择」标记", bool(groups) and "刚选择" in groups[0].inner_text())
+    # 这一屏是目录树：结构跟文件管理里一层层点进去的一样，刚选的文件夹不挪到最前，
+    # 而是把它的祖先展开，让它在原来的位置上露出来
+    rows = pg.eval_on_selector_all("#taskBody tr.grouprow", """els => els.map(e => ({
+        name: e.querySelector('.gname').textContent.trim(),
+        path: e.dataset.group,
+        open: e.classList.contains('gopen'),
+        indent: parseInt(getComputedStyle(e.querySelector('.gwrap')).getPropertyValue('--ind')) || 0,
+        text: e.innerText.replace(/\\n/g, ' ') }))""")
+    check("有分组行", len(rows) >= 2, f"{len(rows)} 组")
+    pinned = [r for r in rows if r["name"] == "剧集"]
+    check("刚选的文件夹在可见行里", bool(pinned), str([r["name"] for r in rows]))
+    check("带「刚选择」标记", bool(pinned) and "刚选择" in pinned[0]["text"],
+          pinned[0]["text"] if pinned else "—")
+    check("祖先层被自动展开（不用一级级点）",
+          bool(rows) and rows[0]["open"] and len(rows) >= 3,
+          f"{len(rows)} 行，首行 open={rows[0]['open'] if rows else '—'}")
+    check("下一层靠缩进区分", bool(pinned) and pinned[0]["indent"] > 0,
+          str([(r["name"][:6], r["indent"]) for r in rows][:4]))
     check("先不展开（点了才展开）", len(pg.query_selector_all("#taskBody tr.gitem")) == 0)
 
-    pg.click("#taskBody .gbtn"); pg.wait_for_timeout(1600)
+    pg.evaluate("""(path) => {
+      const btn = [...document.querySelectorAll('#taskBody tr.grouprow')]
+        .find(r => r.dataset.group === path).querySelector('.gbtn');
+      btn.click();
+    }""", pinned[0]["path"] if pinned else "")
+    pg.wait_for_timeout(1600)
     items = pg.query_selector_all("#taskBody tr.gitem")
     check("点开才显示里面的文件", len(items) > 0, f"{len(items)} 行")
     check("组内行带缩进标记", bool(items) and "gitem" in (items[0].get_attribute("class") or ""))
-    check("展开后「刚选择」标记收掉",
-          "刚选择" not in pg.query_selector_all("#taskBody tr.grouprow")[0].inner_text())
+    pad = pg.evaluate("""() => {
+      const row = document.querySelector('#taskBody tr.gitem .name');
+      return row ? parseInt(getComputedStyle(row).paddingLeft) : -1;
+    }""")
+    check("文件行比所属文件夹更靠右", pad > (pinned[0]["indent"] if pinned else 0), str(pad))
+    check("展开后「刚选择」标记收掉", "刚选择" not in pg.inner_text("#taskBody"))
 
     nums = [e.inner_text() for e in pg.query_selector_all("#taskBody .gnum")]
-    check("每组有进度数字", len(nums) == len(groups), str(nums))
+    row_n = len(pg.query_selector_all("#taskBody tr.grouprow"))
+    check("每个节点都有进度数字", len(nums) == row_n, f"{len(nums)} 个 / {row_n} 行")
 
     stats = api("/api/status")["stats"]
     pg.click('#statusChips .chip-btn[data-status="failed"]'); pg.wait_for_timeout(1500)

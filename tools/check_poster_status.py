@@ -102,6 +102,8 @@ SNAP = """
     barFull: document.querySelector('#pstripBar i').classList.contains('full'),
     btn: txt('btnPosterOnly'),
     btnHidden: btn.hidden,
+    // hidden 只是属性，全局 button 的 display 会把它顶掉；真正「看不见」要量盒子
+    btnShown: btn.getBoundingClientRect().width > 0,
     btnOn: btn.classList.contains('on'),
     dirs: [...document.querySelectorAll('#fileBody tr.dirrow')].map((t) => {
       const d = t.querySelector('.dposter');
@@ -228,6 +230,7 @@ def main() -> int:
             check("文案写「全部已生成」", s["note"] == "全部已生成", s["note"])
             check("全好时进度条变绿", s["barFull"] is True)
             check("全好时收起筛选按钮", s["btnHidden"] is True)
+            check("全好时按钮真的不占位置（不是留个灰的 0）", s["btnShown"] is False)
             check("文件夹行变成 3/3", any(d["poster"] == "3/3" and "done" in d["cls"]
                                           for d in s["dirs"] if d["name"].startswith("子目录二")),
                   str(s["dirs"]))

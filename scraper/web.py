@@ -312,6 +312,32 @@ def _poster_candidates(directory: Path, limit: int = 120,
     return items
 
 
+def _current_art_source(folder: Path, items: list[dict]) -> str:
+    """这一层现在实际在用的封面，来自哪一张候选。
+
+    自动挑选时人看不到「到底挑了哪张」，弹窗里全是缩略图，选之前无法判断
+    现状。写入是原样复制（MD5 与源一致），所以拿本层 folder.jpg 的字节去和
+    候选比对就能反推出源文件；按大小先筛一遍，通常一次就命中。
+    """
+    for name in FOLDER_ART_WRITE:
+        target = folder / name
+        if not target.is_file():
+            continue
+        try:
+            raw = target.read_bytes()
+        except OSError:
+            continue
+        for it in items:
+            if it.get("size") != len(raw):
+                continue
+            try:
+                if Path(it["path"]).read_bytes() == raw:
+                    return it["path"]
+            except OSError:
+                continue
+    return ""
+
+
 def _write_folder_art(folder: Path, force: bool,
                       source: Path | None = None) -> dict:
     """给这一层写 folder.jpg + poster.jpg。
@@ -1642,6 +1668,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         return {
             "ok": True, "dir": str(folder),
             "pinned": store.get_folder_art(_norm_path(folder)),
+            "current": _current_art_source(folder, items),
             "items": items,
             "message": "" if items else "这个文件夹里还没刮出可用的海报",
         }

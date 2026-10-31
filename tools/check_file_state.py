@@ -149,14 +149,17 @@ def main() -> int:
         if empty_tip:
             check("没有匹配时给出提示", "当前筛选下没有内容" in empty_tip, empty_tip.strip()[:30])
 
-        # 筛选下全选：只该勾中看得见的那些
-        page.click('#fileState button[data-fstate="new"]')
+        # 筛选下全选：只该勾中看得见的那些。挑一个有内容的状态来测，
+        # 别赌「未刮削」一定存在——库里全刮完之后这一档就是 0 个，
+        # 列表空着，全选框也没得点，断言会变成在测空页面。
+        fstate = "new" if counts["files"]["new"] else "ok"
+        page.click(f'#fileState button[data-fstate="{fstate}"]')
         page.wait_for_timeout(400)
         page.check("#fileAll")
         page.wait_for_timeout(600)
         picked = page.evaluate("() => S.files.sel.size")
-        check("筛选后全选只勾中筛出来的", picked == counts["files"]["new"],
-              f"已选 {picked} / 未刮削 {counts['files']['new']}")
+        check("筛选后全选只勾中筛出来的", picked == counts["files"][fstate],
+              f"已选 {picked} / {fstate} {counts['files'][fstate]}")
         page.uncheck("#fileAll")
         page.wait_for_timeout(500)
         check("取消全选能清干净", page.evaluate("() => S.files.sel.size") == 0,

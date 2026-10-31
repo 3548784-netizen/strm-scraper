@@ -288,6 +288,10 @@ def main() -> int:
         check("两个文件的内容都是指定的那张",
               all(a.read_bytes() == ALT.read_bytes() for a in arts_of(LAYER2)),
               str([(a.name, a.stat().st_size) for a in arts_of(LAYER2)]))
+        cand = api_get(base, "/api/files/art-candidates?path="
+                       + urllib.parse.quote(str(LAYER2)))
+        check("接口回传当前实际在用的那张（按内容反查）",
+              cand.get("current") == str(ALT), str(cand.get("current")))
 
         d = api_get(base, "/api/files?path=" + urllib.parse.quote(str(NEST)))
         row = next(x for x in d["dirs"] if x["name"] == LAYER2.name)
@@ -345,6 +349,22 @@ def main() -> int:
         # 当前屏在「嵌套测试」这一层，它的子目录是「第一层」
         check("恢复自动后标签去掉「已指定」", rows.get(LAYER2.name) == DONE,
               str(rows.get(LAYER2.name)))
+
+        # 自动挑选时也要看得出「现在实际用的是哪张」——否则弹窗里全是缩略图，
+        # 人只能盲选。这里改了自动挑选的口径就必须在这里挂掉。
+        page.click("#fileBody tr.dirrow button[data-artdir]")
+        page.wait_for_selector("#artGrid .art-card", timeout=8000)
+        page.wait_for_timeout(600)
+        n_inuse = page.locator("#artGrid .art-card.inuse").count()
+        cur_txt = page.inner_text("#artCur")
+        check("自动挑选时标出正在使用的那张", n_inuse == 1, f"{n_inuse} 张 / {cur_txt}")
+        check("底部写清自动挑了哪张",
+              "自动挑选 · " in cur_txt and cur_txt.endswith(".jpg"), cur_txt)
+        check("没有指定时角标不写成「当前」",
+              page.locator("#artGrid .art-card .now:not(.auto)").count() == 0)
+        page.click("#btnCloseArt")
+        page.wait_for_timeout(400)
+        check("关闭后弹窗收起", page.locator("#artModal").is_hidden())
 
         page.click("#fileBody tr.dirrow button[data-artdir]")
         page.wait_for_selector("#artGrid .art-card", timeout=8000)

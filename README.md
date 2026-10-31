@@ -578,6 +578,7 @@ python tools/check_file_state.py     # 文件管理状态列：按产物判定�
 python tools/check_folder_poster.py  # 多层文件夹的封面提示、手动修复、指定用哪张（需要 Edge）
 python tools/check_poster_status.py  # 海报未生成：进度条、明细、只看未生成（需要 Edge，自带素材）
 python tools/check_scan.py           # 扫描提速：新旧实现结果一致 + 提速倍数
+python tools/check_media_files.py    # 体检产物：海报是不是坏图、比例对不对、权限够不够（排查 Emby 破图）
 ```
 
 想拿自己的真实素材（比如从 115 导出的 strm 目录）验收，不用改配置：

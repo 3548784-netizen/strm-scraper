@@ -122,3 +122,16 @@ jobs:
           urllib.request.urlopen(edit, timeout=30)
           print("Docker Hub 页面说明已同步")
           PY
+
+      # 每次 push 都会多一个 sha- 标签，几天就堆几十个。这里只留 latest 和
+      # 最近 3 个，旧的自动清掉；Docker Hub 和 GHCR 一起处理。
+      # 清理失败不影响发布（前面的步骤已经成功推上去了）。
+      - name: 清理旧镜像标签
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: "3"
+        run: python3 tools/prune_tags.py

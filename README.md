@@ -105,6 +105,8 @@ ghcr.io/3548784-netizen/strm-scraper:latest              # GitHub 容器仓库
 
 两个都不需要登录，直接匿名拉取。`latest` 跟 `main` 分支同步，每次推送自动重建。
 
+除了 `latest`，每次构建还会打一个 `sha-xxxxxxx` 标签（对应具体提交，方便回滚到某一版）。这类标签只保留最近 3 个，更早的构建在发布完成后自动清掉——清理逻辑在 `tools/prune_tags.py`，Docker Hub 和 GHCR 一起处理，失败不影响发布。
+
 ### 方式一：拉现成镜像（推荐）
 
 建个目录放配置，把下面内容存成 `docker-compose.yml`：

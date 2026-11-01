@@ -241,8 +241,12 @@ def main() -> int:
         print("\n---------- 6. 收起全部 / 展开全部 / 筛选自动展开 ----------")
         page.click("#btnCollapseAll")
         page.wait_for_timeout(500)
-        check("收起全部只剩顶层", page.evaluate(
-            "() => document.querySelectorAll('#taskBody tr.grouprow').length") == 1)
+        # 库根不占行（名字在顶上那条横条里），收起全部后剩的就是这个库的第一层文件夹
+        first_level = len((api(base, "/api/items/tree?status=all&limit=400")["nodes"][0]
+                           .get("children") or []))
+        check("收起全部只剩第一层文件夹", page.evaluate(
+            "() => document.querySelectorAll('#taskBody tr.grouprow').length") == first_level,
+            f"{first_level} 个第一层文件夹")
         check("收起全部后没有明细行", group_rows(page) == 0, f"{group_rows(page)} 行")
 
         tree = api(base, "/api/items/tree?status=all&limit=400")
@@ -250,7 +254,8 @@ def main() -> int:
         def node_count(nodes) -> int:
             return sum(1 + node_count(node["children"]) for node in nodes)
 
-        n_nodes = node_count(tree["nodes"])
+        # 库根自己不占一行，所以树上的节点数要减掉它
+        n_nodes = node_count(tree["nodes"]) - 1
         page.click("#btnExpandAll")
         page.wait_for_timeout(3000)
         rows_n = page.evaluate("() => document.querySelectorAll('#taskBody tr.grouprow').length")

@@ -110,6 +110,7 @@ def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
     poster = 0
     own = 0
     art = 0
+    subs_n = 0
     stack = [directory]
     while stack and total < DIR_SUMMARY_LIMIT:
         current = stack.pop()
@@ -147,8 +148,11 @@ def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
         if current == directory:
             own = here
             art = 1 if names & FOLDER_ART_SET else 0
+            # 只数直接子目录：列表里写「6 个文件夹」用的就是它，
+            # 展开后每一层各自算，和任务列表里的「N 个文件夹」口径一致
+            subs_n = len(subs)
     return {"count": total, "scraped": scraped, "poster": poster,
-            "own": own, "art": art}
+            "own": own, "art": art, "subs": subs_n}
 
 
 def _has_folder_art(directory: Path) -> bool:
@@ -666,9 +670,10 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         size: int = Query(30, ge=1, le=200),
         sort: str = Query("added"),
         order: str = Query("desc"),
+        root: str = Query(""),
     ):
         rows = store.items(
-            status=status_filter, keyword=keyword, dir_path=dir_path,
+            status=status_filter, keyword=keyword, dir_path=dir_path, root=root,
             limit=size, offset=(page - 1) * size, sort=sort, order=order,
         )
         depth_of = _depth_map(_roots())
@@ -717,7 +722,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         return {
             "page": page,
             "size": size,
-            "total": store.count(status_filter, keyword, dir_path=dir_path),
+            "total": store.count(status_filter, keyword, dir_path=dir_path, root=root),
             "dir": dir_path,
             "items": items_out,
         }
@@ -749,6 +754,51 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             group["pinned"] = 1 if pin else 0
             group["pin_name"] = Path(pin).name if pin else ""
         return groups
+
+    def _owner_root(path: str, rel: str) -> str:
+        """这个分组属于哪个扫描根 —— 也就是哪个媒体库。"""
+        if not rel:
+            return path                      # 分组本身就是扫描根
+        cut = len(path) - len(rel) - 1
+        return path[:cut] if cut > 0 else ""
+
+    def _under(path: str, root: str) -> bool:
+        """path 是不是落在这个库里面（含库本身）。"""
+        if not root:
+            return True
+        got, want = _norm_path(path), _norm_path(root)
+        if got == want:
+            return True
+        return got.startswith(want + os.sep) or got.startswith(want + "/")
+
+    _LIB_STAT_KEYS = ("total", "ok", "skipped", "failed", "pending", "running")
+
+    def _libs_of(groups: list[dict]) -> list[dict]:
+        """任务列表顶部的媒体库选择条：配置里的每个扫描根一项。
+
+        数字跟着当前筛选走（只看失败时，这里就是这个库有多少条失败），
+        但库本身不会因为筛空了就消失 —— 否则切换按钮会跟着筛选跳来跳去。
+        """
+        by_root: dict[str, dict] = {}
+        for root in _roots():
+            key = _norm_path(str(root))
+            by_root[key] = {"path": str(root), "name": dir_label(str(root)),
+                            "dirs": 0, **{k: 0 for k in _LIB_STAT_KEYS}}
+        for group in groups:
+            root = _owner_root(group["path"], group.get("rel") or "")
+            key = _norm_path(root)
+            lib = by_root.get(key)
+            if lib is None:                  # 扫描目录改过，老记录落在配置之外
+                lib = by_root[key] = {"path": root, "name": dir_label(root),
+                                      "dirs": 0, **{k: 0 for k in _LIB_STAT_KEYS}}
+            for name in _LIB_STAT_KEYS:
+                lib[name] += group.get(name, 0) or 0
+            lib["dirs"] += 1
+        for lib in by_root.values():
+            lib["done"] = lib["ok"] + lib["skipped"]
+            lib["pct"] = round(100 * lib["done"] / lib["total"]) if lib["total"] else 0
+        order = {_norm_path(str(root)): i for i, root in enumerate(_roots())}
+        return sorted(by_root.values(), key=lambda lib: order.get(_norm_path(lib["path"]), 10 ** 6))
 
     @app.get("/api/items/groups")
     def item_groups(
@@ -858,8 +908,10 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             node["done"] = node["ok"] + node["skipped"]
             node["pct"] = round(100 * node["done"] / node["total"]) if node["total"] else 0
             node["depth"] = depth_of(Path(node["path"]))
-            # 只有子目录的那几层在 Emby 里同样是文件夹条目，也需要 folder.jpg
-            if not node["hasItems"] and node["depth"] >= 2:
+            # 只有子目录的那几层在 Emby 里同样是文件夹条目，也需要 folder.jpg。
+            # 之前只按 depth>=2 判，第一层的中转目录（媒体库/剧名 这种）被当成
+            # 「本来就有封面」，列表里一直显示「海报已就绪」，实际是空的
+            if not node["hasItems"] and node["depth"] >= 1:
                 node["folder_art"] = _has_folder_art(Path(node["path"]))
             return node
 
@@ -887,14 +939,28 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         limit: int = Query(400, ge=1, le=2000),
         sort: str = Query("added"),
         order: str = Query("desc"),
+        root: str = Query(""),
     ):
-        """任务列表的「按文件夹」视图（目录树）：结构跟文件管理里点进去的一样。"""
-        groups = _decorate_groups(store.dir_groups(status_filter, keyword, limit=limit,
+        """任务列表的「按文件夹」视图（目录树）：结构跟文件管理里点进去的一样。
+
+        ``root`` 指定看哪个媒体库，不传就停在第一个；顶部那条库名横条用的
+        ``libs`` 一直跟着返回，切换库时不用再拉一次设置里的扫描目录。
+        """
+        groups = _decorate_groups(store.dir_groups(status_filter, keyword, limit=2000,
                                                    sort=sort, order=order))
+        libs = _libs_of(groups)
+        if root:
+            root = next((lib["path"] for lib in libs
+                         if _norm_path(lib["path"]) == _norm_path(root)), root)
+        else:
+            root = libs[0]["path"] if libs else ""
+        kept = [g for g in groups if _under(g["path"], root)][:limit] if root else groups[:limit]
         return {
-            "nodes": _build_tree(groups, sort, order),
-            "total": len(groups),
-            "truncated": len(groups) >= limit,
+            "nodes": _build_tree(kept, sort, order),
+            "root": root,
+            "libs": libs,
+            "total": len(kept),
+            "truncated": len(kept) >= limit,
             "counts": store.stats(),
         }
 
@@ -1252,6 +1318,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                                  "count": summary["count"], "scraped": summary["scraped"],
                                  "poster": summary["poster"],
                                  "own": summary["own"], "art": summary["art"],
+                                 "subs": summary["subs"],
                                  "depth": depth_of(info["entry"]),
                                  "pinned": 1 if pin else 0,
                                  "pin_name": Path(pin).name if pin else "",

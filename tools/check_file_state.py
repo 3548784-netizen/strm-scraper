@@ -181,6 +181,7 @@ def main() -> int:
           const rows = [...document.querySelectorAll('#fileBody tr.dirrow')];
           return {
             data: data.map(d => ({ path: d.path, count: d.count, scraped: d.scraped,
+                                   subs: d.subs || 0,
                                    st: dirStateOf(d), text: dirStateText(d) })),
             dom: rows.map(tr => {
               const st = tr.querySelector('span.st');
@@ -204,9 +205,19 @@ def main() -> int:
         check("类名与文案对得上", all(
             d["cls"] == "st dirst " + (want_cls.get(d["text"]) or "part") for d in dirs["dom"]),
             str([(d["text"], d["cls"]) for d in dirs["dom"]][:3]))
+        def cnt_matches(cell: str, d: dict) -> bool:
+            """文件夹行文案：`N 个 strm`，有子目录时再跟一句 `含 M 个子目录`。"""
+            count = d["count"]
+            subs = d.get("subs") or 0
+            want = f"{count} 个 strm" if count else ""
+            if subs:
+                want += (" · " if count else "") + f"含 {subs} 个子目录"
+            return cell == want
+
         check("进度文案里的总数与文件夹计数一致", all(
-            d["cnt"] == f"{x['count']} 个 strm"
-            for d, x in zip(dirs["dom"], dirs["data"])), "逐行比对")
+            cnt_matches(d["cnt"], x) for d, x in zip(dirs["dom"], dirs["data"])),
+            str([(d["cnt"], x["count"], x.get("subs"))
+                 for d, x in zip(dirs["dom"], dirs["data"])][:3]))
         check("已刮数不超过总数", all(0 <= x["scraped"] <= x["count"] for x in dirs["data"]),
               str([(x["count"], x["scraped"]) for x in dirs["data"]][:3]))
         check("悬停提示给出总数与已刮数",

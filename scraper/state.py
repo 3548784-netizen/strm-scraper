@@ -332,7 +332,7 @@ class StateStore:
         return [_row_to_item(r) for r in found[:limit]]
 
     def items(self, status: str | None = None, keyword: str = "",
-              dir_path: str = "", limit: int = 50, offset: int = 0,
+              dir_path: str = "", root: str = "", limit: int = 50, offset: int = 0,
               sort: str = "added", order: str = "desc") -> list[Item]:
         sql = "SELECT * FROM items WHERE 1=1"
         args: list = []
@@ -342,6 +342,12 @@ class StateStore:
         if keyword:
             sql += " AND path LIKE ?"
             args.append(f"%{keyword}%")
+        if root:
+            # 只看某个媒体库：库根下的所有记录。带上分隔符，别把 test strm2 也划进来
+            base = root.rstrip("\\/")
+            sql += " AND (path LIKE ? OR path LIKE ?)"
+            args.append(base + "\\%")
+            args.append(base + "/%")
         if dir_path:
             # 先按前缀粗筛，再由 parent_dir 精确到这一层（避免带进子目录）
             sql += " AND path LIKE ?"
@@ -359,7 +365,7 @@ class StateStore:
         return picked
 
     def count(self, status: str | None = None, keyword: str = "",
-              dir_path: str = "") -> int:
+              dir_path: str = "", root: str = "") -> int:
         sql = "SELECT path FROM items WHERE 1=1"
         args: list = []
         if status and status != "all":
@@ -368,6 +374,11 @@ class StateStore:
         if keyword:
             sql += " AND path LIKE ?"
             args.append(f"%{keyword}%")
+        if root:
+            base = root.rstrip("\\/")
+            sql += " AND (path LIKE ? OR path LIKE ?)"
+            args.append(base + "\\%")
+            args.append(base + "/%")
         if dir_path:
             sql += " AND path LIKE ?"
             args.append(f"{dir_path}%")

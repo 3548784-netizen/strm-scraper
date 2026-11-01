@@ -120,6 +120,14 @@ def dir_rows(page) -> dict[str, str]:
     }""")
 
 
+def root_dirs(base: str) -> dict[str, dict]:
+    """根目录下每个文件夹的接口数据，用来判断它下面还有没有子目录。"""
+    url = base + "/api/files"
+    with urllib.request.urlopen(url, timeout=30) as r:
+        data = json.loads(r.read())
+    return {d["name"]: d for d in data.get("dirs") or []}
+
+
 def open_dir(page, name: str) -> None:
     page.evaluate("""(name) => {
       const row = [...document.querySelectorAll('#fileBody tr.dirrow')]
@@ -168,8 +176,20 @@ def main() -> int:
         rows = dir_rows(page)
         check("根目录的「嵌套测试」标了缺海报", rows.get("嵌套测试") == MISS,
               str(rows.get("嵌套测试")))
-        singles = [k for k, v in rows.items() if v and k != "嵌套测试"]
-        check("单层目录（直接放视频）不被误标", not singles, str(singles))
+        info = root_dirs(base)
+        # 只有「这一层下面还有目录」的才会在 Emby 里变成文件夹条目，
+        # 所以断言要按 subs 分开看：直接放视频的层不许标，有多层子目录的必须标
+        singles = [k for k, v in rows.items()
+                   if v and k != "嵌套测试" and (info.get(k) or {}).get("subs", 0) == 0]
+        check("直接放视频的单层目录不被误标", not singles, str(singles))
+        # 判据和 folderArtTag 保持一致：本层没有直接放视频，或者位于第 2 层及更深。
+        # 媒体库第一层里既有视频又有子目录的，Emby 当普通视频项处理，本来就不标
+        multi = [k for k, d in info.items()
+                 if d.get("count") and k != "嵌套测试"
+                 and (d.get("own") == 0 or (d.get("depth") or 0) >= 2)]
+        check("会被当成文件夹条目的层都标出来了",
+              all(rows.get(k) for k in multi),
+              str([k for k in multi if not rows.get(k)]))
         check("按钮默认禁用（还没勾）", page.is_disabled("#btnFolderArt"))
 
         open_dir(page, "嵌套测试")
@@ -194,6 +214,18 @@ def main() -> int:
         check("文件视图里那条深层记录带标记", MISS in task_tags, str(task_tags))
         page.click('#taskView button[data-view="dir"]')
         page.wait_for_timeout(1200)
+        # 第一屏只有一层（默认全部收起）：中转目录「嵌套测试」自己不放视频，
+        # Emby 拿它当文件夹条目，这一行现在就得如实标「缺海报」，不能因为
+        # 暂时没有 folder.jpg 的资料就默认「已就绪」
+        first_tag = page.evaluate("""() => {
+          const row = [...document.querySelectorAll('#taskBody tr.grouprow')]
+            .find(tr => tr.textContent.includes('嵌套测试'));
+          const tag = row && row.querySelector('.foldertag');
+          return tag ? tag.textContent.trim() : '';
+        }""")
+        check("第一层的中转目录也标着缺海报", first_tag == MISS, first_tag)
+        page.click("#btnExpandAll")
+        page.wait_for_timeout(1600)
         grp = page.evaluate("""() => {
           const row = [...document.querySelectorAll('#taskBody tr.grouprow')]
             .find(tr => tr.textContent.includes('第二层'));

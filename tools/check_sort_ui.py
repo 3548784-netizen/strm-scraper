@@ -73,6 +73,16 @@ def main() -> int:
         page.on("pageerror", lambda e: errors.append(str(e)))
 
         page.goto(BASE + "/", wait_until="domcontentloaded")
+        page.wait_for_selector("#taskBody tr", timeout=15000)
+        page.wait_for_timeout(800)
+
+        print("\n---------- 0. 默认视图 ----------")
+        check("任务列表默认按文件夹显示",
+              page.eval_on_selector("#taskView button.on", "e => e.dataset.view") == "dir")
+        check("首屏直接是目录树",
+              len(page.query_selector_all("#taskBody tr.grouprow")) >= 1)
+        # 下面几节比的是平铺视图里的排序，先切过去
+        page.click('#taskView button[data-view="flat"]')
         page.wait_for_selector("#taskBody tr[data-path]", timeout=15000)
         page.wait_for_timeout(600)
 
@@ -126,7 +136,15 @@ def main() -> int:
             "#taskBody tr.grouprow", "els => els.map(e => e.dataset.group)")
         check("文件夹视图有分组", len(groups) >= 1, f"{len(groups)} 组")
         if len(groups) >= 2:
-            check("文件夹按名称倒序（与接口返回的树一致）", groups == expected,
+            # 树是按需展开的，DOM 里只有已经摊开的那几层，不能直接跟整棵 DFS 比长度。
+            # 改成「相对顺序」比对：DOM 顺序必须是 DFS 序列的子序列，走不通就说明
+            # 父子先后或者同层的排序反了
+            index = {p: i for i, p in enumerate(expected)}
+            known = [g for g in groups if g in index]
+            check("文件夹都来自接口返回的树", len(known) == len(groups),
+                  str([g.rsplit("\\", 1)[-1] for g in groups if g not in index][:3]))
+            check("文件夹按名称倒序（与接口返回的树一致）",
+                  known == sorted(known, key=lambda p: index[p]),
                   str([g.rsplit("\\", 1)[-1] for g in groups][:6]))
         else:
             print("  ..   只有 1 个文件夹，跳过排序比对（跑全量回归后数据会被删）")

@@ -101,9 +101,13 @@ with sync_playwright() as p:
     # 每个文件夹有几个 strm 由测试媒体库决定，别写死数字：勾文件夹是递归选中的，
     # 期望数量直接取文件夹行上的计数（那本来就是含子目录的总数）
     def dir_n() -> list[int]:
+        # 文案是「320 个 strm · 含 4 个子目录」，只取第一个数字；把所有数字
+        # 拼起来会把两个数连成一串（320 → 3204），后面的断言就全对不上了
         return pg.evaluate("""() => [...document.querySelectorAll('#fileBody tr.dirrow')]
-            .map(tr => Number((tr.querySelector('.cnt')?.textContent || '0')
-                              .replace(/[^0-9]/g, '')))""")
+            .map(tr => {
+              const m = (tr.querySelector('.cnt')?.textContent || '').match(/\\d+/);
+              return m ? Number(m[0]) : 0;
+            })""")
 
     ns = dir_n()
     n1 = ns[0]
@@ -245,11 +249,33 @@ with sync_playwright() as p:
     check("刚选的文件夹在可见行里", bool(pinned), str([r["name"] for r in rows]))
     check("带「刚选择」标记", bool(pinned) and "刚选择" in pinned[0]["text"],
           pinned[0]["text"] if pinned else "—")
-    check("祖先层被自动展开（不用一级级点）",
-          bool(rows) and rows[0]["open"] and len(rows) >= 3,
-          f"{len(rows)} 行，首行 open={rows[0]['open'] if rows else '—'}")
-    check("下一层靠缩进区分", bool(pinned) and pinned[0]["indent"] > 0,
-          str([(r["name"][:6], r["indent"]) for r in rows][:4]))
+    # 库根不占行（名字在顶上那条横条里），这个库的第一层缩进就是 0，
+    # 更深的层按 20px 递增 —— 用接口给的 depth 反算，别写死某一层的缩进
+    tree = api("/api/items/tree?limit=400")
+    root = tree.get("root") or ""
+    depths, parent_of = {}, {}
+
+    def _walk_depth(nodes):
+        for node in nodes:
+            depths[node["path"]] = node["depth"]
+            for child in node.get("children") or []:
+                parent_of[child["path"]] = node["path"]
+            _walk_depth(node.get("children") or [])
+
+    _walk_depth(tree["nodes"])
+    bad_indent = [(r["name"][:6], r["indent"], (depths.get(r["path"], 1) - 1) * 20)
+                  for r in rows
+                  if r["indent"] != max(0, (depths.get(r["path"], 1) - 1) * 20)]
+    check("缩进跟着层级走（每层 20px）", not bad_indent, str(bad_indent[:3]))
+
+    # 跳过来时那个文件夹得直接露在屏幕上：它和库根之间的每一层都得是展开的
+    chain, cur = [], (pinned[0]["path"] if pinned else "")
+    while cur in parent_of and parent_of[cur] != root:
+        cur = parent_of[cur]
+        chain.append(cur)
+    collapsed = [p for p in chain
+                 if not any(r["path"] == p and r["open"] for r in rows)]
+    check("它上面的每一层都自动展开了", not collapsed, str(collapsed[:3] or chain[:3]))
     check("先不展开（点了才展开）", len(pg.query_selector_all("#taskBody tr.gitem")) == 0)
 
     pg.evaluate("""(path) => {

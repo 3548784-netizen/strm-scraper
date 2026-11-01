@@ -363,6 +363,27 @@
     color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-line);
     white-space: nowrap; flex: none;
   }
+  /* 任务列表顶上那条媒体库横条：和文件管理面包屑同一条（库名 + 「媒体库」标签）。
+     有多个库时变成一排可点的标签，点谁就只看谁的。 */
+  #taskLibBar .libname {
+    color: var(--accent-ink); font-weight: 500; padding: 2px var(--s2);
+    display: inline-flex; align-items: center; gap: var(--s2);
+  }
+  .libtab {
+    display: inline-flex; align-items: center; gap: var(--s2); height: 24px;
+    padding: 0 var(--s3); border-radius: var(--r-pill); cursor: pointer;
+    border: 1px solid transparent; background: transparent;
+    color: var(--text-2); font-size: var(--fs-xs); font-weight: 400;
+  }
+  .libtab:hover { background: var(--surface-4); color: var(--text); }
+  .libtab.on { background: var(--accent-soft); border-color: var(--accent-line);
+               color: var(--accent-ink); font-weight: 600; }
+  .libtab .n { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .libtab.on .n { color: var(--accent-ink); }
+  .taglib {
+    font-size: var(--fs-2xs); font-weight: 500; padding: 1px var(--s2); border-radius: var(--r-pill);
+    color: var(--text-3); background: var(--surface-4); white-space: nowrap; flex: none;
+  }
   /* 目录树的行：缩进量由 --ind 控制（每层 16px），层级靠缩进 + 左侧小横线表达 */
   .gwrap {
     display: flex; align-items: center; gap: var(--s3); min-width: 0;
@@ -436,6 +457,29 @@
   .st.part { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(76, 141, 255, .28); }
   .st.empty { color: var(--text-3); background: transparent; border-color: transparent; }
   .dirrow .st.dirst { font-variant-numeric: tabular-nums; }
+  /* 文件管理的文件夹行也按目录树排：缩进由 --ind 控制（每层 20px，和任务列表一样），
+     左侧一条小横线表示从属。箭头只管就地展开，点名字仍然是进入那一层 */
+  .fwrap {
+    display: flex; align-items: center; gap: var(--s2); min-width: 0;
+    position: relative; padding-left: var(--ind, 0px);
+  }
+  .fwrap.nest::before {
+    content: ''; position: absolute; left: calc(var(--ind, 0px) - 12px); top: 50%;
+    width: 9px; height: 1px; background: var(--text-4);
+  }
+  .fcaret {
+    width: 15px; height: 15px; padding: 0; border: 0; border-radius: 3px;
+    background: transparent; color: var(--text-3); flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; line-height: 1;
+  }
+  .fcaret:hover:not(:disabled) { background: var(--surface-4); color: var(--text); }
+  .fcaret .gcaret { width: auto; }
+  tr.dirrow.fopen .fcaret .gcaret { transform: rotate(90deg); }
+  /* 没有子目录的层留个空位，箭头列才不会参差不齐 */
+  .fcaret.blank { visibility: hidden; }
+  .dirrow .fwrap .dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dirrow .fwrap .cnt { flex: none; }
   /* 多层文件夹提示：Emby 里那一层会变成「文件夹条目」，只认 folder.jpg。
      缺的时候用琥珀色提醒（可修），补好了就用中性灰收掉注意力。 */
   .foldertag { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs);
@@ -1134,6 +1178,8 @@
 <main>
   <!-- 任务列表 -->
   <section class="pane active" data-pane="tasks">
+    <!-- 和文件管理一样：这一屏属于哪个媒体库，用一条横条说清楚 -->
+    <div class="crumbs" id="taskLibBar" hidden></div>
     <div class="toolbar">
       <!-- 左：筛选（状态 + 关键词） -->
       <div class="chips" id="statusChips">
@@ -1149,8 +1195,8 @@
       <span class="grow"></span>
       <!-- 中：列表视图与排序 -->
       <div class="seg" id="taskView">
-        <button class="on" data-view="flat">按文件</button>
-        <button data-view="dir">按文件夹</button>
+        <button data-view="flat">按文件</button>
+        <button class="on" data-view="dir">按文件夹</button>
       </div>
       <div class="tb-mini" id="taskTreeOps" hidden>
         <button class="tiny ghost" id="btnExpandAll"
@@ -1663,8 +1709,11 @@ const S = {
   total: 0,
   taskSig: '',
   lastTasks: 0,
-  // 任务列表视图：flat 平铺 / dir 按文件夹
-  tasksView: 'flat',
+  // 任务列表视图：flat 平铺 / dir 按文件夹（默认按文件夹，媒体库本来就是一堆目录）
+  tasksView: 'dir',
+  // 任务列表一次只看一个媒体库：lib 是当前库的路径，libs 是全部库（顶部那条横条用）
+  lib: '',
+  libs: [],
   // 按文件夹视图是一棵目录树：tree 是顶层节点，nodeByPath 用来按路径找节点，
   // openNodes 记哪些节点是展开的
   tree: [],
@@ -1693,6 +1742,9 @@ const S = {
     posterOnly: false,
     // 勾文件夹时用：dirPaths 记每个目录展开出来的路径，dirSel 是这些路径的并集
     dirPaths: new Map(), dirSel: new Set(),
+    // 就地展开的子层：和任务列表同一套交互。subOpen 记哪些目录是展开的，
+    // sub 缓存已经拉回来的那一层内容（path -> {dirs, files}），收起时丢掉重取
+    subOpen: new Set(), sub: new Map(), subPath: '',
   },
   filesTick: 0, filesBusy: false,
   logSince: 0,
@@ -2045,13 +2097,25 @@ async function pollStatus() {
 
 let tasksSeq = 0;               // 只认最后一个任务列表请求，防止旧响应盖掉新排序
 
+async function ensureLibs() {
+  // 平铺视图不拉树，但顶上那条库名横条也得有库名和切换入口
+  if (S.libs.length) return;
+  try {
+    const data = await api('/api/items/tree?limit=1');
+    S.libs = data.libs || [];
+    S.lib = data.root || '';
+    renderLibBar();
+  } catch (e) { /* 拉不到就先不显示横条，不影响列表 */ }
+}
+
 async function loadTasks(force) {
   if (S.tasksView === 'dir') return loadGroups(force);
   const seq = ++tasksSeq;      // 轮询和点排序可能撞车，只认最后一次
   S.lastTasks = Date.now();
+  await ensureLibs();
   const params = new URLSearchParams({
     status: S.status, q: S.q, page: String(S.page), size: String(S.size),
-    sort: S.taskSort.key, order: S.taskSort.order,
+    sort: S.taskSort.key, order: S.taskSort.order, root: S.lib,
   });
   let data;
   try {
@@ -2100,36 +2164,80 @@ function ancestorsOf(path) {
   return out;
 }
 
-/* 默认展开到哪一层：顶层，以及「只有一个子目录、自己又不含视频」的传递链。
-   后者是「媒体库/电影/某合集」这种没有信息量的中转层，一层层点开纯属浪费。 */
+/* 默认展开到哪一层：一层都不展开。
+   进任务列表先看到的是这个库的骨架（第一层文件夹各占一行，带整支的汇总），
+   想看哪一支点哪一支；要一次铺开用工具栏的「展开全部」。
+   唯一的例外是搜索：命中项散落在树里，祖先不打开的话搜出来只是一堆合着的文件夹。 */
 function seedOpenNodes() {
-  // 同一组筛选条件下只铺一次，之后展开状态归用户管 —— 否则用户点了「收起全部」，
+  // 库里还什么都没有时不算「铺过」：这时候是一张空树，占掉记号以后
+  // 等第一轮刮完再回来就还是收起状态
+  if (!S.tree.length) return;
+  // 同一组筛选条件下只算一次，之后展开状态归用户管 —— 否则用户点了「收起全部」，
   // 下一轮轮询又会自动展开回去
   const key = `${S.status}|${S.q}`;
   if (S.treeSeedKey === key) return;
   S.treeSeedKey = key;
-  const forced = !!S.q.trim() || (S.status && S.status !== 'all');
   const open = new Set();
-  const walk = (nodes, top) => {
-    for (const n of nodes) {
-      const pass = !n.hasItems && (n.children || []).length === 1;
-      if (forced || top || pass) open.add(n.path);
-      walk(n.children || [], false);
+  if (S.q.trim()) {
+    for (const [path, node] of S.nodeByPath) {
+      if (!node.hasItems) continue;   // 拨到装了视频的那层，文件才露得出来
+      for (const up of ancestorsOf(path)) open.add(up);
     }
-  };
-  walk(S.tree, true);
-  // 筛到具体条件时结果本来就不多，直接摊到文件这层，省得再一个个点
-  if (forced && S.groupCount <= 12) {
-    for (const [path, node] of S.nodeByPath) if (node.hasItems) open.add(path);
   }
   S.openNodes = open;
+}
+
+/* 任务列表一次只看一个媒体库：顶上一条横条写着库名（多个库时是一排可点的标签），
+   下面的行就是这个库里的文件夹。库根本身不再占一行 —— 它的名字在横条上了。 */
+function libRootNode() {
+  const top = S.tree[0];
+  return (top && S.lib && top.path === S.lib) ? top : null;
+}
+
+function resetTreeState() {
+  S.openNodes = new Set();
+  S.groupItems.clear();
+  S.nodeByPath = new Map();
+  S.treeSeedKey = '';          // 换库了，默认铺开的规则要重新跑
+  S.taskSel.clear();           // 上一个库的勾选在屏幕上已经看不见了
+  S.taskSelDirs.clear();
+  S.page = 1;
+}
+
+function renderLibBar() {
+  const bar = $('taskLibBar');
+  if (!S.libs.length) {
+    bar.hidden = true;
+    bar.innerHTML = '';
+    return;
+  }
+  bar.hidden = false;
+  const cur = S.libs.find(l => l.path === S.lib) || S.libs[0];
+  if (S.libs.length === 1) {
+    // 只有一个库：和文件管理顶上那条写成一模一样，不用给切换入口
+    bar.innerHTML = `<span class="libname">${esc(cur.name || cur.path)}</span>`
+      + '<span class="taglib">媒体库</span>';
+    return;
+  }
+  bar.innerHTML = S.libs.map(lib =>
+    `<button class="libtab${lib.path === S.lib ? ' on' : ''}" data-lib="${esc(lib.path)}"
+             title="${esc(lib.path)}">${esc(lib.name || lib.path)}<span class="n">${lib.total}</span></button>`
+  ).join('');
+}
+
+async function switchLib(path) {
+  if (!path || path === S.lib) return;
+  S.lib = path;
+  resetTreeState();
+  renderLibBar();
+  await loadTasks(true);
 }
 
 async function loadGroups(force) {
   const seq = ++tasksSeq;
   S.lastTasks = Date.now();      // 和按文件视图一样节流，别每次都重新拉整棵树
   const params = new URLSearchParams({
-    status: S.status, q: S.q, limit: '400',
+    status: S.status, q: S.q, limit: '400', root: S.lib,
     sort: S.taskSort.key, order: S.taskSort.order,
   });
   let data;
@@ -2140,6 +2248,11 @@ async function loadGroups(force) {
   }
   if (seq !== tasksSeq) return;
 
+  const switched = (data.root || '') !== S.lib;
+  S.lib = data.root || '';
+  S.libs = data.libs || [];
+  renderLibBar();
+  if (switched) resetTreeState();     // 换库了，旧库展开过的层不能带着走
   S.tree = data.nodes || [];
   S.groupCount = data.total || 0;
   S.treeTruncated = !!data.truncated;
@@ -2151,11 +2264,14 @@ async function loadGroups(force) {
     for (const up of ancestorsOf(path).slice(1)) S.openNodes.add(up);
   }
 
-  // 已经展开、这一层又直接放视频的，组内进度跟着刷新
+  // 已经展开、这一层又直接放视频的，组内进度跟着刷新。
+  // 库根自己不放行（横条上已经写了库名），但它里面直接放的视频要列出来
   const leaves = [...S.openNodes].filter(p => {
     const node = S.nodeByPath.get(p);
     return node && node.hasItems;
   });
+  const rootNode = libRootNode();
+  if (rootNode && rootNode.hasItems && !leaves.includes(rootNode.path)) leaves.push(rootNode.path);
   await Promise.all(leaves.map(p => loadGroupFiles(p, true)));
   if (seq !== tasksSeq) return;
 
@@ -2370,8 +2486,9 @@ function nodeRowHtml(n, open, baseDepth) {
     <td colspan="8"><div class="gwrap${indent ? ' nest' : ''}" style="--ind:${indent}px">
       <button class="gbtn" data-toggle="${esc(n.path)}" title="展开 / 收起这个文件夹">
         <span class="gcaret">▶</span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none">
+        <svg class="gicon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" style="flex:none">
           <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
         </svg>
         <span class="gname">${esc(n.name || n.path)}</span>
@@ -2396,7 +2513,12 @@ function renderGroups() {
     return;
   }
   const anchor = captureAnchor();
-  const baseDepth = S.tree.reduce((min, n) => Math.min(min, n.depth), Infinity);
+  const root = libRootNode();
+  // 库根不占行（名字在顶上那条横条里），第一层的缩进从 0 开始
+  const tops = root ? (root.children || []) : S.tree;
+  const baseDepth = root
+    ? root.depth + 1
+    : S.tree.reduce((min, n) => Math.min(min, n.depth), Infinity);
   const rows = [];
   const walk = nodes => {
     for (const n of nodes) {
@@ -2420,7 +2542,13 @@ function renderGroups() {
       if (items.length >= 200) rows.push(groupNoteRow(n.path, '只显示前 200 个文件'));
     }
   };
-  walk(S.tree);
+  // 库根里直接放了视频的（没再套子目录）：这些散文件照样列在横条下面
+  if (root && root.hasItems) {
+    const items = S.groupItems.get(root.path);
+    if (items === undefined) rows.push(groupNoteRow(root.path, '正在读取文件…'));
+    else items.forEach(it => rows.push(itemRowHtml(it, { inside: true, dir: root.path, pad: 34 })));
+  }
+  walk(tops);
   body.innerHTML = rows.join('');
   updateTaskSelInfo();
   // 从文件管理跳过来时，确保那个文件夹在视野里（只滚一次，别跟用户抢）
@@ -2708,6 +2836,10 @@ $('btnRetry').addEventListener('click', async () => {
   } catch (e) { toast(e.message, true); }
 });
 $('btnTaskRefresh').addEventListener('click', () => { S.taskSig = ''; loadTasks(true); });
+$('taskLibBar').addEventListener('click', e => {
+  const tab = e.target.closest('[data-lib]');
+  if (tab) switchLib(tab.dataset.lib);
+});
 $('btnExpandAll').addEventListener('click', () => expandTree(true));
 $('btnCollapseAll').addEventListener('click', () => expandTree(false));
 $('btnPrev').addEventListener('click', () => { S.page = Math.max(1, S.page - 1); loadTasks(true); });
@@ -2892,6 +3024,12 @@ async function loadFiles(force) {
     $('posterStrip').hidden = true;
     return;
   }
+  // 换了目录，之前就地展开的层都是别的路径了，全部收掉
+  if (S.files.subPath !== data.path) {
+    S.files.subPath = data.path;
+    S.files.subOpen.clear();
+    S.files.sub.clear();
+  }
   // 选中项只保留当前目录里仍存在的（勾文件夹选中的要留着，切目录不该丢）
   const visible = new Set(data.files.map(f => f.path));
   [...S.files.sel].forEach(p => {
@@ -2900,6 +3038,11 @@ async function loadFiles(force) {
 
   const sig = fileSig(data);
   if (!force && sig === S.files.sig) { updateFileSelInfo(); return; }
+  // 手动刷新时连展开的子层一起更新；自动轮询不重拉，免得每次都多打几刀
+  if (force && S.files.subOpen.size) {
+    await refreshSubDirs();
+    if (seq !== filesSeq) return;
+  }
   S.files.sig = sig;
 
   renderCrumbs(data);
@@ -2975,7 +3118,9 @@ function renderCrumbs(data) {
   const parts = (data.breadcrumb || []).map((c, i, arr) =>
     `<span class="crumb${i === arr.length - 1 ? ' last' : ''}" data-path="${esc(c.path)}">${esc(c.name)}</span>`
   );
-  $('crumbs').innerHTML = up + parts.join('<span class="crumb-sep">/</span>');
+  // 站在扫描根上时它就是「媒体库」，和任务列表里那一行的标签对得上
+  const lib = data.parent ? '' : '<span class="taglib">媒体库</span>';
+  $('crumbs').innerHTML = up + parts.join('<span class="crumb-sep">/</span>') + lib;
 }
 
 $('crumbs').addEventListener('click', e => {
@@ -3105,36 +3250,111 @@ function visibleFiles() {
   return ((S.files.data && S.files.data.files) || []).filter(fileMatchesState);
 }
 
+/* 拉一层子目录的内容。就地展开和「刷新」都走这里，口径保持一致 */
+async function fetchSubDir(path) {
+  const params = new URLSearchParams({
+    path, sort: S.files.sort.key, order: S.files.sort.order,
+  });
+  const data = await api('/api/files?' + params.toString());
+  if (!data.ok) throw new Error(data.message || '读取目录失败');
+  S.files.sub.set(path, { dirs: data.dirs || [], files: data.files || [] });
+}
+
+/* 点了刷新：已经摊开的层也要重新读盘，否则子层一直停在第一次展开时的样子 */
+async function refreshSubDirs() {
+  const paths = [...S.files.subOpen];
+  if (!paths.length) return;
+  await Promise.all(paths.map(p =>
+    fetchSubDir(p).catch(() => { /* 这一层打不开就保持原样，别连累整屏刷新 */ })));
+}
+
+/* 就地展开下一层：先铺出箭头状态，再去拉那一层的内容。
+   收起时把缓存丢掉，下次展开重新读盘——文件管理看到的应该是最新的磁盘状态。 */
+async function toggleSubDir(path) {
+  const rerender = () => { if (S.files.data && S.files.data.ok) renderFiles(S.files.data); };
+  if (S.files.subOpen.has(path)) {
+    S.files.subOpen.delete(path);
+    // 收起这一支时，它下面所有展开过的层也一起收掉，免得留下孤儿节点
+    const prefix = path.replace(/[\\/]+$/, '') + pathSep(path);
+    [...S.files.subOpen].forEach(p => {
+      if (p.startsWith(prefix)) { S.files.subOpen.delete(p); S.files.sub.delete(p); }
+    });
+    S.files.sub.delete(path);
+    rerender();
+    return;
+  }
+  S.files.subOpen.add(path);
+  rerender();
+  if (S.files.sub.has(path)) return;
+  try {
+    await fetchSubDir(path);
+  } catch (err) {
+    S.files.subOpen.delete(path);
+    toast(err.message, true);
+  }
+  rerender();
+}
+
+/* 一个文件夹行。indent 是相对当前这一层的缩进量（每层 20px），
+   和任务列表的目录树用的是同一套视觉：缩进 + 左侧小横线 + 三角箭头。 */
+function dirRowHtml(d, indent) {
+  const st = dirPickState(d.path);
+  const ds = dirStateOf(d);
+  const open = S.files.subOpen.has(d.path);
+  const subs = d.subs || 0;
+  const icon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none">
+          <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+        </svg>`;
+  return `<tr class="dirrow${st === 'all' ? ' sel' : ''}${open ? ' fopen' : ''}"
+              data-dirrow="${esc(d.path)}">
+    <td><input class="check" type="checkbox" data-dirpick="${esc(d.path)}"
+               title="选中这个文件夹里的所有 strm"${st === 'all' ? ' checked' : ''}></td>
+    <td><div class="fwrap${indent ? ' nest' : ''}" style="--ind:${indent}px">
+      ${subs
+        ? `<button class="fcaret" data-subtoggle="${esc(d.path)}"
+                   title="${open ? '收起' : '就地展开'}这一层"><span class="gcaret">▶</span></button>`
+        : '<span class="fcaret blank"></span>'}
+      <span class="dir" data-dir="${esc(d.path)}" title="进入 ${esc(d.name)}">${icon}${esc(d.name)}</span>
+      <span class="cnt">${d.count ? d.count + ' 个 strm' : ''}${
+        subs ? `${d.count ? ' · ' : ''}含 ${subs} 个子目录` : ''}</span>
+    </div></td>
+    <td class="num"></td>
+    <td>${dirPosterCell(d)}</td>
+    <td colspan="2"></td>
+    <td><span class="st dirst ${ds}" title="${esc(dirStateHint(d))}"
+          >${dirStateText(d)}</span></td>
+    <td>${dirFolderArtTag(d)}</td>
+    <td><div class="rowbtns">
+      <button class="tiny" data-artdir="${esc(d.path)}"
+              title="这一层的封面用哪张？从它包含的海报里挑一张，指定后不会再被自动挑的覆盖">封面</button>
+    </div></td>
+  </tr>`;
+}
+
+/* 已展开的子层：用缓存里的数据，照样过一遍状态 / 海报筛选，
+   收起的层自然不往下走，所以这里是一棵按需生长的树 */
+function subDirsOf(path) {
+  const cached = S.files.sub.get(path);
+  return ((cached && cached.dirs) || []).filter(dirMatchesState);
+}
+
+function pushDirRows(d, indent, rows) {
+  rows.push(dirRowHtml(d, indent));
+  if (!S.files.subOpen.has(d.path)) return;
+  subDirsOf(d.path).forEach(kid => pushDirRows(kid, indent + 20, rows));
+}
+
 function renderFiles(data) {
   const body = $('fileBody');
+  // 就地展开会重建整个 tbody，滚动位置得自己接住，否则每展开一层就弹回顶部
+  const wrap = document.querySelector('.pane.active .tablewrap');
+  const keep = wrap ? wrap.scrollTop : 0;
   const rows = [];
   // 这一屏其实已经没有缺海报的了：把筛选自己撤掉，免得留下空表让人以为坏了
   if (S.files.posterOnly && !posterStats(data).missing) S.files.posterOnly = false;
 
-  (data.dirs || []).filter(dirMatchesState).forEach(d => {
-    const st = dirPickState(d.path);
-    const ds = dirStateOf(d);
-    rows.push(`<tr class="dirrow${st === 'all' ? ' sel' : ''}">
-      <td><input class="check" type="checkbox" data-dirpick="${esc(d.path)}"
-                 title="选中这个文件夹里的所有 strm"${st === 'all' ? ' checked' : ''}></td>
-      <td><span class="dir" data-dir="${esc(d.path)}">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
-        </svg>${esc(d.name)}</span>
-        <span class="cnt" title="含子目录">${d.count ? d.count + ' 个 strm' : ''}</span></td>
-      <td class="num"></td>
-      <td>${dirPosterCell(d)}</td>
-      <td colspan="2"></td>
-      <td><span class="st dirst ${ds}" title="${esc(dirStateHint(d))}"
-            >${dirStateText(d)}</span></td>
-      <td>${dirFolderArtTag(d)}</td>
-      <td><div class="rowbtns">
-        <button class="tiny" data-artdir="${esc(d.path)}"
-                title="这一层的封面用哪张？从它包含的海报里挑一张，指定后不会再被自动挑的覆盖">封面</button>
-      </div></td>
-    </tr>`);
-  });
+  (data.dirs || []).filter(dirMatchesState).forEach(d => pushDirRows(d, 0, rows));
 
   const shown = (data.files || []).filter(fileMatchesState);
   shown.forEach(f => {
@@ -3175,6 +3395,7 @@ function renderFiles(data) {
   } else {
     body.innerHTML = rows.join('');
   }
+  if (wrap) wrap.scrollTop = keep;
 
   const total = (data.files || []).length;
   const dirN = (data.dirs || []).length;
@@ -3234,6 +3455,10 @@ $('fileBody').addEventListener('click', async e => {
 
   const artBtn = e.target.closest('button[data-artdir]');
   if (artBtn) { openArtPicker(artBtn.dataset.artdir); return; }
+
+  // 箭头只管就地展开，点文件夹名字仍然是进入那一层
+  const subBtn = e.target.closest('button[data-subtoggle]');
+  if (subBtn) { toggleSubDir(subBtn.dataset.subtoggle); return; }
 
   const dir = e.target.closest('[data-dir]');
   if (dir) {

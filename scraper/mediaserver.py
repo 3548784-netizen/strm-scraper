@@ -282,6 +282,25 @@ class MediaServerClient:
         """触发一次全库扫描（新文件、新图片会被重新识别）。"""
         self._request("/Library/Refresh", "POST")
 
+    def notify_dirs(self, local_dirs: list[str]) -> int:
+        """告诉服务器「这些目录的内容变了」，让它重新读这一层的图片。
+
+        为什么不能只靠 ``refresh_item``：补文件夹封面写的是 ``folder.jpg``，
+        而 Emby 里那一层是**文件夹条目**（目录里没有直接放视频），它对不上
+        任何 strm 对应的视频条目，按路径根本匹配不到，刷新请求就石沉大海——
+        界面上表现就是「文件明明补上了，Emby 里还是裂图」。
+
+        ``/Library/Media/Updated`` 是官方给「文件系统变了」用的入口：服务端
+        收到后把该路径标脏、重新扫这一层，``folder.jpg`` 会被重新读取。
+        它不删本地文件、也不去 TMDB 重抓图（这点和「替换所有图像」相反）。
+        """
+        if not local_dirs:
+            return 0
+        updates = [{"Path": self.map_path(str(d)), "UpdateType": "Created"}
+                   for d in local_dirs]
+        self._request("/Library/Media/Updated", "POST", {"Updates": updates})
+        return len(updates)
+
     # ------------------------------------------------------------------
     # 批量操作
     # ------------------------------------------------------------------
@@ -497,4 +516,20 @@ class ServerPool:
             except MediaServerError as exc:
                 log.error("媒体服务器 %s 扫描失败：%s", server.name, exc)
                 results.append({"name": server.name, "ok": False, "message": str(exc)})
+        return results
+
+    def notify_dirs(self, local_dirs: list[str]) -> list[dict]:
+        """补完文件夹封面后通知所有服务器重扫这些目录。"""
+        results = []
+        for server in self.servers():
+            try:
+                count = self.client(server).notify_dirs(local_dirs)
+            except MediaServerError as exc:
+                log.warning("媒体服务器 %s 通知目录变更失败：%s", server.name, exc)
+                results.append({"name": server.name, "ok": False,
+                                "message": str(exc)})
+                continue
+            log.info("媒体服务器 %s：已提交 %s 个目录的重扫请求", server.name, count)
+            results.append({"name": server.name, "ok": True, "count": count,
+                            "message": f"已提交 {count} 个目录重扫"})
         return results

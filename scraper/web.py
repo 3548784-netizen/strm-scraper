@@ -1698,6 +1698,24 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             return {"ok": True, "created": [], "kept": [], "noSource": [],
                     "files": 0,
                     "message": "选中的范围里没有含 strm 的文件夹"}
+
+        # 写完立刻告诉 Emby / Jellyfin：这些目录的图片变了。必须单独通知——
+        # 补的是 folder.jpg，对应的是「文件夹条目」，按 strm 路径在服务器里
+        # 匹配不到任何视频条目，走「补图」那套刷新永远刷不到它；不通知就会
+        # 一直挂着「没有图」的缓存，界面上看着就是裂图。
+        notified = 0
+        if created and pool.servers():
+            notified = len(created)
+
+            def _notify(dirs: list[str]) -> None:
+                try:
+                    pool.notify_dirs(dirs)
+                except Exception:  # noqa: BLE001
+                    log.exception("通知媒体服务器重扫目录失败")
+
+            threading.Thread(target=_notify, args=(list(created),),
+                             daemon=True, name="ws-notify-dirs").start()
+
         parts: list[str] = []
         if created:
             parts.append(f"已补 {len(created)} 个文件夹封面（{written} 个文件）")
@@ -1714,8 +1732,10 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         return {
             "ok": bool(created) or not (no_src or failed),
             "created": created, "kept": kept, "noSource": no_src, "failed": failed,
-            "files": written, "pinned": pinned_used,
-            "message": "，".join(parts) + "；Emby / Jellyfin 里刷新元数据后生效",
+            "files": written, "pinned": pinned_used, "notified": notified,
+            "message": "，".join(parts) + (
+                "；已通知媒体服务器重扫这些目录"
+                if notified else "；Emby / Jellyfin 里刷新元数据后生效"),
         }
 
     # ---------- 指定某一层用哪张图当封面 ----------
@@ -2011,6 +2031,12 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             try:
                 results = pool.refresh(paths)
                 total = sum(item.get("refreshed", 0) for item in results)
+                # 再补一刀：把文件所在目录也标脏。只刷视频条目刷不到「文件夹
+                # 条目」，批量补过文件夹封面之后，那一层的 folder.jpg 不会被
+                # 重读，界面上就一直是裂图。
+                parents = sorted({str(Path(p).parent) for p in paths})[:300]
+                if parents:
+                    pool.notify_dirs(parents)
                 manual_refresh.update({"done": manual_refresh["total"],
                                        "message": f"已提交 {total} 条刷新请求"})
             except Exception as exc:  # noqa: BLE001

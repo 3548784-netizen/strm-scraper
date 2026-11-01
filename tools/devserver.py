@@ -315,10 +315,13 @@ def main(argv: list[str] | None = None) -> int:
             (DATA / name).unlink(missing_ok=True)
         shutil.rmtree(DATA / "framecache", ignore_errors=True)
         shutil.rmtree(DATA / "thumbs", ignore_errors=True)
-        # 产物写在素材目录里，重跑前清掉，别让上一轮的结果影响判断
-        for leftover in ("*.nfo", "*.jpg", "*.png", "*-poster.*", "*-fanart.*"):
-            for path in MEDIA.rglob(leftover):
-                path.unlink(missing_ok=True)
+        # 产物写在素材目录里，重跑前清掉，别让上一轮的结果影响判断。
+        # 只在造夹具的媒体库里清：--media-root 指向的都是真实素材，
+        # 里面那些 folder.jpg / -poster.jpg 是用户刮好的图，删了就是毁库。
+        if not real_roots:
+            for leftover in ("*.nfo", "*.jpg", "*.png", "*-poster.*", "*-fanart.*"):
+                for path in MEDIA.rglob(leftover):
+                    path.unlink(missing_ok=True)
 
     media_port = free_port(args.media_port)
     if real_roots:

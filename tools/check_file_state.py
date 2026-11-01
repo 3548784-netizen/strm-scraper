@@ -81,14 +81,21 @@ def main() -> int:
         check("有产物时不写「已跳过」", "已跳过" not in hint, hint)
 
         print("\n---------- 3. 真实列表一致性 ----------")
-        # 默认停在根目录（只有子目录），先进一个里面有 strm 的目录
+        # 默认停在根目录（只有子目录），先进一个**自己直接放着 strm** 的目录。
+        # 带「含 N 个子目录」的是中转层，点进去一个 strm 都没有，筛不出东西
         if not page.query_selector("#fileBody tr[data-path]"):
-            page.evaluate("""() => {
-              const row = [...document.querySelectorAll('#fileBody tr')]
-                .find(tr => /[1-9]\\d* 个 strm/.test(tr.textContent));
+            clicked = page.evaluate("""() => {
+              const row = [...document.querySelectorAll('#fileBody tr.dirrow')]
+                .find(tr => /[1-9]\\d* 个 strm/.test(tr.textContent)
+                            && !tr.textContent.includes('含'));
               row?.querySelector('span.dir')?.click();
+              return !!row;
             }""")
             page.wait_for_timeout(1500)
+            if not clicked:
+                print("  ..   夹具里没有直接放 strm 的目录，跳过后面的列表比对")
+                print(f"\n共 {checked} 项，失败 {failed} 项")
+                return 1 if failed else 0
         rows = page.evaluate("""() => {
           return [...document.querySelectorAll('#fileBody tr[data-path]')].map(tr => {
             const st = tr.querySelector('span.st');

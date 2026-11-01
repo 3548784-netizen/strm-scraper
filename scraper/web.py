@@ -5,18 +5,18 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
-import shutil
 import threading
 import time
 import urllib.parse
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from .auth import (COOKIE_NAME, AuthStore, LoginThrottle, validate_password,
                    validate_username)
-from . import frames, probe
+from . import folderart, frames, probe
 from .config import DEFAULT_CONFIG_PATH, Config, ServerConfig
 from .logs import LogFiles, RingLogHandler, tail_file
 from .media import (IGNORED_NAMES, artifacts, build_target, product_state, signature)
@@ -83,7 +83,14 @@ FOLDER_ART_SET = frozenset(FOLDER_ART_NAMES)
 # 并列的通用名一起写，兼容那些只认 poster 的库配置与皮肤；两份内容完全相同，
 # 各自独立，删掉其中一个不影响另一个。
 FOLDER_ART_WRITE = ("folder.jpg", "poster.jpg")
-
+# 背景图只写 fanart.jpg：Emby / Jellyfin / Kodi 都认这个名字，再写一份
+# backdrop.jpg 完全是同一个字节的重复（旧版就是两个都写，目录里白白多一份）。
+# 注意背景图不算「封面就绪」的判据（FOLDER_ART_SET 里只有竖版海报名）——
+# 只有背景没有海报的那层，界面上仍然是「缺海报」。
+FOLDER_BG_WRITE = ("fanart.jpg",)
+# 旧版多写的文件名（不含带目录名的两份，那两个要用目录名拼）。升级后清理掉，
+# 判据是「和同轮写的正本字节完全一样」，对不上就当用户自己的图，一律不动。
+FOLDER_ART_LEGACY = ("backdrop.jpg",)
 # 候选封面只认这几种图片后缀：网页能直接显示，Emby / Jellyfin 也都吃得下
 ART_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
@@ -215,6 +222,9 @@ def _first_poster(directory: Path, max_dirs: int = 60) -> Path | None:
     queue = [directory]
     seen = 0
     fallback: Path | None = None
+    # 本层自己写出来的封面不算源图：拿它当源就是「把上一轮的结果再抄一遍」，
+    # 压过名字的那张还会把名字条越叠越深
+    own_here = _own_art_names(directory)
     while queue and seen < max_dirs:
         current = queue.pop(0)
         seen += 1
@@ -235,6 +245,10 @@ def _first_poster(directory: Path, max_dirs: int = 60) -> Path | None:
             continue
         for name in sorted(names):
             low = name.lower()
+            if current == directory and low in own_here:
+                continue
+            if _is_derived_poster(name, current):
+                continue
             if low.endswith("-poster.jpg"):
                 return current / name
             if fallback is None and low in FOLDER_ART_SET:
@@ -269,6 +283,7 @@ def _poster_candidates(directory: Path, limit: int = 120,
     """
     found: list[tuple[int, int, str, Path, int]] = []
     queue: list[tuple[Path, int]] = [(directory, 0)]
+    own_here = _own_art_names(directory)
     seen = 0
     while queue and seen < max_dirs and len(found) < limit * 4:
         current, depth = queue.pop(0)
@@ -289,6 +304,10 @@ def _poster_candidates(directory: Path, limit: int = 120,
             continue
         for name in sorted(names):
             low = name.lower()
+            if depth == 0 and low in own_here:
+                continue
+            if _is_derived_poster(name, current):
+                continue
             if low.endswith("-poster.jpg"):
                 rank = 0
             elif low in FOLDER_ART_SET:
@@ -342,40 +361,177 @@ def _current_art_source(folder: Path, items: list[dict]) -> str:
     return ""
 
 
+def _art_targets(folder: Path) -> dict[str, Path]:
+    """这一层要写的文件：只有 Emby / Jellyfin 取图认的那三个固定名。
+
+    ``folder.jpg`` / ``poster.jpg`` 是竖版封面，``fanart.jpg`` 是横版背景图，
+    名字都不能改。图上压着文件夹名，翻媒体库时几个兄弟目录一眼能区分。
+
+    不写 ``backdrop.jpg``（和 fanart.jpg 同字节）、不写 ``<文件夹名>-poster.jpg``
+    这类带名字的副本（只对「影片条目」有意义，文件夹条目根本不看），也不写
+    NFO（文件夹条目不吃 NFO）。
+    """
+    return {name: folder / name for name in (*FOLDER_ART_WRITE, *FOLDER_BG_WRITE)}
+
+
+def _legacy_art_names(folder: Path) -> list[str]:
+    """旧版写过、现在不写了的多余文件名。"""
+    stem = folderart.safe_stem(folder.name)
+    return [*FOLDER_ART_LEGACY, f"{stem}-poster.jpg", f"{stem}-fanart.jpg"]
+
+
+def _own_art_names(folder: Path) -> set[str]:
+    """本层由我们自己写出来的文件名（小写），挑源图时要排除它们。
+
+    旧版的衍生文件也算在内：清理失败或者用户拒删时它还躺在目录里，
+    挑源图时被选成封面就会得到「封面的封面」。
+    """
+    return {name.lower()
+            for name in (*_art_targets(folder), *_legacy_art_names(folder))}
+
+
+def _redundant_art(folder: Path) -> list[Path]:
+    """旧版留下的、可以放心删掉的多余图片。
+
+    判据只有一个：和目标正本**字节完全一样**。带目录名的两份是 folder.jpg /
+    fanart.jpg 的逐字节副本，``backdrop.jpg`` 也是 fanart.jpg 的副本；对不上
+    就说明是用户自己放的图，不动。
+    """
+    stem = folderart.safe_stem(folder.name)
+    pairs = (
+        ("backdrop.jpg", "fanart.jpg"),
+        (f"{stem}-poster.jpg", "folder.jpg"),
+        (f"{stem}-fanart.jpg", "fanart.jpg"),
+    )
+    out: list[Path] = []
+    for name, twin in pairs:
+        path, base = folder / name, folder / twin
+        if path == base or not path.is_file() or not base.is_file():
+            continue
+        try:
+            if (path.stat().st_size == base.stat().st_size
+                    and path.read_bytes() == base.read_bytes()):
+                out.append(path)
+        except OSError:
+            continue
+    return out
+
+
+def _drop_files(paths: list[Path], kind: str) -> int:
+    """删一批我们自己的产物，删不掉只记日志、不影响整体结果。"""
+    n = 0
+    for path in paths:
+        try:
+            path.unlink()
+            n += 1
+            log.info("清掉%s：%s", kind, path)
+        except OSError as exc:
+            log.warning("清不掉%s %s：%s", kind, path, exc)
+    return n
+
+
+def _is_derived_poster(name: str, folder: Path) -> bool:
+    """``<文件夹名>-poster.jpg`` —— 我们自己压过名字的衍生物，不是真海报。
+
+    这个判断要在**任何一层**生效：上层挑源图时会一路往子目录里找，子目录里
+    那份带名字的副本长得跟正片海报一模一样，一旦被选成源，上层封面就会变成
+    「子目录封面的副本」，跟用户指定的图对不上。
+    """
+    return name.lower() == f"{folderart.safe_stem(folder.name).lower()}-poster.jpg"
+
+
+def _legacy_nfo(folder: Path) -> Path | None:
+    """上一版写的 ``<文件夹名>.nfo``，确认是我们写的才返回，用来清理。
+
+    只认「只有 title / sorttitle、且 sorttitle 等于目录名」这一种：真有人把
+    影片用的 movie.nfo 放在这里，里面必有 plot / tmdbid / uniqueid，一律不动。
+    """
+    nfo = folder / f"{folderart.safe_stem(folder.name)}.nfo"
+    if not nfo.is_file():
+        return None
+    try:
+        text = nfo.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    low = text.lower()
+    if any(tag in low for tag in ("<plot", "<tmdbid", "<uniqueid", "<imdbid", "<lockdata")):
+        return None
+    escaped = escape(folder.name)
+    if f"<sorttitle>{escaped}</sorttitle>" not in text:
+        return None
+    return nfo
+
+
 def _write_folder_art(folder: Path, force: bool,
                       source: Path | None = None) -> dict:
-    """给这一层写 folder.jpg + poster.jpg。
+    """给这一层写封面（竖版，压上文件夹名）和背景图（横版，同样压名字）。
 
     ``source`` 为空就退回 ``_first_poster`` 自动挑；指定了就用指定的那张。
     指定后每次重补都还用它，这是「父层指定用哪张」能长期生效的原因。
 
-    返回 ``written``（写了几个文件）、``skipped``（已经齐了）、
-    ``no_source``（找不到可用源图）、``failed``（写入报错）。
+    三份文件要么都齐、要么整体重写一遍：老版本只写过竖版封面、也写过一堆
+    重复名，重补时必须连图一起重画，否则客户端读的还是旧的。
+
+    顺手清掉旧版留下的小说：只有 title 的 NFO、``backdrop.jpg``、带目录名的
+    两份副本。删的全是「字节和正本一样」的我们自己写的东西，用户自己的图不动。
+
+    返回 ``written``（写成功几个文件）、``skipped``（已经齐了）、
+    ``no_source``（找不到可用源图）、``failed``（写入报错）、
+    ``removed``（清掉几个旧 NFO）、``pruned``（清掉几个多余图片）。
     """
-    have = {name for name in FOLDER_ART_WRITE if (folder / name).is_file()}
-    todo = [name for name in FOLDER_ART_WRITE if force or name not in have]
-    if not todo:
-        return {"written": 0, "skipped": True, "no_source": False, "failed": False}
+    targets = _art_targets(folder)
+    stale_nfo = _legacy_nfo(folder)
+    redundant = _redundant_art(folder)
+    ready = all(path.is_file() for path in targets.values())
+    if not force and ready:
+        # 图已经齐了，只是旧版的垃圾还没扫干净：只做清理，不重画
+        nfo_gone = _drop_files([stale_nfo] if stale_nfo else [], "旧版文件夹 NFO")
+        pruned = _drop_files(redundant, "多余的封面副本")
+        return {"written": 0, "skipped": True, "no_source": False,
+                "failed": False, "removed": nfo_gone, "pruned": pruned}
+
     src = source
     if src is None or not src.is_file():
         src = _first_poster(folder)
     if src is None:
-        return {"written": 0, "skipped": False, "no_source": True, "failed": False}
+        return {"written": 0, "skipped": False, "no_source": True,
+                "failed": False, "removed": 0, "pruned": 0}
+
+    own = {(folder / name).resolve() for name in _own_art_names(folder)}
+    # 源图可能就是本层上一轮写进去的那张：已经压过一次，先把旧名字条裁掉
+    prev = src.resolve() in own
+    cover = folderart.render_cover(src, folder.name, crop_band=prev)
+    backdrop = folderart.render_backdrop(src, folder.name, crop_band=prev)
+    if cover is None or backdrop is None:
+        # 压不上字（容器里没装中文字体，或者源图是 png / webp / 带怪异 profile）。
+        # 这里**绝不能**把源图原样复制成 folder.jpg：源图是 png 的话，文件名是
+        # .jpg 而内容是 png，Emby 按扩展名解码就是一个裂图图标。退到「只转码」。
+        log.warning("压不上文件夹名，退回只转码不压字：%s", folder)
+        cover = cover or folderart.encode_jpeg(src, crop_band=prev)
+        backdrop = backdrop or folderart.encode_jpeg(src, crop_band=prev, as_backdrop=True)
+    if cover is None or backdrop is None:
+        log.warning("源图读不了（文件损坏或不是图片），这一层跳过：%s（%s）", folder, src)
+        return {"written": 0, "skipped": False, "no_source": True,
+                "failed": False, "removed": 0, "pruned": 0}
+
+    plan = [(dest, cover) for dest in (folder / n for n in FOLDER_ART_WRITE)]
+    plan += [(dest, backdrop) for dest in (folder / n for n in FOLDER_BG_WRITE)]
+
     written = 0
-    for name in todo:
-        dest = folder / name
+    for dest, data in plan:
         try:
-            # force 重建时源可能就是这层已有的 folder.jpg，别复制到自己
-            if dest.exists() and dest.resolve() == src.resolve():
-                written += 1
-                continue
-            shutil.copy2(src, dest)
+            dest.write_bytes(data)
             written += 1
             log.info("补文件夹封面：%s ← %s", dest, src.name)
         except OSError as exc:
             log.warning("补文件夹封面失败 %s：%s", dest, exc)
+
+    removed = _drop_files([stale_nfo] if stale_nfo else [], "旧版文件夹 NFO")
+    pruned = _drop_files(redundant, "多余的封面副本")
+
     return {"written": written, "skipped": False, "no_source": False,
-            "failed": written == 0, "source": src}
+            "failed": written == 0, "removed": removed, "pruned": pruned,
+            "source": src}
 
 
 def _chain_to_root(target: Path, roots: list[Path]) -> list[Path]:
@@ -1584,7 +1740,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     @app.post("/api/files/folder-poster")
     def files_folder_poster(payload: dict):
-        """给多层文件夹结构补齐每一层的封面，只在这个动作被点时才执行。
+        """给多层文件夹结构补上封面和背景图，只在这个动作被点时才执行。
 
         Emby 与 Jellyfin 的取图规则是同一套：
         - 目录里直接有视频 → 这个目录是「影片」条目，`<视频名>-poster.jpg` 生效；
@@ -1592,14 +1748,24 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
           ``folder.jpg`` / ``poster.jpg`` / ``cover.jpg`` 这类固定名字，
           ``xxx-poster.jpg`` 对它完全无效。
         多层嵌套时，中间那几层全都是文件夹条目；哪一层没封面，整条链路看起来
-        就是「海报全丢」。所以这里对**每一层**都写一份固定名字的封面
-        （``folder.jpg`` + ``poster.jpg``），哪一层落到文件夹条目都有图可用。
+        就是「海报全丢」。所以每一层都写 ``folder.jpg`` + ``poster.jpg``。
+
+        每层同时写一份 ``<文件夹名>-poster.jpg`` 和背景图：封面底部压上文件夹名，
+        兄弟目录的封面就不会一模一样；文件名本身也带着这一层的名字。
+
+        背景图另外裁成 16:9 再压名字（``fanart.jpg`` + ``backdrop.jpg`` +
+        ``<文件夹名>-fanart.jpg``），竖版海报直接当背景会被拉变形。
+
+        不写 NFO：文件夹条目不吃 NFO，写了也没人读，只是给每个目录多个垃圾文件。
+
+        直接放着视频的那一层**不写**：它在客户端里是影片条目，封面走
+        ``<视频名>-poster.jpg``，再塞一份 folder.jpg 只会多几个重复文件。
 
         为什么不做进正常刮削：单层目录不需要，往每个目录都塞图会给媒体库添乱，
         还会跟「按视频名生成的海报」抢优先级。所以这个动作必须手动触发。
 
         修复范围：
-        - 往下：选中目录整棵子树里每一层含 strm 的目录
+        - 往下：选中目录整棵子树里每一层「只有子目录」的层
         - 往上：从选中目录一直到扫描根下面那一层（中间层同样没有直接视频）
         - 扫描根本身不写，那是库图标的事
         """
@@ -1638,18 +1804,17 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         if not bases:
             raise HTTPException(400, "选中的路径都不在媒体库目录里")
 
-        def needs_art(folder: Path, total: int) -> bool:
-            """每一层只要递归含有 strm 就补 —— 不再区分「自己有没有直接放视频」。
+        def needs_art(folder: Path, own: int, total: int) -> bool:
+            """只补「这一层没有直接放视频」的中转层 —— 那才是文件夹条目。
 
-            早先只补 own==0 的中间层，实测会漏：像「电影/某片/Season 1/xxx.strm」
-            这种结构，Season 1 里直接有视频、它却是被当成季条目渲染的；而
-            「媒体库根/分类/影片/视频」里那层「分类」既没有直接视频、也不是影片，
-            同样要 folder.jpg。与其猜 Emby 把哪一层认成什么类型，不如让每一层
-            都自带一张固定名字的封面，哪一层落到文件夹条目都有图可用。
+            直接放着 strm 的层，在 Emby / Jellyfin 里是**影片条目**，封面用的是
+            ``<视频名>-poster.jpg``，刮削时已经生成了。再往里塞一份 folder.jpg
+            只会多几个重复文件，还会跟影片海报抢优先级；用户看到的「封面」到底
+            由哪一张决定，就变得说不清了。
 
             媒体库根自己永远不写：那是库图标的事，写进去会污染用户根目录。
             """
-            return total > 0 and folder not in roots
+            return total > 0 and own == 0 and folder not in roots
 
         # 每个「最高层祖先」只扫一次整棵树：一次遍历就拿到各层的 direct/total/art
         targets: dict[Path, dict] = {}
@@ -1665,7 +1830,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 if not (folder == base or folder in chain_set
                         or base in folder.parents):
                     continue
-                if needs_art(folder, st["total"]):
+                if needs_art(folder, st["own"], st["total"]):
                     targets[folder] = st
 
         # 有「指定封面」的层优先用指定的那张，其余照旧自动挑
@@ -1676,6 +1841,9 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         failed: list[str] = []
         written = 0
         pinned_used = 0
+        dropped = 0
+        pruned = 0
+        touched: list[str] = []      # 盘上文件变过的层：写了新的，或者删了旧的
         for folder in sorted(targets):
             pinned = pins.get(_norm_path(folder), "")
             src = Path(pinned) if pinned and Path(pinned).is_file() else None
@@ -1684,28 +1852,37 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             elif pinned:
                 log.info("这一层指定的封面已不存在，退回自动挑：%s", pinned)
             res = _write_folder_art(folder, force, src)
+            gone = res.get("removed", 0) + res.get("pruned", 0)
+            dropped += res.get("removed", 0)
+            pruned += res.get("pruned", 0)
             if res["skipped"]:
                 kept.append(str(folder))
+                if gone:
+                    # 只清理没重画的层：图没变，但删掉的文件可能正被客户端
+                    # 当缓存路径用着，一样得让它重扫，否则那里就是裂图
+                    touched.append(str(folder))
             elif res["no_source"]:
                 no_src.append(str(folder))
             elif res["failed"]:
                 failed.append(str(folder))
             else:
                 created.append(str(folder))
+                touched.append(str(folder))
                 written += res["written"]
 
         if not targets:
             return {"ok": True, "created": [], "kept": [], "noSource": [],
                     "files": 0,
-                    "message": "选中的范围里没有含 strm 的文件夹"}
+                    "message": "选中的范围里没有需要文件夹封面的层"
+                               "（直接放视频的那层用视频名海报，不补）"}
 
         # 写完立刻告诉 Emby / Jellyfin：这些目录的图片变了。必须单独通知——
         # 补的是 folder.jpg，对应的是「文件夹条目」，按 strm 路径在服务器里
         # 匹配不到任何视频条目，走「补图」那套刷新永远刷不到它；不通知就会
         # 一直挂着「没有图」的缓存，界面上看着就是裂图。
         notified = 0
-        if created and pool.servers():
-            notified = len(created)
+        if touched and pool.servers():
+            notified = len(touched)
 
             def _notify(dirs: list[str]) -> None:
                 try:
@@ -1713,14 +1890,18 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 except Exception:  # noqa: BLE001
                     log.exception("通知媒体服务器重扫目录失败")
 
-            threading.Thread(target=_notify, args=(list(created),),
+            threading.Thread(target=_notify, args=(list(touched),),
                              daemon=True, name="ws-notify-dirs").start()
 
         parts: list[str] = []
         if created:
-            parts.append(f"已补 {len(created)} 个文件夹封面（{written} 个文件）")
+            parts.append(f"已补 {len(created)} 个文件夹的封面和背景图（{written} 个文件）")
             if pinned_used:
                 parts.append(f"其中 {pinned_used} 个用的是你指定的图")
+        if dropped:
+            parts.append(f"清掉 {dropped} 个旧版 NFO")
+        if pruned:
+            parts.append(f"清掉 {pruned} 个多余的图片副本")
         if kept:
             parts.append(f"{len(kept)} 个已就绪跳过")
         if no_src:
@@ -1752,10 +1933,23 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         if not folder.is_dir():
             raise HTTPException(404, "文件夹不存在")
         items = _poster_candidates(folder)
+        pinned = store.get_folder_art(_norm_path(folder))
+        # 指定过的直接用记录：封面压过名字后字节和源图不一样，按内容反查必然
+        # 落空，而「自动挑会挑哪张」在有指定的时候答非所问——弹窗里会把另一张
+        # 图标成「当前」，用户点一下才发现自己看错。
+        current = pinned if pinned and Path(pinned).is_file() else ""
+        if not current:
+            current = _current_art_source(folder, items)
+        if not current:
+            # 封面压过名字后字节已经变了，按内容反查会落空。这时退回「自动挑选
+            # 会选哪张」——和真正写入时走的是同一套规则，标出来仍然是对的，
+            # 总比对话框里一片「没有当前」强
+            auto = _first_poster(folder)
+            current = str(auto) if auto else ""
         return {
             "ok": True, "dir": str(folder),
-            "pinned": store.get_folder_art(_norm_path(folder)),
-            "current": _current_art_source(folder, items),
+            "pinned": pinned,
+            "current": current,
             "items": items,
             "message": "" if items else "这个文件夹里还没刮出可用的海报",
         }
@@ -1775,13 +1969,37 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         media = mimetypes.guess_type(served.name)[0] or "image/jpeg"
         return FileResponse(served, media_type=media, headers=IMAGE_CACHE)
 
+    def _notify_one_dir(path: str) -> dict:
+        """把「这一层的图变了」告诉媒体服务器，返回通知结果与一句可直接拼的文案。
+
+        单目录只发一次 ``/Library/Media/Updated``，够快，所以同步做——用户点完
+        指定封面，提示里就能直接写「已通知」还是「没配服务器」，不用再去后台查。
+        失败只降级成文案，不影响已经写好的文件。
+        """
+        if not pool.servers():
+            return {"notified": 0,
+                    "text": "配了 Emby / Jellyfin 的话，那边刷新元数据后生效"}
+        try:
+            results = pool.notify_dirs([path])
+        except Exception:  # noqa: BLE001
+            log.exception("通知媒体服务器重扫目录失败：%s", path)
+            return {"notified": 0,
+                    "text": "但通知媒体服务器失败（原因看日志），那边要手动刷新一次"}
+        ok = [r for r in results if r.get("ok")]
+        if not ok:
+            return {"notified": 0,
+                    "text": "但通知媒体服务器失败（原因看日志），那边要手动刷新一次"}
+        return {"notified": len(ok), "text": "并已通知媒体服务器重扫这一层"}
+
     @app.post("/api/files/art-pin")
     def files_art_pin(payload: dict):
         """指定 / 取消指定某一层文件夹的封面图。
 
-        指定后会立刻写一遍 folder.jpg + poster.jpg，不用再点一次修复；关系存进
-        库里，之后每次补封面（包括「只补缺的」）都优先用这张，不会又退回
-        「按名字排第一张」。
+        指定后会立刻写一遍这一层的三个文件（folder.jpg / poster.jpg /
+        fanart.jpg），不用再点一次修复；写完顺手通知媒体服务器重扫这一层
+        —— 文件夹条目不对应任何 strm，不通知的话服务端会一直挂着旧图缓存。
+        关系存进库里，之后每次补封面（包括「只补缺的」）都优先用这张，
+        不会又退回「按名字排第一张」。
         """
         data = payload or {}
         folder = _within_roots(str(data.get("dir") or ""))
@@ -1790,21 +2008,38 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         raw = str(data.get("source") or "").strip()
         if not raw:
             store.set_folder_art(_norm_path(folder), "")
-            return {"ok": True, "cleared": True, "pinned": "", "files": 0,
-                    "message": "已恢复自动挑选，下次补封面会重新挑一张"}
+            # 光清记录不够：盘上还是上一张指定图，界面看着像没生效。
+            # 立刻按自动规则重画一遍，客户端那边也顺便重扫。
+            res = _write_folder_art(folder, True, None)
+            if res["no_source"]:
+                return {"ok": True, "cleared": True, "pinned": "", "files": 0,
+                        "notified": 0,
+                        "message": "已恢复自动挑选；这一层暂时找不到可用海报，"
+                                   "下次点「开始文件夹海报修复」时会重新挑"}
+            note = _notify_one_dir(str(folder))
+            return {"ok": True, "cleared": True, "pinned": "",
+                    "files": res["written"], "notified": note["notified"],
+                    "message": f"已恢复自动挑选，并按自动挑的那张重画了这一层"
+                               f"（{res['written']} 个文件），{note['text']}"}
         source = _within_roots(raw)
         if source.suffix.lower() not in ART_IMAGE_EXTS or not source.is_file():
             raise HTTPException(400, "这不是一张可用的图片")
         if folder not in source.parents:
             raise HTTPException(403, "只能选这个文件夹里的图片")
         res = _write_folder_art(folder, True, source)
+        if res["no_source"]:
+            # 选中的图 Pillow 都打不开（下了一半、下载回来的是个 html 之类）。
+            # 这种情况一个字节都不写，文件夹里不会多出一个会裂图的假 jpg
+            raise HTTPException(400, "这张图读不了（文件损坏或格式不支持），换一张试试")
         if res["failed"]:
             raise HTTPException(500, "写入失败：这个目录可能没有写权限")
         store.set_folder_art(_norm_path(folder), str(source))
+        note = _notify_one_dir(str(folder))
         return {
             "ok": True, "pinned": str(source), "files": res["written"],
-            "message": f"已把「{source.name}」设为这一层的封面（{res['written']} 个文件），"
-                       "Emby / Jellyfin 里刷新元数据后生效",
+            "notified": note["notified"],
+            "message": f"已把「{source.name}」设为这一层的封面和背景图"
+                       f"（{res['written']} 个文件），{note['text']}",
         }
 
     # ---------- 手动选帧 ----------

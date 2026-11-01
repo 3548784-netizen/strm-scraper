@@ -1,23 +1,28 @@
 # -*- coding: utf-8 -*-
-"""「文件夹海报修复」回归：多层目录的提示与手动修复。
+"""「文件夹封面 + 背景图」回归：多层目录的提示与手动修复。
 
 背景：Emby 与 Jellyfin 用同一套取图规则 —— 目录里直接有视频，它是「影片」
 条目，认 ``<视频名>-poster.jpg``；目录里只有子目录，它是「文件夹」条目，
-只认 ``folder.jpg`` / ``poster.jpg`` / ``cover.jpg``。所以多层嵌套时中间那几层
-一定没有封面，按视频名生成的海报对它们完全无效。
+只认 ``folder.jpg`` / ``poster.jpg`` / ``cover.jpg``（背景图认
+``fanart.jpg`` / ``backdrop.jpg``）。所以多层嵌套时中间那几层一定没有封面，
+按视频名生成的海报对它们完全无效。
 
-这个脚本验证四件事：
-1. 多层目录在文件管理、任务列表的备注里能被标出来（单层目录不能被误标）；
-2. 修复只在这个动作被点时发生，正常刮削不会写 folder.jpg / poster.jpg；
-3. 修复覆盖「选中目录 + 它的各层祖先 + 它下面每一层」，每层写 folder.jpg 与
-   poster.jpg 两个名字（两个客户端都能认），已有封面默认跳过；
-4. 扫描根本身永远不写。
+这个脚本验证五件事：
+1. 只有「这一层没有直接放视频」的中转层才标「缺海报」；直接放视频的层不标；
+2. 修复只在这个动作被点时发生，正常刮削不会写这些文件；
+3. 修复给每个中转层只写三个文件：folder.jpg、poster.jpg（竖版封面）和
+   fanart.jpg（横版背景）；**不写 NFO、不写 backdrop.jpg、不写带目录名的副本**；
+   直接放视频的层一个都不写；
+4. 真图会被压上文件夹名，背景图是裁成 16:9 的横版；老版本留下的同名 NFO 和
+   多写的副本会被顺手清掉，但用户自己的同名图一律不动；
+5. 扫描根本身永远不写。
 
 先 `python tools/devserver.py` 起环境（6670），再跑本脚本（需要本机 Edge）。
 """
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sqlite3
 import sys
@@ -27,6 +32,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from PIL import Image
 from playwright.sync_api import sync_playwright
 
 FAIL: list[str] = []
@@ -36,21 +42,34 @@ DB = HERE / ".devdata" / "state.db"
 NEST = MEDIA / "嵌套测试"
 LAYER2 = NEST / "第一层"
 LAYER3 = LAYER2 / "第二层"
-LAYERS = [NEST, LAYER2, LAYER3]
+# 需要文件夹封面的层：自己不放视频，只有子目录
+ART_LAYERS = [NEST, LAYER2]
+# 直接放视频的层：Emby 当影片条目，封面走 xxx-poster.jpg，不该再写文件夹封面
+LEAF = LAYER3
 VIDEO = LAYER3 / "影片A.strm"
 POSTER = LAYER3 / "影片A-poster.jpg"
 # 第二张海报：用来验证「父层指定用哪张」确实按指定的走，而不是按名字挑第一张
 ALT = LAYER3 / "影片Z-指定海报-poster.jpg"
-WRITE_NAMES = ("folder.jpg", "poster.jpg")
 MISS = "缺海报"
 DONE = "海报已就绪"
 
 
+def write_names(folder: Path) -> tuple[str, ...]:
+    """这一层应该落地的三个文件名（和后端 ``_art_targets`` 同一口径）。"""
+    return ("folder.jpg", "poster.jpg", "fanart.jpg")
+
+
+def legacy_names(folder: Path) -> tuple[str, ...]:
+    """旧版本多写、现在会被清理掉的那三个文件名。"""
+    return ("backdrop.jpg", f"{folder.name}-poster.jpg", f"{folder.name}-fanart.jpg")
+
+
 def arts_of(folder: Path) -> list[Path]:
-    return [folder / name for name in WRITE_NAMES]
+    return [folder / name for name in write_names(folder)[:2]]
 
 
-ALL_ARTS = [a for folder in LAYERS for a in arts_of(folder)]
+ALL_ARTS = [a for folder in (*ART_LAYERS, LEAF) for a in arts_of(folder)]
+ALL_TARGETS = [a for folder in ART_LAYERS for a in map(folder.__truediv__, write_names(folder))]
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -85,15 +104,22 @@ def seed(clean: bool = True) -> None:
     """造一组三层目录：媒体库/嵌套测试/第一层/第二层/影片A.strm"""
     LAYER3.mkdir(parents=True, exist_ok=True)
     VIDEO.write_text("http://example.invalid/a.mkv\n", encoding="utf-8")
-    POSTER.write_bytes(b"\xff\xd8\xff" + b"P" * 400)
-    (LAYER3 / "影片A-fanart.jpg").write_bytes(b"\xff\xd8\xff" + b"F" * 600)
+    POSTER.write_bytes(real_jpeg(POSTER, (110, 130, 150)))
+    (LAYER3 / "影片A-fanart.jpg").write_bytes(real_jpeg(POSTER, (150, 130, 110)))
     (LAYER3 / "影片A.nfo").write_text("<movie><title>影片A</title></movie>", encoding="utf-8")
     ALT.unlink(missing_ok=True)
     clear_pins()
     if clean:
-        for art in ALL_ARTS:
-            if art.exists():
-                art.unlink()
+        # 上一轮留下的任何名字都清掉，否则「只补缺的」会直接判定已就绪，
+        # 测不到写入；旧版的副本也一并清掉
+        for folder in (*ART_LAYERS, LEAF):
+            for path in folder.glob("*"):
+                if path.is_file() and path.name in (*write_names(folder),
+                                                    *legacy_names(folder)):
+                    path.unlink()
+            # 老版本写的同名 NFO 也清掉：留着会被当成「待清理的旧产物」，
+            # 让每一层都判定成需要重写，干扰「已就绪跳过」那条断言
+            (folder / f"{folder.name}.nfo").unlink(missing_ok=True)
     now = time.time()
     conn = sqlite3.connect(DB)
     conn.execute(
@@ -118,14 +144,6 @@ def dir_rows(page) -> dict[str, str]:
       });
       return out;
     }""")
-
-
-def root_dirs(base: str) -> dict[str, dict]:
-    """根目录下每个文件夹的接口数据，用来判断它下面还有没有子目录。"""
-    url = base + "/api/files"
-    with urllib.request.urlopen(url, timeout=30) as r:
-        data = json.loads(r.read())
-    return {d["name"]: d for d in data.get("dirs") or []}
 
 
 def open_dir(page, name: str) -> None:
@@ -155,6 +173,47 @@ def tick_dir(page, name: str) -> None:
     page.wait_for_timeout(1300)
 
 
+def bottom_brightness(path: Path) -> float:
+    """封面底部 12% 的平均亮度：压过名字条会明显变暗。"""
+    with Image.open(path) as im:
+        im = im.convert("L")
+        band = im.crop((0, int(im.height * 0.88), im.width, im.height))
+        pixels = list(band.getdata())
+    return sum(pixels) / len(pixels)
+
+
+def top_similar(path: Path, src: Path) -> bool:
+    """``path`` 的上半部分是不是 ``src`` 那张图（压字只压底部，上面不动）。
+
+    写入时图会被重新编码成 JPEG 并在底部压一条名字条，字节不可能和源图一样；
+    裁掉底部 30% 再比像素，能证明「封面确实来自这张源图」。
+    """
+    from PIL import ImageChops, ImageStat
+    try:
+        with Image.open(path) as a, Image.open(src) as b:
+            a = a.convert("RGB")
+            b = b.convert("RGB")
+            if a.size != b.size:            # 超宽图会被缩到 1200
+                return False
+            cut = int(a.height * 0.7)
+            stat = ImageStat.Stat(ImageChops.difference(
+                a.crop((0, 0, a.width, cut)), b.crop((0, 0, b.width, cut))))
+    except (OSError, ValueError):
+        return False
+    return max(stat.mean) < 8
+
+
+def real_jpeg(path: Path, color: tuple[int, int, int], size=(400, 600)) -> bytes:
+    """造一张真 JPEG 当夹具海报：Pillow 打不开的假图会被服务拒掉。"""
+    image = Image.new("RGB", size, color)
+    for y in range(0, size[1], 50):
+        for x in range(0, size[0], 50):
+            image.paste((255, 255, 255), (x, y, x + 25, y + 25))
+    buf = io.BytesIO()
+    image.save(buf, "JPEG", quality=92)
+    return buf.getvalue()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:6670")
@@ -172,58 +231,46 @@ def main() -> int:
         page.click('[data-tab="files"]')
         page.wait_for_timeout(1200)
 
-        print("\n---------- 1. 文件管理：多层目录在备注里被标出来 ----------")
+        print("\n---------- 1. 只有中转层标「缺海报」 ----------")
         rows = dir_rows(page)
-        check("根目录的「嵌套测试」标了缺海报", rows.get("嵌套测试") == MISS,
+        check("根目录的「嵌套测试」（只放子目录）标了缺海报", rows.get("嵌套测试") == MISS,
               str(rows.get("嵌套测试")))
-        info = root_dirs(base)
-        # 只有「这一层下面还有目录」的才会在 Emby 里变成文件夹条目，
-        # 所以断言要按 subs 分开看：直接放视频的层不许标，有多层子目录的必须标
-        singles = [k for k, v in rows.items()
-                   if v and k != "嵌套测试" and (info.get(k) or {}).get("subs", 0) == 0]
-        check("直接放视频的单层目录不被误标", not singles, str(singles))
-        # 判据和 folderArtTag 保持一致：本层没有直接放视频，或者位于第 2 层及更深。
-        # 媒体库第一层里既有视频又有子目录的，Emby 当普通视频项处理，本来就不标
-        multi = [k for k, d in info.items()
-                 if d.get("count") and k != "嵌套测试"
-                 and (d.get("own") == 0 or (d.get("depth") or 0) >= 2)]
-        check("会被当成文件夹条目的层都标出来了",
-              all(rows.get(k) for k in multi),
-              str([k for k in multi if not rows.get(k)]))
+        # 别的脚本（check_emby_art）会在同一个媒体库里留目录，只认自己的夹具
+        leaf_tags = [k for k, v in rows.items() if v and k not in ("嵌套测试", "取图测试")]
+        check("直接放视频的目录一个都不标", not leaf_tags, str(leaf_tags))
         check("按钮默认禁用（还没勾）", page.is_disabled("#btnFolderArt"))
 
         open_dir(page, "嵌套测试")
         rows = dir_rows(page)
-        check("进去后「第一层」（第 2 层、无直放视频）也标了", rows.get("第一层") == MISS,
+        check("进去后「第一层」（只有子目录）也标了", rows.get("第一层") == MISS,
               str(rows.get("第一层")))
         open_dir(page, "第一层")
         rows = dir_rows(page)
-        check("「第二层」（第 3 层、有直放视频）也标了", rows.get("第二层") == MISS,
-              str(rows.get("第二层")))
+        check("「第二层」直接放视频，不再标", rows.get("第二层") == "", str(rows.get("第二层")))
 
         open_dir(page, "第二层")
         file_tags = page.evaluate("""() => [...document.querySelectorAll('#fileBody tr[data-path] .foldertag')]
             .map(e => e.textContent.trim())""")
-        check("文件行的备注也标了", file_tags == [MISS], str(file_tags))
+        check("文件行不再挂文件夹封面标签", file_tags == [], str(file_tags))
 
-        print("\n---------- 2. 任务列表：备注同样标出来 ----------")
+        print("\n---------- 2. 任务列表：同一套判据 ----------")
         page.click('[data-tab="tasks"]')
         page.wait_for_timeout(1400)
+        # 默认是「按文件夹」，先切到「按文件」再断言：文件行不该再挂文件夹标签
+        page.click('#taskView button[data-view="flat"]')
+        page.wait_for_timeout(1200)
         task_tags = page.evaluate("""() => [...document.querySelectorAll('#taskBody .foldertag')]
             .map(e => e.textContent.trim())""")
-        check("文件视图里那条深层记录带标记", MISS in task_tags, str(task_tags))
+        check("平铺视图里文件行不带文件夹标签", not task_tags, str(task_tags))
         page.click('#taskView button[data-view="dir"]')
         page.wait_for_timeout(1200)
-        # 第一屏只有一层（默认全部收起）：中转目录「嵌套测试」自己不放视频，
-        # Emby 拿它当文件夹条目，这一行现在就得如实标「缺海报」，不能因为
-        # 暂时没有 folder.jpg 的资料就默认「已就绪」
         first_tag = page.evaluate("""() => {
           const row = [...document.querySelectorAll('#taskBody tr.grouprow')]
             .find(tr => tr.textContent.includes('嵌套测试'));
           const tag = row && row.querySelector('.foldertag');
           return tag ? tag.textContent.trim() : '';
         }""")
-        check("第一层的中转目录也标着缺海报", first_tag == MISS, first_tag)
+        check("第一屏的中转目录标着缺海报", first_tag == MISS, first_tag)
         page.click("#btnExpandAll")
         page.wait_for_timeout(1600)
         grp = page.evaluate("""() => {
@@ -232,16 +279,16 @@ def main() -> int:
           const tag = row && row.querySelector('.foldertag');
           return tag ? tag.textContent.trim() : '';
         }""")
-        check("文件夹视图里该文件夹行也带标记", grp == MISS, grp)
+        check("展开后直接放视频的层不标", grp == "", grp)
 
-        print("\n---------- 3. 正常刮削不会写 folder.jpg / poster.jpg ----------")
+        print("\n---------- 3. 正常刮削不会写文件夹封面 ----------")
         r = api_post(base, "/api/files/scrape", {"paths": [str(VIDEO)]})
         check("产物齐全的刮削直接跳过", not r.get("started"), r.get("message", ""))
         check("刮削没有生成任何文件夹封面",
               not any(a.exists() for a in ALL_ARTS),
-              str([a.name for a in ALL_ARTS if a.exists()]))
+              str([str(a) for a in ALL_ARTS if a.exists()]))
 
-        print("\n---------- 4. 勾选文件夹 → 点修复 → 每层都补两个名字 ----------")
+        print("\n---------- 4. 勾选 → 修复：中转层写三个文件，叶子层不写 ----------")
         page.click('[data-tab="files"]')
         page.wait_for_timeout(900)
         go_root(page)
@@ -253,16 +300,27 @@ def main() -> int:
         page.click('#folderArtMenu button[data-fart="miss"]')
         page.wait_for_timeout(1500)
         toast = page.inner_text("#toast")
-        check("提示写明补了 3 层 / 6 个文件", "已补 3 个文件夹封面" in toast and "6 个文件" in toast, toast)
-        check("三层的 folder.jpg + poster.jpg 都落地",
-              all(a.is_file() for a in ALL_ARTS),
-              str([(a.parent.name, a.name, a.is_file()) for a in ALL_ARTS]))
-        src = POSTER.read_bytes()
-        check("内容取自里面那张海报", all(a.read_bytes() == src for a in ALL_ARTS))
+        check("提示写明补了 2 层 / 6 个文件",
+              "已补 2 个文件夹的封面和背景图" in toast and "6 个文件" in toast, toast)
+        check("两层各三个文件都落地",
+              all(a.is_file() for a in ALL_TARGETS),
+              str([(a.parent.name, a.name, a.is_file()) for a in ALL_TARGETS]))
+        leaf_left = [a.name for a in map(LEAF.__truediv__, write_names(LEAF)) if a.exists()]
+        check("直接放视频的层一个文件都没写", not leaf_left, str(leaf_left))
+        check("不再生成 NFO",
+              not (NEST / f"{NEST.name}.nfo").exists()
+              and not (LAYER2 / f"{LAYER2.name}.nfo").exists())
+        extra = [n for f in ART_LAYERS for n in legacy_names(f) if (f / n).exists()]
+        check("不再写 backdrop.jpg 和带目录名的副本", not extra, str(extra))
+        check("每层只有三个产物",
+              sorted(p.name for p in NEST.iterdir()
+                     if p.is_file() and p.suffix.lower() in (".jpg", ".png")) ==
+              sorted(write_names(NEST)),
+              str(sorted(p.name for p in NEST.iterdir() if p.is_file())))
 
         print("\n---------- 5. 再点一次：默认跳过已有的 ----------")
         r = api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)]})
-        check("第二次全部跳过", "3 个已就绪跳过" in r["message"], r["message"])
+        check("第二次全部跳过", "2 个已就绪跳过" in r["message"], r["message"])
         check("没有重复写", r["created"] == [], str(r["created"]))
 
         print("\n---------- 6. 补完之后备注变成「海报已就绪」 ----------")
@@ -270,38 +328,30 @@ def main() -> int:
         rows = dir_rows(page)
         check("根目录标签翻转", rows.get("嵌套测试") == DONE, str(rows.get("嵌套测试")))
 
-        print("\n---------- 7. 每一层都补：单层目录同样有封面，扫描根不写 ----------")
-        root_path = Path(api_get(base, "/api/files")["path"])
-        single = next((d for d in api_get(base, "/api/files")["dirs"]
-                       if d["name"] != "嵌套测试" and d["own"]), None)
-        if single:
-            sp = Path(single["path"])
-            # 先清干净，避免上一轮跑残的封面让「已就绪跳过」提前命中
-            for n in WRITE_NAMES:
-                (sp / n).unlink(missing_ok=True)
-            # 拿这个目录里任意一个 strm 造一张海报当源，模拟「已经刮过」的目录；
-            # 不这么做会撞上「没找到可用海报（先刮削再补）」，测的就不是本意了
-            fake = sp / "_seed-poster.jpg"
-            if not fake.exists():
-                fake.write_bytes(b"\xff\xd8\xff" + b"S" * 300)
-            r = api_post(base, "/api/files/folder-poster", {"dirs": [single["path"]]})
-            check("单层目录也会补上封面", "已补 1 个文件夹封面" in r["message"], r["message"])
-            check("单层目录两个名字都有了",
-                  all((sp / n).is_file() for n in WRITE_NAMES),
-                  str([n for n in WRITE_NAMES if not (sp / n).is_file()]))
-            r2 = api_post(base, "/api/files/folder-poster", {"dirs": [single["path"]], "force": True})
-            check("强制重建不报错", r2.get("ok") is True and not r2["failed"], r2["message"])
-            # 收尾：别把测试封面留在别的用例目录里
-            for n in (*WRITE_NAMES, fake.name):
-                (sp / n).unlink(missing_ok=True)
+        print("\n---------- 7. 直接放视频的目录不补、扫描根不写 ----------")
+        info = api_get(base, "/api/files")
+        leaf_dir = next((d for d in info["dirs"]
+                         if d["name"] != "嵌套测试" and (d.get("own") or 0) > 0), None)
+        if leaf_dir:
+            lp = Path(leaf_dir["path"])
+            for name in write_names(lp):
+                (lp / name).unlink(missing_ok=True)
+            r = api_post(base, "/api/files/folder-poster", {"dirs": [leaf_dir["path"]]})
+            check("说明这里没有需要封面的层",
+                  "没有需要文件夹封面的层" in r["message"], r["message"])
+            left = [n for n in write_names(lp) if (lp / n).exists()]
+            check("这一层没有被写入任何文件", not left, str(left))
+            for name in write_names(lp):
+                (lp / name).unlink(missing_ok=True)
 
-        r = api_post(base, "/api/files/folder-poster", {"dirs": [str(root_path)]})
+        root_path = Path(info["path"])
+        api_post(base, "/api/files/folder-poster", {"dirs": [str(root_path)]})
         check("扫描根本身不写封面",
-              not any((root_path / n).exists() for n in WRITE_NAMES),
-              str([n for n in WRITE_NAMES if (root_path / n).exists()]))
+              not any((root_path / n).exists() for n in write_names(root_path)),
+              str([n for n in write_names(root_path) if (root_path / n).exists()]))
 
         print("\n---------- 8. 指定用哪张：父层不再被「按名字挑第一张」覆盖 ----------")
-        ALT.write_bytes(b"\xff\xd8\xff" + b"A" * 520)
+        ALT.write_bytes(real_jpeg(ALT, (90, 160, 90)))
         cand = api_get(base, "/api/files/art-candidates?path="
                        + urllib.parse.quote(str(LAYER2)))
         names = [i["name"] for i in cand["items"]]
@@ -310,15 +360,17 @@ def main() -> int:
         check("本层已有的 folder.jpg 不算候选",
               not any(i["path"] == str(LAYER2 / "folder.jpg") for i in cand["items"]),
               str([i["name"] for i in cand["items"]]))
+        check("本层自己生成的带名字海报也不算候选",
+              f"{LAYER2.name}-poster.jpg" not in names, str(names))
         check("候选带相对路径，前端能区分同名图",
               all(i.get("rel") for i in cand["items"]), str(cand["items"][:1]))
         check("正片海报排在 folder 副本前面", cand["items"][0]["kind"] == "poster",
               str(cand["items"][0]["kind"]))
 
         r = api_post(base, "/api/files/art-pin", {"dir": str(LAYER2), "source": str(ALT)})
-        check("指定成功并立刻写两个名字", r.get("ok") and "2 个文件" in r["message"], r["message"])
-        check("两个文件的内容都是指定的那张",
-              all(a.read_bytes() == ALT.read_bytes() for a in arts_of(LAYER2)),
+        check("指定成功并立刻写三个文件", r.get("ok") and "3 个文件" in r["message"], r["message"])
+        check("图片都来自指定的那张",
+              all(top_similar(a, ALT) for a in arts_of(LAYER2)),
               str([(a.name, a.stat().st_size) for a in arts_of(LAYER2)]))
         cand = api_get(base, "/api/files/art-candidates?path="
                        + urllib.parse.quote(str(LAYER2)))
@@ -332,17 +384,90 @@ def main() -> int:
 
         r = api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)], "force": True})
         check("覆盖重建时按指定的图走", r.get("pinned") == 1, r["message"])
-        check("重建后第一层仍是指定那张", all(a.read_bytes() == ALT.read_bytes()
+        check("重建后第一层仍是指定那张", all(top_similar(a, ALT)
                                             for a in arts_of(LAYER2)))
-        check("没指定的层照旧自动挑", arts_of(LAYER3)[0].read_bytes() == POSTER.read_bytes())
+        check("没指定的层照旧自动挑", top_similar(arts_of(NEST)[0], POSTER))
 
         (LAYER2 / "poster.jpg").unlink(missing_ok=True)
         r = api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)]})
         check("缺一个名字时补回来且仍用指定的图",
               (LAYER2 / "poster.jpg").is_file()
-              and (LAYER2 / "poster.jpg").read_bytes() == ALT.read_bytes(), r["message"])
+              and top_similar(LAYER2 / "poster.jpg", ALT), r["message"])
 
-        print("\n---------- 9. 越界与非图片被拒 ----------")
+        print("\n---------- 9. 真图会被压上文件夹名，背景图裁成横版 ----------")
+        real = Image.new("RGB", (400, 600), (120, 140, 160))
+        for y in range(600):
+            for x in range(0, 400, 8):
+                real.putpixel((x, y), (200, 190, 180))
+        # 必须放在这一层里面：指定封面只接受本层目录内的图
+        tmp_real = NEST / "_real-poster.jpg"
+        real.save(tmp_real, "JPEG", quality=95)
+        before = bottom_brightness(tmp_real)
+        r = api_post(base, "/api/files/art-pin", {"dir": str(NEST), "source": str(tmp_real)})
+        check("指定真图后写入成功", r.get("ok") is True, r["message"])
+        out = NEST / "folder.jpg"
+        after = bottom_brightness(out) if out.is_file() else 255
+        check("底部压了名字条（比源图暗）", after < before - 8,
+              f"源底部 {before:.0f} → 产出底部 {after:.0f}")
+        with Image.open(out) as im:
+            check("封面保留原比例（宽不超过 1200）", im.width <= 1200 and im.height > 0,
+                  f"{im.width}x{im.height}")
+        bg = NEST / "fanart.jpg"
+        with Image.open(bg) as im:
+            ratio = im.width / im.height
+            check("背景图是 16:9 横版", abs(ratio - 16 / 9) < 0.03, f"{im.width}x{im.height}")
+            check("背景图也压了名字条", bottom_brightness(bg) < 150,
+                  f"底部亮度 {bottom_brightness(bg):.0f}")
+            check("背景图和封面确实不是同一张图",
+                  bg.read_bytes() != out.read_bytes())
+        tmp_real.unlink(missing_ok=True)
+        api_post(base, "/api/files/art-pin", {"dir": str(NEST), "source": ""})
+
+        print("\n---------- 9b. 老版本留下的同名 NFO 会被清掉 ----------")
+        legacy = NEST / f"{NEST.name}.nfo"
+        legacy.write_text('<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'
+                          f"<movie>\n  <title>{NEST.name}</title>\n"
+                          f"  <sorttitle>{NEST.name}</sorttitle>\n</movie>\n",
+                          encoding="utf-8")
+        r = api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)], "force": True})
+        check("旧 NFO 被删掉了", not legacy.exists(), r["message"])
+        check("提示里写了清掉几个", "清掉 1 个旧版 NFO" in r["message"], r["message"])
+
+        # 用户自己的 movie.nfo（有 plot / tmdbid）绝不能被当成我们的产物删掉
+        mine = NEST / f"{NEST.name}.nfo"
+        mine.write_text('<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'
+                        f"<movie>\n  <title>{NEST.name}</title>\n"
+                        "  <plot>用户自己的简介</plot>\n  <tmdbid>123</tmdbid>\n</movie>\n",
+                        encoding="utf-8")
+        api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)], "force": True})
+        check("有 plot / tmdbid 的 NFO 不会被误删", mine.exists())
+        mine.unlink(missing_ok=True)
+
+        print("\n---------- 9c. 旧版多写的副本会被清掉，用户自己的同名图不动 ----------")
+        # 模拟旧版留下的样子：backdrop.jpg 和带目录名的两份都是正本的逐字节副本
+        for name, twin in (("backdrop.jpg", "fanart.jpg"),
+                           (f"{NEST.name}-poster.jpg", "folder.jpg"),
+                           (f"{NEST.name}-fanart.jpg", "fanart.jpg")):
+            (NEST / name).write_bytes((NEST / twin).read_bytes())
+        # 用户自己放的一张 backdrop.jpg：内容和 fanart.jpg 不同
+        (NEST / "backdrop.jpg").write_bytes(b"\xff\xd8\xff" + b"U" * 3000)
+        r = api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)], "force": True})
+        check("带目录名的两份被清掉",
+              not (NEST / f"{NEST.name}-poster.jpg").exists()
+              and not (NEST / f"{NEST.name}-fanart.jpg").exists(), r["message"])
+        check("用户自己的 backdrop.jpg 留着", (NEST / "backdrop.jpg").is_file())
+        check("提示里写了清掉几个多余图片", "多余的图片副本" in r["message"], r["message"])
+        (NEST / "backdrop.jpg").unlink(missing_ok=True)
+        # 只清理不重画：正本已经齐了，再点一次只删多余文件、不写图
+        (NEST / "backdrop.jpg").write_bytes((NEST / "fanart.jpg").read_bytes())
+        before = (NEST / "folder.jpg").stat().st_mtime
+        r = api_post(base, "/api/files/folder-poster", {"dirs": [str(NEST)]})
+        check("已就绪的层只清理不重画",
+              not (NEST / "backdrop.jpg").exists()
+              and (NEST / "folder.jpg").stat().st_mtime == before
+              and "多余的图片副本" in r["message"], r["message"])
+
+        print("\n---------- 10. 越界与非图片被拒 ----------")
         try:
             api_post(base, "/api/files/art-pin",
                      {"dir": str(LAYER2), "source": str(POSTER.with_name("影片A.nfo"))})
@@ -351,17 +476,16 @@ def main() -> int:
             check("非图片文件被拒", exc.code == 400, str(exc.code))
         other = MEDIA / "_outside.jpg"
         other.write_bytes(b"\xff\xd8\xff" + b"O" * 200)
-        if other:
-            try:
-                api_post(base, "/api/files/art-pin",
-                         {"dir": str(LAYER2), "source": str(other)})
-                check("文件夹外的图被拒", False, "居然成功了")
-            except urllib.error.HTTPError as exc:
-                check("文件夹外的图被拒", exc.code == 403, str(exc.code))
-            finally:
-                other.unlink(missing_ok=True)
+        try:
+            api_post(base, "/api/files/art-pin",
+                     {"dir": str(LAYER2), "source": str(other)})
+            check("文件夹外的图被拒", False, "居然成功了")
+        except urllib.error.HTTPError as exc:
+            check("文件夹外的图被拒", exc.code == 403, str(exc.code))
+        finally:
+            other.unlink(missing_ok=True)
 
-        print("\n---------- 10. 界面：目录行的「封面」按钮 → 恢复自动 ----------")
+        print("\n---------- 11. 界面：目录行的「封面」按钮 → 恢复自动 ----------")
         page.click('[data-tab="files"]')
         page.wait_for_timeout(900)
         go_root(page)
@@ -378,12 +502,9 @@ def main() -> int:
         page.click("#btnArtAuto")
         page.wait_for_timeout(1500)
         rows = dir_rows(page)
-        # 当前屏在「嵌套测试」这一层，它的子目录是「第一层」
         check("恢复自动后标签去掉「已指定」", rows.get(LAYER2.name) == DONE,
               str(rows.get(LAYER2.name)))
 
-        # 自动挑选时也要看得出「现在实际用的是哪张」——否则弹窗里全是缩略图，
-        # 人只能盲选。这里改了自动挑选的口径就必须在这里挂掉。
         page.click("#fileBody tr.dirrow button[data-artdir]")
         page.wait_for_selector("#artGrid .art-card", timeout=8000)
         page.wait_for_timeout(600)
@@ -407,13 +528,12 @@ def main() -> int:
         rows = dir_rows(page)
         check("点「用这张」后标签变成已指定", "已指定" in (rows.get(LAYER2.name) or ""),
               str(rows.get(LAYER2.name)))
-        check("页面没有新增报错", not errors, str(errors[:2]))
+        check("页面全程没有抛错", not errors, str(errors[:2]))
 
-        print("\n---------- 11. 收尾 ----------")
+        print("\n---------- 12. 收尾 ----------")
         clear_pins()
         ALT.unlink(missing_ok=True)
         check("指定的图已清理", not ALT.exists())
-        check("页面全程没有抛错", not errors, str(errors[:2]))
 
         browser.close()
 

@@ -158,8 +158,34 @@ def main() -> int:
         page.click('[data-tab="files"]')
         page.wait_for_selector("#fileBody tr", timeout=15000)
         page.wait_for_timeout(800)
-        # 根目录下只有文件夹，先进一个有 strm 的目录
-        page.click("#fileBody span.dir[data-dir]")
+        # 根目录下只有文件夹，先进一个有 strm 的目录。夹具里还留着只有子目录、
+        # 自己没放视频的中转目录，点进去一个文件都没有，所以按顺序试到有行为止
+        def go_root() -> None:
+            page.evaluate("""() => {
+              const crumb = document.querySelector('#crumbs .crumb[data-path]');
+              if (crumb) crumb.click();
+            }""")
+            page.wait_for_timeout(900)
+
+        def open_dir_with_files() -> bool:
+            names = page.eval_on_selector_all(
+                "#fileBody span.dir[data-dir]", "els => els.map(e => e.dataset.dir)")
+            for name in names:
+                page.evaluate("""(name) => {
+                  const el = [...document.querySelectorAll('#fileBody span.dir[data-dir]')]
+                    .find(e => e.dataset.dir === name);
+                  if (el) el.click();
+                }""", name)
+                try:
+                    page.wait_for_selector("#fileBody tr[data-path]", timeout=3500)
+                    return True
+                except Exception:  # noqa: BLE001
+                    go_root()
+            return False
+
+        check("能找到有文件的目录", open_dir_with_files(),
+              str(page.eval_on_selector_all(
+                  "#fileBody span.dir[data-dir]", "els => els.map(e => e.dataset.dir)")))
         page.wait_for_selector("#fileBody tr[data-path]", timeout=15000)
         page.wait_for_timeout(800)
         key, order = seg_state(page, "#fileSort")

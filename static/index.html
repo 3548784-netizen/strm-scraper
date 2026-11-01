@@ -1271,10 +1271,10 @@
               title="选中的文件（含选中的文件夹及其子目录）全部重新刮削，覆盖现有的图片 / NFO">开始重刮</button>
       <div class="menu-wrap">
         <button class="tiny" id="btnFolderArt" disabled
-                title="给每一层文件夹补 folder.jpg + poster.jpg：父目录里又套了一层时，Emby / Jellyfin 会把中间层当成文件夹条目，它只认这两个固定名字，按视频名生成的海报对那一层无效。正常刮削不会动这一步">
+                title="给「只有子目录」的那几层补封面和背景图：Emby / Jellyfin 会把它们当成文件夹条目，只认 folder.jpg / poster.jpg / fanart.jpg，按视频名生成的海报对那一层无效。图上压着文件夹名。直接放视频的层不补（那是影片条目，用视频名海报）">
           开始文件夹海报修复 ▾</button>
         <div class="menu" id="folderArtMenu" hidden>
-          <div class="menu-note" id="folderArtNote">给选中的文件夹补封面：从里层已刮好的海报出发，每一层都写 folder.jpg + poster.jpg，Emby 和 Jellyfin 都能认</div>
+          <div class="menu-note" id="folderArtNote">给选中的文件夹补封面和背景图：从里层已刮好的海报出发，每一层只写 folder.jpg + poster.jpg（竖版封面）和 fanart.jpg（横版背景）；图上压着文件夹名，几个兄弟目录一眼能区分，背景图会先裁成横版。直接放视频的层不写</div>
           <button data-fart="miss">只补缺的（推荐的）</button>
           <button data-fart="all">全部覆盖重建</button>
           <button data-fart="pick" title="合集类目录里每部片子各有一张海报，父层该用哪张由你定">指定用哪张图…</button>
@@ -1622,7 +1622,7 @@
     <div class="modal-foot art-foot">
       <span class="cur" id="artCur">当前：自动挑选</span>
       <div style="display:flex;gap:var(--s2)">
-        <button class="tiny" id="btnArtAuto" title="清掉指定，下次补封面重新按顺序挑一张">恢复自动</button>
+        <button class="tiny" id="btnArtAuto" title="清掉指定，按自动规则重新挑一张重画这一层，并通知媒体服务器重扫">恢复自动</button>
         <button class="pick-confirm" id="btnArtApply" disabled>用这张</button>
       </div>
     </div>
@@ -3178,18 +3178,18 @@ function dirStateHint(d) {
    这里只标这些真正有风险的层，避免任务列表几百行全挂标签；
    修复动作本身会把每一层都补齐。 */
 function folderArtTag(count, own, depth, art, pinned, pinName) {
-  if (!count || !(own === 0 || depth >= 2)) return '';
+  // 只有「这一层没有直接放视频」的中转层才是文件夹条目，才需要 folder.jpg。
+  // 直接放视频的那层是影片条目，封面走 xxx-poster.jpg，标了反而误导人去补。
+  if (!count || own !== 0) return '';
   if (art) {
     const by = pinned ? `（用的是你指定的 ${pinName || '那张图'}）` : '';
     return `<span class="foldertag done" title="这一层已有 folder.jpg，Emby / Jellyfin 会拿它当文件夹封面${esc(by)}">`
       + (pinned ? '海报已就绪 · 已指定' : '海报已就绪') + '</span>';
   }
-  const why = own === 0
-    ? '这一层没有直接放视频，Emby / Jellyfin 会把它当成文件夹条目'
-    : `位于媒体库第 ${depth} 层，Emby / Jellyfin 会把它当成文件夹条目`;
+  const why = '这一层没有直接放视频，Emby / Jellyfin 会把它当成文件夹条目';
   const tip = pinned
     ? `你指定过 ${pinName || '一张图'}，但这个文件不在了`
-    : `勾上它点「开始文件夹海报修复」，会从里层已有的海报出发，把每一层都补上 folder.jpg + poster.jpg；`
+    : `勾上它点「开始文件夹海报修复」，会从里层已有的海报出发，把这一层补上海报和背景图（图上压着文件夹名）；`
       + `想用某一张特定的图，点这一行右边的「封面」挑`;
   return `<span class="foldertag miss" title="${esc(why)}。文件夹条目只认 folder.jpg / poster.jpg，`
     + `按视频名生成的 xxx-poster.jpg 对它无效。${esc(tip)}">缺海报</span>`;
@@ -3633,8 +3633,8 @@ $('btnFolderArt').addEventListener('click', e => {
     const n = S.files.sel.size;
     const d = S.files.dirPaths.size;
     $('folderArtNote').textContent = d
-      ? `给选中的 ${d} 个文件夹（含子目录）补 folder.jpg，图片取自里面已刮好的海报`
-      : `按选中的 ${n} 个文件所在目录补 folder.jpg`;
+      ? `给选中的 ${d} 个文件夹（含子目录）补封面和背景图，图片取自里面已刮好的海报`
+      : `按选中的 ${n} 个文件所在目录补封面和背景图`;
   }
   menu.hidden = !menu.hidden;
 });
@@ -3659,7 +3659,7 @@ $('folderArtMenu').addEventListener('click', async e => {
     return;
   }
   const force = btn.dataset.fart === 'all';
-  if (force && !confirm('把选中范围里所有 folder.jpg 重新生成一遍？已有封面会被覆盖。')) return;
+  if (force && !confirm('把选中范围里所有封面和背景图都重新生成一遍？已有的会被覆盖。')) return;
   $('btnFolderArt').disabled = true;
   try {
     const r = await post('/api/files/folder-poster', { dirs, paths, force });

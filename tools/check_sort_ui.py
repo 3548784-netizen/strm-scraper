@@ -168,20 +168,34 @@ def main() -> int:
             page.wait_for_timeout(900)
 
         def open_dir_with_files() -> bool:
-            names = page.eval_on_selector_all(
-                "#fileBody span.dir[data-dir]", "els => els.map(e => e.dataset.dir)")
-            for name in names:
+            """往下钻，直到某一层真的有 strm（真实库的片子在第三层）。"""
+            def enter(path: str) -> None:
                 page.evaluate("""(name) => {
                   const el = [...document.querySelectorAll('#fileBody span.dir[data-dir]')]
                     .find(e => e.dataset.dir === name);
                   if (el) el.click();
-                }""", name)
-                try:
-                    page.wait_for_selector("#fileBody tr[data-path]", timeout=3500)
-                    return True
-                except Exception:  # noqa: BLE001
+                }""", path)
+
+            def drill(depth: int) -> bool:
+                if depth > 4:
+                    return False
+                paths = page.eval_on_selector_all(
+                    "#fileBody span.dir[data-dir]", "els => els.map(e => e.dataset.dir)")
+                if not paths:
+                    return False
+                for name in paths:
+                    enter(name)
+                    try:
+                        page.wait_for_selector("#fileBody tr[data-path]", timeout=2500)
+                        return True
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if drill(depth + 1):
+                        return True
                     go_root()
-            return False
+                return False
+
+            return drill(0)
 
         check("能找到有文件的目录", open_dir_with_files(),
               str(page.eval_on_selector_all(

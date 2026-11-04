@@ -227,8 +227,8 @@ def main(argv=None) -> int:
         page.locator('#autoDirs button').first.click()
         page.wait_for_timeout(900)
         page.click("#autoScopeHere")
-        check("已选监控目录", "已选当前目录" in page.inner_text("#autoScopePick"),
-              page.inner_text("#autoScopePick"))
+        check("已选监控目录", "自定义目录" in page.inner_text("#autoLibLabel"),
+              page.inner_text("#autoLibLabel"))
         page.click('#autoChips button[data-min="360"]')
         check("快捷间隔写入 360", page.input_value("#autoInterval") == "360",
               page.input_value("#autoInterval"))
@@ -247,7 +247,9 @@ def main(argv=None) -> int:
         page.wait_for_selector("#autoModal:not([hidden])", timeout=8000)
         check("编辑弹窗带出原值", page.input_value("#autoInterval") == "360",
               page.input_value("#autoInterval"))
-        page.select_option("#autoMode", "full")
+        page.click('#autoMode button[data-mode="full"]')
+        check("全量写进表单状态", page.eval_on_selector(
+            '#autoMode button[data-mode="full"]', "e => e.classList.contains('on')"))
         page.click("#btnAutoSave")
         page.wait_for_timeout(1500)
         check("改成全量后卡片有标记",

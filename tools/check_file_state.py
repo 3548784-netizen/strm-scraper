@@ -82,20 +82,44 @@ def main() -> int:
 
         print("\n---------- 3. 真实列表一致性 ----------")
         # 默认停在根目录（只有子目录），先进一个**自己直接放着 strm** 的目录。
-        # 带「含 N 个子目录」的是中转层，点进去一个 strm 都没有，筛不出东西
-        if not page.query_selector("#fileBody tr[data-path]"):
-            clicked = page.evaluate("""() => {
-              const row = [...document.querySelectorAll('#fileBody tr.dirrow')]
-                .find(tr => /[1-9]\\d* 个 strm/.test(tr.textContent)
-                            && !tr.textContent.includes('含'));
-              row?.querySelector('span.dir')?.click();
-              return !!row;
-            }""")
-            page.wait_for_timeout(1500)
-            if not clicked:
-                print("  ..   夹具里没有直接放 strm 的目录，跳过后面的列表比对")
-                print(f"\n共 {checked} 项，失败 {failed} 项")
-                return 1 if failed else 0
+        # 带「含 N 个子目录」的是中转层，点进去一个视频都没有，筛不出东西
+        # 真实库的片子可能埋在两三层下面，逐层往下钻，直到某一层真的有视频
+        def drill(depth: int) -> bool:
+            if depth > 4:
+                return False
+            if page.query_selector("#fileBody tr[data-path]"):
+                return True
+            names = page.evaluate("""() => [...document.querySelectorAll('#fileBody span.dir[data-dir]')]
+                .filter(el => {
+                  const row = el.closest('tr');
+                  return /[1-9]\\d* 个视频/.test(row.textContent)
+                         && !row.textContent.includes('含');
+                }).map(el => el.dataset.dir)""")
+            if not names:
+                names = page.evaluate("""() => [...document.querySelectorAll('#fileBody span.dir[data-dir]')]
+                    .map(el => el.dataset.dir)""")
+            for name in names:
+                page.evaluate("""(p) => {
+                  const el = [...document.querySelectorAll('#fileBody span.dir[data-dir]')]
+                    .find(e => e.dataset.dir === p);
+                  if (el) el.click();
+                }""", name)
+                page.wait_for_timeout(1500)
+                if page.query_selector("#fileBody tr[data-path]"):
+                    return True
+                if drill(depth + 1):
+                    return True
+                page.evaluate("""() => {
+                  const crumb = document.querySelector('#crumbs .crumb[data-path]');
+                  if (crumb) crumb.click();
+                }""")
+                page.wait_for_timeout(700)
+            return False
+
+        if not drill(0):
+            print("  ..   夹具里没有直接放 strm 的目录，跳过后面的列表比对")
+            print(f"\n共 {len(FAIL)} 项失败")
+            return 1 if FAIL else 0
         rows = page.evaluate("""() => {
           return [...document.querySelectorAll('#fileBody tr[data-path]')].map(tr => {
             const st = tr.querySelector('span.st');
@@ -113,7 +137,7 @@ def main() -> int:
                                            "刮削失败": "failed", "刮削中": "running"}[r["text"]]
                       for r in rows))
         else:
-            print("  ..   当前目录没有 strm 文件，跳过列表比对")
+            print("  ..   当前目录没有视频，跳过列表比对")
 
         print("\n---------- 4. 状态筛选 ----------")
         # 角标数量要和真实分布一致（含文件夹），文件行数只算文件
@@ -182,6 +206,12 @@ def main() -> int:
         page.wait_for_timeout(1000)
         page.click('[data-tab="files"]')
         page.wait_for_timeout(1200)
+        # 页面会记住上次停在哪个目录，这里显式点一下面包屑回到库根
+        page.evaluate('''() => {
+          const c = document.querySelector('#crumbs .crumb[data-path]');
+          if (c) c.click();
+        }''')
+        page.wait_for_timeout(1200)
 
         dirs = page.evaluate("""() => {
           const data = (S.files.data && S.files.data.dirs) || [];
@@ -208,15 +238,15 @@ def main() -> int:
               all(d["text"] == "刮削成功" or d["text"] == "未刮削" or d["text"] == "无 strm"
                   or (d["text"].startswith("已刮 ") and "/" in d["text"]) for d in dirs["dom"]),
               str(sorted({d["text"] for d in dirs["dom"]})))
-        want_cls = {"刮削成功": "ok", "未刮削": "new", "无 strm": "empty"}
+        want_cls = {"刮削成功": "ok", "未刮削": "new", "无视频": "empty"}
         check("类名与文案对得上", all(
             d["cls"] == "st dirst " + (want_cls.get(d["text"]) or "part") for d in dirs["dom"]),
             str([(d["text"], d["cls"]) for d in dirs["dom"]][:3]))
         def cnt_matches(cell: str, d: dict) -> bool:
-            """文件夹行文案：`N 个 strm`，有子目录时再跟一句 `含 M 个子目录`。"""
+            """文件夹行文案：`N 个视频`，有子目录时再跟一句 `含 M 个子目录`。"""
             count = d["count"]
             subs = d.get("subs") or 0
-            want = f"{count} 个 strm" if count else ""
+            want = f"{count} 个视频" if count else ""
             if subs:
                 want += (" · " if count else "") + f"含 {subs} 个子目录"
             return cell == want

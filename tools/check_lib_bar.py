@@ -5,15 +5,16 @@
 状态、进度条；而文件管理里同一个东西是顶上的一条标题。同一个库两个地方两种说法。
 
 现在两边一致：任务列表最上面也是那条横条（库名 + 「媒体库」标签），下面直接就是
-这个库里的文件夹行；有多个媒体库时横条变成一排可点的库标签，点谁看谁。
+这个库里的文件夹行。横条上的库名可以点，弹出配置里的全部媒体库，点谁看谁
+（切换的完整用例在 check_lib_switch.py，这里只验这条横条本身）。
 
 覆盖：
-1. 横条在工具栏上方，写着库名 + 「媒体库」标签，只有一个库时不给切换入口；
+1. 横条在工具栏上方，写着库名 + 「媒体库」标签，库名可点（切换入口）；
 2. 列表里不再有库根那一行，第一行是库里的第一层文件夹，缩进从 0 开始；
 3. 横条上的库名和文件管理面包屑里的库名是同一个（两处一个说法）；
 4. 接口口径：``/api/items/tree`` 返回 root + libs，``?root=`` 换库；
    ``/api/items?root=`` 只统计这个库的记录；
-5. 多个库时（``--multi``）标签可点、切换后列表跟着换、按文件视图也一起换；
+5. 多个库时（``--multi``）菜单里列出全部库、切换后列表跟着换、按文件视图也一起换；
 6. 全程没有 JS 报错。
 
     python tools/devserver.py --port 6672 &
@@ -72,15 +73,14 @@ def main() -> int:
             const tools = pane.querySelector('.toolbar');
             if (!el) return null;
             const r = el.getBoundingClientRect();
-            const tab = el.querySelector('.libtab.on');
+            const btn = el.querySelector('[data-libmenu]');
             return {
                 hidden: el.hidden,
                 height: Math.round(r.height),
                 above: r.bottom <= tools.getBoundingClientRect().top + 1,
-                name: (el.querySelector('.libname') || {}).textContent
-                      || (tab ? tab.firstChild.textContent : '') || '',
+                name: (el.querySelector('.libname') || {}).textContent || '',
                 tags: [...el.querySelectorAll('.taglib')].map(t => t.textContent.trim()),
-                tabs: el.querySelectorAll('.libtab').length,
+                switchable: !!btn,
                 bg: getComputedStyle(el).backgroundColor,
             };
         }""")
@@ -91,12 +91,10 @@ def main() -> int:
         check("库名和接口给的 root 是同一个库",
               bool(bar) and root.split("\\")[-1].split("/")[-1] == bar["name"].strip(),
               f'{bar["name"] if bar else ""} vs {root}')
-        if not args.multi:
-            check("横条带「媒体库」标签", bool(bar) and bar["tags"] == ["媒体库"],
-                  str(bar["tags"] if bar else ""))
-            check("只有一个库时不给切换标签", bool(bar) and bar["tabs"] == 0, f'{bar["tabs"]} 个')
-        else:
-            check("多个库时横条是一排库标签", bool(bar) and bar["tabs"] >= 2, f'{bar["tabs"]} 个')
+        check("横条带「媒体库」标签", bool(bar) and bar["tags"] == ["媒体库"],
+              str(bar["tags"] if bar else ""))
+        # 库名本身可点：弹出全部媒体库（只有一个库时也能开，写明只有一个）
+        check("横条上有可点的库名", bool(bar) and bar["switchable"], str(bar and bar["switchable"]))
         check("横条有自己的底色（不是透明）", bool(bar) and bar["bg"] not in ("", "rgba(0, 0, 0, 0)"),
               bar["bg"] if bar else "")
 
@@ -158,6 +156,8 @@ def main() -> int:
         page.click('[data-tab="files"]')
         page.wait_for_timeout(1600)
         crumb = page.inner_text("#crumbs .crumb.last").strip()
+        # 库名后面挂了一个切换用的小箭头，比名字的时候把它去掉
+        crumb = crumb.replace("▼", "").replace("▾", "").strip()
         tags = page.eval_on_selector_all("#crumbs .taglib", "els => els.map(e => e.textContent.trim())")
         check("文件管理面包屑的库名和横条一致",
               crumb == (bar["name"].strip() if bar else ""), f"{crumb} vs {bar['name'] if bar else ''}")
@@ -184,24 +184,26 @@ def main() -> int:
               f'{flat["total"]} vs {first["total"]}')
 
         if args.multi:
-            print("\n---------- 5. 多个库：横条就是切换入口 ----------")
-            tabs = page.eval_on_selector_all(
-                "#taskLibBar .libtab",
-                "els => els.map(e => ({path: e.dataset.lib, text: e.textContent.trim(), on: e.classList.contains('on')}))")
-            check("每个库一个标签", len(tabs) == len(libs), f"{len(tabs)} 个标签 / {len(libs)} 个库")
-            check("只有一个标签是选中态", sum(1 for t in tabs if t["on"]) == 1,
-                  str([t["text"] for t in tabs if t["on"]]))
-            check("标签上带这个库的条数", all(t["text"].strip() != "" for t in tabs),
-                  str([t["text"] for t in tabs]))
-            other = next((t for t in tabs if t["path"] != root), None)
+            print("\n---------- 5. 多个库：点横条上的库名切换 ----------")
+            page.click("#taskLibBar [data-libmenu]")
+            page.wait_for_selector("#libMenu:not([hidden])", timeout=5000)
+            items = page.eval_on_selector_all(
+                "#libMenu button[data-lib]",
+                "els => els.map(e => ({path: e.dataset.lib, text: e.innerText, on: e.classList.contains('on')}))")
+            check("每个库都列在菜单里", len(items) == len(libs),
+                  f"{len(items)} 项 / {len(libs)} 个库")
+            check("只有当前库是选中态", sum(1 for i in items if i["on"]) == 1, str(items))
+            check("每一项都带库名和条数", all(i["text"].strip() for i in items),
+                  str([i["text"].replace("\n", " ")[:30] for i in items]))
+            other = next((i for i in items if not i["on"]), None)
             check("有第二个库可切", bool(other), str(other))
             if other:
                 before = page.eval_on_selector_all(
                     "#taskBody tr.grouprow", "els => els.map(e => e.dataset.group)")
                 page.evaluate("""(path) => {
-                    const tab = [...document.querySelectorAll('#taskLibBar .libtab')]
-                        .find(b => b.dataset.lib === path);
-                    if (tab) tab.click();
+                    const b = [...document.querySelectorAll('#libMenu button[data-lib]')]
+                        .find(x => x.dataset.lib === path);
+                    if (b) b.click();
                 }""", other["path"])
                 page.wait_for_timeout(2200)
                 after = page.eval_on_selector_all(
@@ -209,12 +211,10 @@ def main() -> int:
                 check("切换后列表换成了另一个库", before != after, f"{len(before)} → {len(after)} 行")
                 check("切换后行都在新库下面",
                       all(a.startswith(other["path"]) for a in after), str(after[:2]))
-                on = page.eval_on_selector_all(
-                    "#taskLibBar .libtab.on", "els => els.map(e => e.dataset.lib)")
-                check("切换后选中态跟着过去", on == [other["path"]], str(on))
+                now = page.evaluate("() => S.lib")
+                check("切换后当前库跟着过去", now == other["path"], now)
                 flat_n = page.evaluate("""async () => {
-                    const r = await fetch('/api/items?size=1&root=' + encodeURIComponent(
-                        document.querySelector('#taskLibBar .libtab.on').dataset.lib));
+                    const r = await fetch('/api/items?size=1&root=' + encodeURIComponent(S.lib));
                     return (await r.json()).total;
                 }""")
                 page.click('#taskView button[data-view="flat"]')

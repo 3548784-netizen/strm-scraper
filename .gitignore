@@ -21,6 +21,11 @@ auth.json.*
 .devdata_real/
 .devdata_*
 
+# 巡检截图（tools/check_ui_sweep.py --shots）
+.uisweep*/
+_shot_*.png
+_probe_*.png
+
 # 编辑器 / 系统
 .vscode/
 .idea/

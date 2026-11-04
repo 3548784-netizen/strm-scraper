@@ -369,17 +369,56 @@
     color: var(--accent-ink); font-weight: 500; padding: 2px var(--s2);
     display: inline-flex; align-items: center; gap: var(--s2);
   }
-  .libtab {
-    display: inline-flex; align-items: center; gap: var(--s2); height: 24px;
-    padding: 0 var(--s3); border-radius: var(--r-pill); cursor: pointer;
-    border: 1px solid transparent; background: transparent;
-    color: var(--text-2); font-size: var(--fs-xs); font-weight: 400;
+  /* 可点的库名：任务列表横条整块可点，文件管理面包屑里挂在库名后面那个小箭头 */
+  .libbtn {
+    display: inline-flex; align-items: center; gap: var(--s1); height: 24px;
+    padding: 0 var(--s2) 0 var(--s3); border-radius: var(--r-pill); cursor: pointer;
+    border: 1px solid transparent; background: transparent; color: var(--accent-ink);
+    font-size: var(--fs-sm); font-weight: 600; max-width: 460px; min-width: 0;
   }
-  .libtab:hover { background: var(--surface-4); color: var(--text); }
-  .libtab.on { background: var(--accent-soft); border-color: var(--accent-line);
-               color: var(--accent-ink); font-weight: 600; }
-  .libtab .n { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
-  .libtab.on .n { color: var(--accent-ink); }
+  .libbtn:hover { background: var(--surface-4); border-color: var(--line); }
+  .libbtn .n { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .caret { color: var(--text-3); font-size: 9px; line-height: 1; padding-left: 2px; }
+  .libcrumb .caret {
+    cursor: pointer; padding: 2px 5px; border-radius: var(--r-xs);
+    color: var(--text-2); font-size: 9px; transition: background .12s, color .12s;
+  }
+  .libcrumb:hover .caret, .libcrumb .caret:hover {
+    background: var(--surface-4); color: var(--accent-ink);
+  }
+  /* 库列表浮层：按钮改成两行（库名 + 完整路径），名字重复的库才分得清 */
+  .libmenu {
+    /* 自动化弹窗里也要弹这个浮层，所以层级压在 .modal（220）之上 */
+    position: fixed; right: auto; top: auto; z-index: 260;
+    min-width: 300px; max-width: 460px; max-height: 60vh; overflow-y: auto;
+  }
+  .libmenu button { height: auto; padding: var(--s2) var(--s3); display: block; }
+  .libmenu .lb-top { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+  .libmenu .lb-name { font-weight: 600; color: var(--text); overflow: hidden;
+                      text-overflow: ellipsis; white-space: nowrap; }
+  .libmenu .lb-n { margin-left: auto; flex: none; color: var(--text-3);
+                   font-size: var(--fs-2xs); font-variant-numeric: tabular-nums; }
+  .libmenu .lb-path { display: block; margin-top: 2px; font-size: var(--fs-2xs);
+                      color: var(--text-3); overflow: hidden; text-overflow: ellipsis;
+                      white-space: nowrap; max-width: 100%; }
+  .libmenu button.on { background: var(--accent-soft); }
+  .libmenu button.on .lb-name { color: var(--accent-ink); }
+  .libmenu button.on .lb-path { color: var(--accent-ink); opacity: .75; }
+  /* 「选一个」的样子：外观照抄 select，但点开的是我们自己的浮层。
+     原生 <select> 的弹层在带毛玻璃的弹窗里会跑到窗口左上角，位置压不住 */
+  .picksel {
+    display: flex; align-items: center; gap: var(--s2); width: 100%;
+    height: var(--h-ctl); padding: 0 var(--s3); border-radius: var(--r-sm);
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+    font-size: var(--fs-xs); font-weight: 400; text-align: left; cursor: pointer;
+    box-shadow: none; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  .picksel:hover { border-color: var(--line-strong); background: var(--surface-2); }
+  .picksel.on, .picksel:focus-visible {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none;
+  }
+  .picksel .ps-lab { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picksel .ps-caret { flex: none; color: var(--text-3); font-size: 9px; line-height: 1; }
   .taglib {
     font-size: var(--fs-2xs); font-weight: 500; padding: 1px var(--s2); border-radius: var(--r-pill);
     color: var(--text-3); background: var(--surface-4); white-space: nowrap; flex: none;
@@ -453,7 +492,7 @@
   .st.skipped { color: var(--text-2); background: var(--surface-3); border-color: var(--line); }
   .st.new { color: var(--text-3); background: var(--surface-3); border-color: var(--line); }
   /* 文件夹特有的两态：partial=还有没刮的（蓝色，表示「活没干完」，与运行中的黄区分）；
-     empty=这个文件夹里压根没有 strm，不该染任何颜色去抢注意力 */
+     empty=这个文件夹里压根没有视频，不该染任何颜色去抢注意力 */
   .st.part { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(76, 141, 255, .28); }
   .st.empty { color: var(--text-3); background: transparent; border-color: transparent; }
   .dirrow .st.dirst { font-variant-numeric: tabular-nums; }
@@ -923,6 +962,9 @@
   }
   .auto-card .a-meta { margin-top: var(--s1); font-size: var(--fs-2xs); color: var(--text-3); line-height: 1.65; }
   .auto-card .a-meta b { color: var(--text-2); font-weight: 600; }
+  .auto-card .a-warn {
+    margin-top: 2px; font-size: var(--fs-2xs); color: var(--warn-ink);
+  }
   .auto-card .a-acts { display: flex; align-items: center; gap: var(--s2); flex: none; }
   .pill {
     font-size: var(--fs-2xs); padding: 1px var(--s2); border-radius: var(--r-pill); line-height: 1.7;
@@ -931,6 +973,7 @@
   }
   .pill.on { background: var(--ok-soft); border-color: rgba(63, 185, 80, .35); color: var(--ok-ink); }
   .pill.accent { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
+  .pill.warn { background: var(--warn-soft); border-color: rgba(224, 168, 60, .38); color: var(--warn-ink); }
 
   .modal-card.auto-modal { max-width: 600px; }
   .auto-body {
@@ -942,17 +985,14 @@
   .auto-field input[type="text"], .auto-field input[type="number"], .auto-field select { width: 100%; }
   .auto-field .chips { margin-top: 2px; }
   .auto-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); }
+  /* 执行方式只有两个选项：分段控件比下拉少一次点击，也不会碰上原生弹层的定位问题 */
+  .auto-field .seg { display: flex; width: 100%; }
+  .auto-field .seg button { flex: 1; height: var(--h-ctl); }
   .auto-scopebar { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
   .auto-scopebar .grow { flex: 1; }
   .auto-scopebar .tiny.on {
     border-color: var(--accent-line); color: var(--accent-ink); background: var(--accent-soft);
   }
-  .auto-roots .tiny.on {
-    border-color: var(--line); color: var(--text); background: var(--surface-3);
-  }
-  .auto-roots { display: flex; align-items: center; gap: var(--s1); flex-wrap: wrap; }
-  .auto-roots:empty { display: none; }
-  .auto-roots .lbl { font-size: var(--fs-2xs); color: var(--text-3); margin-right: 2px; }
   .auto-crumbs {
     display: flex; flex-wrap: wrap; gap: 3px; font-size: var(--fs-2xs); color: var(--text-3);
     font-family: var(--font-mono);
@@ -1122,7 +1162,7 @@
       <h1>strm-scraper</h1>
       <div class="sub" id="rootInfo">正在连接…</div>
       <div class="sub fmts" id="fmtInfo"
-           title="strm 里指向的视频只要 ffmpeg 能解码就能刮削；本地视频想一起刮，在 config.yaml 的 scan.extensions 里加后缀即可，默认只扫 .strm">
+           title="这些格式放进媒体库就会被扫描，不用另外配置；strm 读里面记录的地址，本地视频直接读文件">
         支持 strm · mp4 · mkv · avi · ts · m2ts · mov · wmv · flv · rmvb · webm · mpg
       </div>
     </div>
@@ -1216,7 +1256,7 @@
         <div class="menu-wrap">
           <button class="tiny" id="btnTaskDel" disabled>删除 ▾</button>
           <div class="menu" id="taskDelMenu" hidden>
-            <div class="menu-note" id="taskDelNote">只影响任务列表，不动媒体库里的 strm</div>
+            <div class="menu-note" id="taskDelNote">只影响任务列表，不动媒体库里的视频文件</div>
             <button data-tdel="record">仅从任务列表移除</button>
             <button class="danger" data-tdel="purge">移除并删除已生成的图片 / NFO</button>
           </div>
@@ -1234,7 +1274,7 @@
             <th style="width:88px">状态</th>
             <th>视频名称</th>
             <th style="width:86px">时长</th>
-            <th style="width:82px" title="strm 文件本身的大小">大小</th>
+            <th style="width:82px" title="视频文件本身的大小">大小</th>
             <th style="width:56px">海报</th>
             <th style="width:82px">背景图</th>
             <th style="width:46px">NFO</th>
@@ -1351,7 +1391,7 @@
     <div class="footbar">
       <span id="fileMeta">—</span>
       <span class="grow"></span>
-      <span class="num">勾选文件夹＝选中里面所有 strm（含子目录）；行内「刮削」立即执行单个文件</span>
+      <span class="num">勾选文件夹＝选中里面所有视频（含子目录）；行内「刮削」立即执行单个文件</span>
     </div>
   </section>
 
@@ -1384,7 +1424,7 @@
       <div class="empty">正在加载…</div>
     </div>
     <div class="footbar">
-      <span>一条任务＝一个监控范围＋一个间隔。到点只跑该范围里的 strm，其它目录不动。</span>
+      <span>一条任务＝一个监控范围＋一个间隔。到点只跑该范围里的视频，其它目录不动。</span>
       <span class="grow"></span>
       <span class="num">任意时刻只跑一轮，撞车的那次自动顺延</span>
     </div>
@@ -1538,6 +1578,9 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- 媒体库切换：任务列表横条和文件管理面包屑共用同一个浮层，点库名弹出来 -->
+<div class="menu libmenu" id="libMenu" hidden></div>
+
 <!-- 自动化任务 -->
 <div class="modal" id="autoModal" hidden>
   <div class="modal-card auto-modal">
@@ -1551,14 +1594,15 @@
         <input type="text" id="autoName" maxlength="60" placeholder="例如：电影库 · 每 6 小时">
       </div>
       <div class="auto-field">
-        <label>监控范围</label>
+        <label id="autoLibLbl">监控范围</label>
+        <button type="button" class="picksel" id="autoLib" data-libmenu="auto"
+                aria-haspopup="listbox" aria-expanded="false" aria-labelledby="autoLibLbl">
+          <span class="ps-lab" id="autoLibLabel">—</span>
+          <span class="ps-caret" aria-hidden="true">▼</span>
+        </button>
         <div class="auto-scopebar">
-          <button class="tiny" id="autoScopeAll">全部媒体库</button>
           <button class="tiny" id="autoScopeHere">设为当前目录</button>
-          <span class="grow"></span>
-          <span class="num" id="autoScopePick">—</span>
         </div>
-        <div class="auto-roots" id="autoRoots"></div>
         <div class="auto-crumbs" id="autoCrumbs">—</div>
         <div class="auto-dirs" id="autoDirs"></div>
         <p class="set-note" id="autoScopeHint">不选就是全部媒体库；只看某个文件夹就点进去再「设为当前目录」</p>
@@ -1575,19 +1619,33 @@
           </div>
         </div>
         <div class="auto-field">
-          <label for="autoMode">执行方式</label>
-          <select id="autoMode">
-            <option value="incremental">增量 · 只补新文件和缺产物的</option>
-            <option value="full">全量 · 范围内重刮并覆盖旧图</option>
-          </select>
+          <label id="autoModeLbl">执行方式</label>
+          <div class="seg" id="autoMode" role="group" aria-labelledby="autoModeLbl">
+            <button type="button" data-mode="incremental" class="on">增量</button>
+            <button type="button" data-mode="full">全量</button>
+          </div>
+          <p class="set-note" id="autoModeNote">只补新文件和缺产物的</p>
           <label class="switch" style="margin-top:6px">
             <input type="checkbox" id="autoEnabled" checked> 保存后立即启用</label>
+        </div>
+      </div>
+      <div class="auto-field">
+        <label class="switch">
+          <input type="checkbox" id="autoWatch">
+          实时监听：目录里一出现新的视频就入队，不等下一轮
+        </label>
+        <div class="auto-field" id="autoWatchOpts" hidden style="margin-top:6px">
+          <label for="autoDebounce">静默（秒，最小 10）</label>
+          <input type="number" id="autoDebounce" min="10" max="900" step="10" value="60">
+          <p class="set-note">批量生成一次会连着来几百个事件，攒够这么久没有新事件才
+            一次性入队，所以建议 60 秒以上。定时那轮仍然保留，用来兜住服务重启期间
+            落下的文件。刮削自己写出的海报、NFO 不算数，不会自己触发自己。</p>
         </div>
       </div>
       <div class="msg-line" id="autoMsg"></div>
     </div>
     <div class="modal-foot">
-      <span class="set-sub">到点只处理监控范围里的 strm，其它目录不动</span>
+      <span class="set-sub">到点只处理监控范围里的视频，其它目录不动</span>
       <span class="grow"></span>
       <button id="btnAutoCancel">取消</button>
       <button class="primary" id="btnAutoSave">保存任务</button>
@@ -1699,8 +1757,31 @@
 const $ = id => document.getElementById(id);
 const NEW_PWD_KEY = 'new' + '_' + 'pass' + 'word';
 
+/* ---------- 记住上次看的样子 ----------
+   刷新一下就回到「任务列表 + 按文件夹 + 按添加时间」太烦人：在文件管理里翻了
+   三层目录，或者正按名称排，F5 一下全没了。这几个偏好只有自己看，存在浏览器
+   本地就够了（换浏览器 / 无痕模式回到默认）。 */
+const PREF_KEY = 'strm-scraper.prefs.v1';
+const PREF_SORT_KEYS = new Set(['name', 'added', 'updated', 'size']);
+const PREFS = (() => {
+  try { return JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch { return {}; }
+})();
+
+function savePrefs(patch) {
+  Object.assign(PREFS, patch);
+  try { localStorage.setItem(PREF_KEY, JSON.stringify(PREFS)); } catch { /* 无痕模式写不进就算了 */ }
+}
+
+/* 存下来的排序键要能用，别让脏数据把排序控件搞成空白 */
+function prefSort(raw, fallback) {
+  if (!raw || !PREF_SORT_KEYS.has(raw.key)) return fallback;
+  return { key: raw.key, order: raw.order === 'asc' ? 'asc' : 'desc' };
+}
+
+const PREFS_TABS = new Set(['tasks', 'files', 'servers', 'automation', 'logs', 'settings']);
+
 const S = {
-  tab: 'tasks',
+  tab: PREFS_TABS.has(PREFS.tab) ? PREFS.tab : 'tasks',
   page: 1,
   size: 60,
   status: 'all',
@@ -1710,7 +1791,7 @@ const S = {
   taskSig: '',
   lastTasks: 0,
   // 任务列表视图：flat 平铺 / dir 按文件夹（默认按文件夹，媒体库本来就是一堆目录）
-  tasksView: 'dir',
+  tasksView: PREFS.tasksView === 'flat' ? 'flat' : 'dir',
   // 任务列表一次只看一个媒体库：lib 是当前库的路径，libs 是全部库（顶部那条横条用）
   lib: '',
   libs: [],
@@ -1731,11 +1812,11 @@ const S = {
   taskSelDirs: new Set(),
   taskRows: [],
   // 排序：默认按加入时间（最新入库的在最前），也可以按最近处理或名称
-  taskSort: { key: 'added', order: 'desc' },
+  taskSort: prefSort(PREFS.taskSort, { key: 'added', order: 'desc' }),
   settings: null,
   files: {
-    path: '', q: '', sel: new Set(), data: null, sig: '',
-    sort: { key: 'added', order: 'desc' },
+    path: PREFS.filesPath || '', q: '', sel: new Set(), data: null, sig: '',
+    sort: prefSort(PREFS.filesSort, { key: 'added', order: 'desc' }),
     // 状态筛选：只在已经拿到的这一屏数据里过滤，不重新请求接口
     filter: 'all',
     // 海报筛选：和状态筛选是两条独立的轴（刮过但没有海报的文件也存在）
@@ -1745,6 +1826,8 @@ const S = {
     // 就地展开的子层：和任务列表同一套交互。subOpen 记哪些目录是展开的，
     // sub 缓存已经拉回来的那一层内容（path -> {dirs, files}），收起时丢掉重取
     subOpen: new Set(), sub: new Map(), subPath: '',
+    // 顶上那条面包屑挂在哪个库上，以及全部库（切换列表用）
+    libs: [], lib: '',
   },
   filesTick: 0, filesBusy: false,
   logSince: 0,
@@ -1897,11 +1980,11 @@ function dirPosterCell(d) {
   const cls = ok >= total ? 'done' : (ok > 0 ? 'part' : 'miss');
   const tail = ok >= total ? '全部已生成'
     : `${total - ok} 个未生成，展开后能看到是哪些`;
-  return `<span class="dposter ${cls}" title="这个文件夹（含子目录）共 ${total} 个 strm，`
+  return `<span class="dposter ${cls}" title="这个文件夹（含子目录）共 ${total} 个视频，`
     + `${ok} 个已有海报，${tail}">${ok}/${total}</span>`;
 }
 
-/* 当前这一屏的海报统计：这一层的 strm + 各个子目录（递归）里的 strm。
+/* 当前这一屏的海报统计：这一层的视频 + 各个子目录（递归）里的视频。
    子目录的 count 已经含孙目录，和这一层的 files 不重叠，直接相加不会重复计。 */
 function posterStats(data) {
   const files = (data && data.files) || [];
@@ -1938,7 +2021,7 @@ function paintPosterStrip(data) {
 
   const note = $('pstripNote');
   note.classList.toggle('done', !st.missing);
-  if (!st.total) note.textContent = '这一屏没有 strm';
+  if (!st.total) note.textContent = '这一屏没有视频';
   else if (!st.missing) note.textContent = '全部已生成';
   else {
     note.textContent = `${st.missing} 个未生成`
@@ -1963,6 +2046,7 @@ function paintPosterStrip(data) {
 
 function switchTab(name) {
   S.tab = name;
+  savePrefs({ tab: name });
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.pane').forEach(p =>
@@ -2187,7 +2271,97 @@ function seedOpenNodes() {
   S.openNodes = open;
 }
 
-/* 任务列表一次只看一个媒体库：顶上一条横条写着库名（多个库时是一排可点的标签），
+/* ---- 媒体库切换：一个浮层，任务列表横条和文件管理面包屑共用 ----
+   库多的时候横条上摆一排标签太挤（名字一长就换行），所以统一收进一个列表：
+   点库名弹出来，里面每一项写着库名 + 完整路径 + 这个库有多少条。 */
+const LIBSEL = { el: null, pick: null };
+
+function libNameOf(path) {
+  return String(path || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || String(path || '');
+}
+
+/* 路径比较用：反斜杠统一、末尾斜杠去掉、大小写不敏感（Windows 盘符大小写混着来） */
+function pathKey(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function closeLibMenu() {
+  const menu = $('libMenu');
+  if (menu) menu.hidden = true;
+  if (LIBSEL.el) {
+    LIBSEL.el.classList.remove('on');
+    if (LIBSEL.el.hasAttribute('aria-haspopup')) LIBSEL.el.setAttribute('aria-expanded', 'false');
+  }
+  LIBSEL.el = null;
+  LIBSEL.pick = null;
+}
+
+/* opts.note：浮层底部那行小字（默认按库的数量给一句通用的） */
+function openLibMenu(anchor, libs, current, onPick, opts) {
+  const menu = $('libMenu');
+  if (!menu || !anchor) return;
+  if (!menu.hidden && LIBSEL.el === anchor) { closeLibMenu(); return; }
+  const cur = pathKey(current);
+  LIBSEL.el = anchor;
+  LIBSEL.pick = onPick;
+  menu.innerHTML = (libs || []).map(lib => {
+    const on = pathKey(lib.path) === cur;
+    const n = (lib.total === undefined || lib.total === null || lib.total === '') ? '' : `${lib.total} 条`;
+    // 第二行默认写完整路径；给了 note 就按 note 写（比如「全部媒体库」没有路径）
+    const full = String(lib.path || '');
+    const sub = lib.note !== undefined ? String(lib.note) : full;
+    // 路径太长时保留尾部：两个库都叫 media 的时候，区别全在最后那几级
+    const shown = sub.length > 68 ? '…' + sub.slice(-66) : sub;
+    return `<button data-lib="${esc(full)}" class="${on ? 'on' : ''}"
+        title="${esc(full || sub)}">
+        <span class="lb-top"><span class="lb-name">${esc(lib.name || libNameOf(lib.path))}</span>
+          ${n ? `<span class="lb-n">${n}</span>` : ''}</span>
+        ${sub ? `<span class="lb-path">${esc(shown)}</span>` : ''}
+      </button>`;
+  }).join('') + `<div class="menu-note">${esc((opts && opts.note) || ((libs || []).length > 1
+      ? `共 ${libs.length} 个媒体库，点一个就切过去`
+      : '只有一个媒体库 · 在「设置 → 媒体库目录」里加一行就有更多'))}</div>`;
+
+  menu.hidden = false;
+  anchor.classList.add('on');
+  if (anchor.hasAttribute('aria-haspopup')) anchor.setAttribute('aria-expanded', 'true');
+  // 贴着触发它的那个控件弹出；下面放不下就翻到上面，左右也不许出屏
+  const r = anchor.getBoundingClientRect();
+  // 宽度跟着触发器走（窄按钮有 300 的下限、太宽封顶 560）：
+  // 弹窗里的选择器是整行宽，浮层也铺满才像一条完整的下拉，而不是缩在左边的窄条
+  const want = Math.max(300, Math.min(Math.round(r.width), 560));
+  menu.style.minWidth = want + 'px';
+  menu.style.maxWidth = want + 'px';
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  let top = r.bottom + 6;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - mw - 10)) + 'px';
+  menu.style.top = top + 'px';
+}
+
+$('libMenu').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-lib]');
+  if (!btn) return;
+  const pick = LIBSEL.pick;
+  closeLibMenu();
+  if (pick) pick(btn.dataset.lib);
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#libMenu') && !e.target.closest('[data-libmenu]')) closeLibMenu();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLibMenu(); });
+window.addEventListener('resize', closeLibMenu);
+// 浮层的位置是照着按钮算好钉死的，外层一滚动就跟按钮错开了，直接收起来
+// （在浮层里面滚不算 —— 库多了要能滚着看）
+window.addEventListener('scroll', e => {
+  const menu = $('libMenu');
+  if (!menu || menu.hidden || e.target === menu) return;
+  closeLibMenu();
+}, true);
+
+/* 任务列表一次只看一个媒体库：顶上一条横条写着库名（点它切换），
    下面的行就是这个库里的文件夹。库根本身不再占一行 —— 它的名字在横条上了。 */
 function libRootNode() {
   const top = S.tree[0];
@@ -2213,17 +2387,18 @@ function renderLibBar() {
   }
   bar.hidden = false;
   const cur = S.libs.find(l => l.path === S.lib) || S.libs[0];
-  if (S.libs.length === 1) {
-    // 只有一个库：和文件管理顶上那条写成一模一样，不用给切换入口
-    bar.innerHTML = `<span class="libname">${esc(cur.name || cur.path)}</span>`
-      + '<span class="taglib">媒体库</span>';
-    return;
-  }
-  bar.innerHTML = S.libs.map(lib =>
-    `<button class="libtab${lib.path === S.lib ? ' on' : ''}" data-lib="${esc(lib.path)}"
-             title="${esc(lib.path)}">${esc(lib.name || lib.path)}<span class="n">${lib.total}</span></button>`
-  ).join('');
+  bar.innerHTML = `<button class="libbtn" data-libmenu="task" title="切换媒体库">
+      <span class="libname">${esc(cur.name || cur.path)}</span>
+      <span class="n">${cur.total || 0}</span><span class="caret">▼</span>
+    </button><span class="taglib">媒体库</span>`;
 }
+
+$('taskLibBar').addEventListener('click', e => {
+  const btn = e.target.closest('[data-libmenu]');
+  if (!btn) return;
+  e.stopPropagation();
+  openLibMenu(btn, S.libs, S.lib, path => switchLib(path));
+});
 
 async function switchLib(path) {
   if (!path || path === S.lib) return;
@@ -2712,7 +2887,7 @@ $('btnTaskDel').addEventListener('click', e => {
   if (menu.hidden) {
     const n = S.taskSel.size, d = S.taskSelDirs.size;
     $('taskDelNote').textContent = n || d
-      ? `将移除 ${n} 个文件${d ? `、${d} 个文件夹（含里面的记录）` : ''}，媒体库里的 strm 不动`
+      ? `将移除 ${n} 个文件${d ? `、${d} 个文件夹（含里面的记录）` : ''}，媒体库里的视频文件不动`
       : '先勾选任务';
   }
   menu.hidden = !menu.hidden;
@@ -2850,6 +3025,7 @@ $('taskView').addEventListener('click', e => {
   const btn = e.target.closest('button[data-view]');
   if (!btn || btn.dataset.view === S.tasksView) return;
   S.tasksView = btn.dataset.view;
+  savePrefs({ tasksView: S.tasksView });
   document.querySelectorAll('#taskView button').forEach(b =>
     b.classList.toggle('on', b.dataset.view === S.tasksView));
   S.taskSel.clear();
@@ -2903,6 +3079,7 @@ $('taskSort').addEventListener('click', e => {
   const btn = e.target.closest('button[data-sort]');
   if (!btn) return;
   S.taskSort = nextSortState(S.taskSort, btn.dataset.sort);
+  savePrefs({ taskSort: S.taskSort });
   paintSortSeg('taskSort', S.taskSort);
   S.taskSig = '';
   S.page = 1;
@@ -2945,6 +3122,7 @@ $('fileSort').addEventListener('click', e => {
   const btn = e.target.closest('button[data-sort]');
   if (!btn) return;
   S.files.sort = nextSortState(S.files.sort, btn.dataset.sort);
+  savePrefs({ filesSort: S.files.sort });
   paintSortSeg('fileSort', S.files.sort);
   S.files.sig = '';
   loadFiles(true).then(() => {
@@ -3012,18 +3190,37 @@ async function loadFiles(force) {
   try {
     data = await api('/api/files?' + params.toString());
   } catch (e) {
+    // 记住的目录可能已经没了（接口直接 404）：退回媒体库根，别留一片空白
+    if (S.files.path) {
+      S.files.path = '';
+      savePrefs({ filesPath: '' });
+      toast('这个目录已经不在了，已回到媒体库根目录', true);
+      return loadFiles(force);
+    }
     toast(e.message, true);
     return;
   }
   if (seq !== filesSeq) return;
   S.files.data = data;
   if (!data.ok) {
+    // 上次记住的目录可能被删了 / 改名了：静默退回媒体库根，别让人一打开就是一片错误
+    if (S.files.path) {
+      S.files.path = '';
+      savePrefs({ filesPath: '' });
+      toast('这个目录已经不在了，已回到媒体库根目录', true);
+      return loadFiles(force);
+    }
     $('crumbs').innerHTML = '<span class="crumb last">—</span>';
     $('fileBody').innerHTML = `<tr><td colspan="9"><div class="empty">${esc(data.message || '无法读取目录')}</div></td></tr>`;
     $('fileMeta').textContent = '—';
     $('posterStrip').hidden = true;
     return;
   }
+  // 顶上那条面包屑的第一个就是「当前在哪个库」，切换列表也用它
+  S.files.libs = (data.roots || []).map(p => ({ path: p, name: libNameOf(p) }));
+  S.files.lib = (data.breadcrumb && data.breadcrumb[0] && data.breadcrumb[0].path)
+    || S.files.libs[0]?.path || '';
+  if (data.path !== PREFS.filesPath) savePrefs({ filesPath: data.path });
   // 换了目录，之前就地展开的层都是别的路径了，全部收掉
   if (S.files.subPath !== data.path) {
     S.files.subPath = data.path;
@@ -3071,7 +3268,7 @@ function dirPickState(dirPath) {
   return 'none';
 }
 
-/* 展开一个目录并把里面的 strm 加入选中，供文件夹勾选和全选复用 */
+/* 展开一个目录并把里面的视频加入选中，供文件夹勾选和全选复用 */
 async function pickDir(dirPath, on = true) {
   let paths = S.files.dirPaths.get(dirPath);
   if (!paths) {
@@ -3095,7 +3292,7 @@ async function toggleDirPick(box) {
     const paths = await pickDir(dir, box.checked);
     if (box.checked && !paths.length) {
       S.files.dirPaths.delete(dir);
-      toast('这个文件夹里没有 strm');
+      toast('这个文件夹里没有视频');
     }
   } catch (err) {
     toast(err.message, true);
@@ -3115,15 +3312,29 @@ function pruneSelection() {
 function renderCrumbs(data) {
   const up = data.parent
     ? `<button class="chip-btn up" data-up="${esc(data.parent)}">↑ 上一级</button>` : '';
-  const parts = (data.breadcrumb || []).map((c, i, arr) =>
-    `<span class="crumb${i === arr.length - 1 ? ' last' : ''}" data-path="${esc(c.path)}">${esc(c.name)}</span>`
-  );
+  // 第一个面包屑就是当前所在的媒体库：点名字照旧回到库根，右边那个小箭头
+  // 用来换库（两个媒体库都叫 media 时，整块都当切换入口就回不到根了）
+  const parts = (data.breadcrumb || []).map((c, i, arr) => {
+    const last = i === arr.length - 1;
+    const isLib = i === 0 && (data.roots || []).length >= 1;
+    const caret = isLib ? '<span class="caret" data-libmenu="files" title="切换媒体库">▼</span>' : '';
+    return `<span class="crumb${last ? ' last' : ''}${isLib ? ' libcrumb' : ''}"
+                  data-path="${esc(c.path)}">${esc(c.name)}${caret}</span>`;
+  });
   // 站在扫描根上时它就是「媒体库」，和任务列表里那一行的标签对得上
   const lib = data.parent ? '' : '<span class="taglib">媒体库</span>';
   $('crumbs').innerHTML = up + parts.join('<span class="crumb-sep">/</span>') + lib;
 }
 
 $('crumbs').addEventListener('click', e => {
+  // 库名后面的小箭头：弹库列表，不导航
+  const caret = e.target.closest('[data-libmenu]');
+  if (caret) {
+    e.stopPropagation();
+    const chip = caret.closest('.crumb[data-path]');
+    openLibMenu(chip || caret, S.files.libs, S.files.lib, path => switchFileLib(path));
+    return;
+  }
   const up = e.target.closest('[data-up]');
   const crumb = e.target.closest('.crumb[data-path]');
   const target = up ? up.dataset.up : (crumb ? crumb.dataset.path : '');
@@ -3135,6 +3346,22 @@ $('crumbs').addEventListener('click', e => {
   S.files.sig = '';
   loadFiles(true);
 });
+
+/* 换库：换库等于换了一棵树，勾选、搜索、就地展开的缓存全都跟着作废 */
+async function switchFileLib(path) {
+  if (!path || path === S.files.lib) return;
+  S.files.path = path;
+  S.files.q = '';
+  $('fileSearch').value = '';
+  S.files.sel.clear();
+  S.files.dirSel.clear();
+  S.files.dirPaths.clear();
+  S.files.subOpen.clear();
+  S.files.sub.clear();
+  S.files.sig = '';
+  await loadFiles(true);
+  toast('已切到媒体库 ' + libNameOf(path));
+}
 
 /* 状态筛选：只看这一屏，不重新请求接口——文件状态本来就随列表一起返回了 */
 function fileMatchesState(f) {
@@ -3159,7 +3386,7 @@ function dirStateOf(d) {
 function dirStateText(d) {
   const total = d.count || 0;
   const ok = d.scraped || 0;
-  if (!total) return '无 strm';
+  if (!total) return '无视频';
   if (ok >= total) return '刮削成功';
   if (ok > 0) return `已刮 ${ok}/${total}`;
   return '未刮削';
@@ -3167,8 +3394,8 @@ function dirStateText(d) {
 function dirStateHint(d) {
   const total = d.count || 0;
   const ok = d.scraped || 0;
-  if (!total) return '这个文件夹（含子目录）里没有 strm';
-  return `共 ${total} 个 strm（含子目录）· 已刮 ${ok} · 未刮 ${total - ok}`;
+  if (!total) return '这个文件夹（含子目录）里没有视频';
+  return `共 ${total} 个视频（含子目录）· 已刮 ${ok} · 未刮 ${total - ok}`;
 }
 
 /* 多层文件夹提示。Emby 和 Jellyfin 用的是同一套取图规则：
@@ -3201,7 +3428,7 @@ function dirFolderArtTag(d) {
 // 归属只算一个桶：全刮完的文件夹才算「刮削成功」，还剩活的（含刮了一半的）
 // 都归到「未刮削」，这样各桶数量相加正好等于「全部」；「失败」只看文件。
 function dirMatchesState(d) {
-  // 只留下还有海报没生成的文件夹；一个 strm 都没有的层也别留
+  // 只留下还有海报没生成的文件夹；一个视频都没有的层也别留
   if (S.files.posterOnly && !((d.count || 0) > (d.poster || 0))) return false;
   const want = S.files.filter;
   if (!want || want === 'all') return true;
@@ -3237,7 +3464,7 @@ function paintFileStateCounts() {
     const k = b.dataset.fstate;
     b.innerHTML = `${FILE_STATE_LABEL[k]}<span class="n">${n[k]}</span>`;
     b.title = k === 'all'
-      ? `当前目录共 ${fileN} 个 strm、${dirN} 个文件夹`
+      ? `当前目录共 ${fileN} 个视频、${dirN} 个文件夹`
       : `${FILE_STATE_LABEL[k]}：${n[k]} 项（含文件夹）`;
   });
 }
@@ -3309,14 +3536,14 @@ function dirRowHtml(d, indent) {
   return `<tr class="dirrow${st === 'all' ? ' sel' : ''}${open ? ' fopen' : ''}"
               data-dirrow="${esc(d.path)}">
     <td><input class="check" type="checkbox" data-dirpick="${esc(d.path)}"
-               title="选中这个文件夹里的所有 strm"${st === 'all' ? ' checked' : ''}></td>
+               title="选中这个文件夹里的所有视频"${st === 'all' ? ' checked' : ''}></td>
     <td><div class="fwrap${indent ? ' nest' : ''}" style="--ind:${indent}px">
       ${subs
         ? `<button class="fcaret" data-subtoggle="${esc(d.path)}"
                    title="${open ? '收起' : '就地展开'}这一层"><span class="gcaret">▶</span></button>`
         : '<span class="fcaret blank"></span>'}
       <span class="dir" data-dir="${esc(d.path)}" title="进入 ${esc(d.name)}">${icon}${esc(d.name)}</span>
-      <span class="cnt">${d.count ? d.count + ' 个 strm' : ''}${
+      <span class="cnt">${d.count ? d.count + ' 个视频' : ''}${
         subs ? `${d.count ? ' · ' : ''}含 ${subs} 个子目录` : ''}</span>
     </div></td>
     <td class="num"></td>
@@ -3389,8 +3616,8 @@ function renderFiles(data) {
     const all = data.files || [];
     const tip = (S.files.filter !== 'all' || S.files.posterOnly)
       && (all.length || (data.dirs || []).length)
-      ? `当前筛选下没有内容（这个目录共 ${all.length} 个 strm、${(data.dirs || []).length} 个文件夹）`
-      : (data.truncated ? '文件太多，只显示了前 500 个' : '这个目录里没有 strm 文件');
+      ? `当前筛选下没有内容（这个目录共 ${all.length} 个视频、${(data.dirs || []).length} 个文件夹）`
+      : (data.truncated ? '文件太多，只显示了前 500 个' : '这个目录里没有可刮削的视频');
     body.innerHTML = `<tr><td colspan="9"><div class="empty">${tip}</div></td></tr>`;
   } else {
     body.innerHTML = rows.join('');
@@ -3405,8 +3632,8 @@ function renderFiles(data) {
   const cut = data.truncated ? '（已截断）' : '';
   const filtered = S.files.filter !== 'all' || S.files.posterOnly;
   $('fileMeta').textContent = filtered
-    ? `${dirShown} / ${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个 strm${cut}`
-    : `${dirN} 个目录 · ${total} 个 strm${cut}`;
+    ? `${dirShown} / ${dirN} 个目录 · 筛出 ${shown.length} / ${total} 个视频${cut}`
+    : `${dirN} 个目录 · ${total} 个视频${cut}`;
 }
 
 function updateFileSelInfo() {
@@ -4166,6 +4393,8 @@ async function openPicker(path) {
     plan = await api('/api/frames/plan?count=12&path=' + encodeURIComponent(path));
   } catch (e) {
     // 后端已经带了「读不到视频信息：…」，这里别再套一层
+    // 标题得跟着改口：不然失败以后还挂着「正在抽帧…」，看着像一直在等
+    $('pickTitle').textContent = '手动选帧（抽帧失败）';
     $('pickStageHint').textContent = e.message;
     $('pickStrip').innerHTML = '<span class="nothing">无法抽帧</span>';
     return;
@@ -4685,7 +4914,9 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (!$('artModal').hidden) { closeArtPicker(); return; }
   if (!$('pickModal').hidden) { closePicker(); return; }
-  if (!$('previewModal').hidden) { $('previewModal').hidden = true; }
+  if (!$('previewModal').hidden) { $('previewModal').hidden = true; return; }
+  // 自动化弹窗也是弹窗，Esc 一样得能关（以前漏了这一个，只有它能关掉别的不行）
+  if (!$('autoModal').hidden) closeAutoModal();
 });
 $('accConfirm').addEventListener('keydown', e => {
   if (e.key === 'Enter') saveAccount();
@@ -4874,6 +5105,8 @@ function renderAutoSummary(sch) {
   } else {
     const parts = [`${n} 条任务（启用 ${on} 条）`];
     if (on) parts.push(`下次 ${fmtWhen(sch.next_run)}`);
+    if (sch.watch_count) parts.push(`${sch.watch_count} 条实时监听`);
+    if (sch.watch_available === false && sch.watch_reason) parts.push(sch.watch_reason);
     if (sch.busy) parts.push('当前有任务在跑，到点的顺延到下一轮');
     box.textContent = parts.join(' · ');
   }
@@ -4887,6 +5120,20 @@ function fmtInterval(min) {
   if (n % 1440 === 0) return n === 1440 ? '每天' : `每 ${n / 1440} 天`;
   if (n % 60 === 0) return n === 60 ? '每小时' : `每 ${n / 60} 小时`;
   return `每 ${n} 分钟`;
+}
+
+/* 实时监听那一枚标签：生效是绿的，降级要写明原因，别让人以为在实时跑 */
+function watchPill(t) {
+  if (!t.watch) return '';
+  const st = t.watchState || {};
+  if (!t.enabled) return '<span class="pill">实时（已停用）</span>';
+  if (st.checking) return '<span class="pill" title="正在写一个探针文件，看这个目录给不给事件">检测中…</span>';
+  if (st.active) {
+    const wait = st.pending ? `攒了 ${st.pending} 个待入队` : `静默 ${st.debounce || 60} 秒后入队`;
+    return `<span class="pill on" title="${esc(wait)}">实时监听中</span>`;
+  }
+  const why = st.reason || '实时监听不可用，已退回定时轮询';
+  return `<span class="pill warn" title="${esc(why)}">实时未生效</span>`;
 }
 
 async function loadAutomation() {
@@ -4912,30 +5159,41 @@ function renderAutomation(sch) {
   if (!tasks.length) {
     list.innerHTML = `<div class="empty auto-empty">
       <div>还没有自动化任务</div>
-      <div class="tips">选一个媒体库或文件夹 + 设个间隔，到点就会自动扫库、刮削新出现的 strm</div>
+      <div class="tips">选一个媒体库或文件夹 + 设个间隔，到点就会自动扫库、刮削新出现的
+        视频；想更快就勾上「实时监听」，文件一落地就入队，不用等下一轮</div>
       <button class="tiny accent-outline" data-act="add">+ 新建任务</button>
     </div>`;
     return;
   }
   list.innerHTML = tasks.map(t => {
-    const scope = t.scope
-      ? `<code title="${esc(t.scope)}">${esc(t.scope)}</code>`
-      : '<span>全部媒体库</span>';
+    // 范围正好是某个库的根时写库名（路径塞进 title）；挑的是子目录就照旧写路径
+    const lib = t.scope && (S.auto.roots || []).find(r => pathKey(r) === pathKey(t.scope));
+    const scope = !t.scope
+      ? '<span>全部媒体库</span>'
+      : (lib
+        ? `<span title="${esc(t.scope)}">媒体库 · <b>${esc(libNameOf(lib))}</b></span>`
+        : `<code title="${esc(t.scope)}">${esc(t.scope)}</code>`);
     const tags = [
       `<span class="pill accent">${esc(fmtInterval(t.interval_minutes))}</span>`,
       `<span class="pill">${t.mode === 'full' ? '全量重刮' : '增量'}</span>`,
       t.enabled ? '<span class="pill on">启用中</span>' : '<span class="pill">已停用</span>',
       sch.running_task === t.id ? '<span class="pill on">正在跑</span>' : '',
+      watchPill(t),
     ].join('');
     const next = t.enabled ? `下次 <b>${esc(fmtWhen(t.next_run))}</b>` : '已停用，不会自动跑';
     const last = t.last_run
       ? `上次 <b>${esc(fmtWhen(t.last_run))}</b>｜${esc(t.last_result || '—')}`
       : '还没自动跑过';
+    // 监听降级要把原因写在卡片上，只在标签上 hover 看到不够
+    const st = t.watchState || {};
+    const watchNote = (t.watch && t.enabled && !st.active && !st.checking && st.reason)
+      ? `<div class="a-warn">${esc(st.reason)}</div>` : '';
     return `<div class="auto-card${t.enabled ? '' : ' off'}" data-id="${esc(t.id)}">
       <div class="a-main">
         <div class="a-title"><span class="a-name">${esc(t.name)}</span>${tags}</div>
         <div class="a-scope">监控 ${scope}</div>
         <div class="a-meta">${next}　·　${last}　·　共跑过 ${t.runs || 0} 次</div>
+        ${watchNote}
       </div>
       <div class="a-acts">
         <button class="tiny" data-act="run" data-id="${esc(t.id)}"
@@ -5012,17 +5270,63 @@ function autoMsg(text, kind) {
   if (!text) el.className = 'msg-line';
 }
 
+/* 监控范围：一个「长得像下拉」的按钮 + 和任务列表共用的浮层。
+   不用原生 <select> 有两个原因：① 弹窗带毛玻璃，原生弹层会跑到窗口左上角；
+   ② 两个库都叫 media 时，光看库名分不清，得把路径也列出来。
+   浮层里：第一项是「全部媒体库」，之后每个库一项；范围落在子目录时补一条「自定义目录」。 */
+function autoScopeItems() {
+  const roots = S.auto.roots || [];
+  const items = [{ path: '', name: '全部媒体库',
+                   note: `扫全部 ${roots.length} 个媒体库目录` }];
+  roots.forEach(r => {
+    const hit = (S.libs || []).find(l => pathKey(l.path) === pathKey(r));
+    items.push({ path: r, name: libNameOf(r), total: hit ? hit.total : null, note: r });
+  });
+  const cur = S.auto.scope || '';
+  if (cur && !roots.some(r => pathKey(r) === pathKey(cur))) {
+    items.push({ path: cur, name: libNameOf(cur), note: `${cur}（自定义目录）` });
+  }
+  return items;
+}
+
+function renderAutoPick() {
+  const roots = S.auto.roots || [];
+  const cur = S.auto.scope || '';
+  const isLib = !!cur && roots.some(r => pathKey(r) === pathKey(cur));
+  $('autoLibLabel').textContent = !cur ? `全部媒体库（${roots.length} 个）`
+    : (isLib ? `媒体库 · ${libNameOf(cur)}` : `自定义目录 · ${libNameOf(cur)}`);
+  $('autoLib').title = cur || '所有媒体库目录';
+}
+
 function setAutoScope(scope) {
   S.auto.scope = scope || '';
-  $('autoScopePick').textContent = S.auto.scope ? '已选当前目录' : '已选全部媒体库';
-  $('autoScopeAll').classList.toggle('on', !S.auto.scope);
+  const roots = S.auto.roots || [];
+  const isLib = !!S.auto.scope && roots.some(r => pathKey(r) === pathKey(S.auto.scope));
+  renderAutoPick();
   $('autoScopeHere').classList.toggle(
-    'on', !!S.auto.scope && S.auto.scope === S.auto.browse);
-  $('autoScopeHint').innerHTML = S.auto.scope
-    ? `到点只刮 <code>${esc(S.auto.scope)}</code> 里（含子目录）的 strm`
-    : '到点扫所有媒体库目录；只看某个文件夹就点进去再「设为当前目录」';
+    'on', !!S.auto.scope && S.auto.scope === S.auto.browse && !isLib);
+  $('autoScopeHint').innerHTML = !S.auto.scope
+    ? '到点扫所有媒体库目录；只看某个文件夹就点进去再「设为当前目录」'
+    : (isLib
+      ? `到点只刮<b>「${esc(libNameOf(S.auto.scope))}」</b>整个库（含所有子目录）`
+      : `到点只刮 <code>${esc(S.auto.scope)}</code> 里（含子目录）的视频`);
   const here = $('autoScopeHere');
   here.title = S.auto.browse ? `把 ${S.auto.browse} 设为监控范围` : '';
+}
+
+/* 执行方式：两个选项，用分段控件；下面那行小字说明当前这个是什么意思 */
+function setAutoMode(mode) {
+  const v = mode === 'full' ? 'full' : 'incremental';
+  [...$('autoMode').querySelectorAll('button[data-mode]')].forEach(
+    b => b.classList.toggle('on', b.dataset.mode === v));
+  $('autoModeNote').textContent = v === 'full'
+    ? '范围内重新刮一遍，旧图一起覆盖'
+    : '只补新文件和缺产物的，已有的跳过';
+}
+
+function autoModeValue() {
+  const on = $('autoMode').querySelector('button.on');
+  return (on && on.dataset.mode) || 'incremental';
 }
 
 async function browseAuto(path) {
@@ -5039,15 +5343,6 @@ async function browseAuto(path) {
   }
   S.auto.browse = data.path || '';
   S.auto.roots = data.roots || S.auto.roots;
-
-  // 多个媒体库时给出切换入口：一眼能看出在哪个库里挑目录
-  $('autoRoots').innerHTML = (S.auto.roots || []).map(r => {
-    const name = r.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || r;
-    const on = S.auto.browse === r
-      || S.auto.browse.startsWith(r.replace(/[\\/]+$/, '') + '/');
-    return `<button class="tiny${on ? ' on' : ''}" data-go="${esc(r)}"
-              title="${esc(r)}">媒体库 · ${esc(name)}</button>`;
-  }).join('');
 
   // 面包屑：从命中的媒体库根往下拼
   const root = (S.auto.roots || []).find(r =>
@@ -5082,13 +5377,26 @@ $('autoCrumbs').addEventListener('click', e => {
   const b = e.target.closest('[data-go]');
   if (b) browseAuto(b.dataset.go);
 });
-$('autoRoots').addEventListener('click', e => {
-  const b = e.target.closest('[data-go]');
-  if (b) browseAuto(b.dataset.go);
-});
 $('autoDirs').addEventListener('click', e => {
   const b = e.target.closest('[data-go]');
   if (b) browseAuto(b.dataset.go);
+});
+
+/* 直接选库：选完把浏览区也带过去，免得上面写着「电影库」、下面还列着剧集库的目录 */
+$('autoLib').addEventListener('click', e => {
+  e.stopPropagation();
+  openLibMenu($('autoLib'), autoScopeItems(), S.auto.scope || '', path => {
+    setAutoScope(path);
+    const target = path || (S.auto.roots[0] || '');
+    if (target) browseAuto(target);
+  }, { note: (S.auto.roots || []).length > 1
+      ? '选「全部媒体库」到点扫所有库；选一个库只刮那个库整个目录'
+      : '只有这一个库，选它就是整个库' });
+});
+
+$('autoMode').addEventListener('click', e => {
+  const b = e.target.closest('button[data-mode]');
+  if (b) setAutoMode(b.dataset.mode);
 });
 
 function openAutoModal(task) {
@@ -5097,9 +5405,13 @@ function openAutoModal(task) {
   $('autoModalTitle').textContent = editing ? '编辑自动化任务' : '新建自动化任务';
   $('autoName').value = editing ? task.name : '';
   $('autoInterval').value = editing ? task.interval_minutes : 360;
-  $('autoMode').value = editing ? task.mode : 'incremental';
+  setAutoMode(editing ? task.mode : 'incremental');
   $('autoEnabled').checked = editing ? !!task.enabled : true;
+  $('autoWatch').checked = editing ? !!task.watch : false;
+  $('autoDebounce').value = editing ? (task.debounce_sec || 60) : 60;
+  $('autoWatchOpts').hidden = !$('autoWatch').checked;
   setAutoScope(editing ? task.scope : '');
+  renderAutoPick();            // 浏览接口没回来之前，按钮上也得先有内容
   autoMsg('');
   $('autoModal').hidden = false;
   browseAuto((editing && task.scope) || (S.auto.roots[0] || ''));
@@ -5107,6 +5419,7 @@ function openAutoModal(task) {
 }
 
 function closeAutoModal() {
+  closeLibMenu();                // 库浮层是挂在 body 上的，弹窗关了要跟着收
   $('autoModal').hidden = true;
   S.auto.editing = null;
 }
@@ -5122,7 +5435,6 @@ $('autoModal').addEventListener('click', e => {
 });
 $('btnAutoRefresh').addEventListener('click', () => loadAutomation());
 
-$('autoScopeAll').addEventListener('click', () => setAutoScope(''));
 $('autoScopeHere').addEventListener('click', () => {
   if (!S.auto.browse) return;
   setAutoScope(S.auto.browse);
@@ -5132,6 +5444,10 @@ $('autoChips').addEventListener('click', e => {
   const chip = e.target.closest('[data-min]');
   if (!chip) return;
   $('autoInterval').value = Number(chip.dataset.min);
+});
+
+$('autoWatch').addEventListener('change', e => {
+  $('autoWatchOpts').hidden = !e.target.checked;
 });
 
 $('autoAutostart').addEventListener('change', async e => {
@@ -5152,14 +5468,19 @@ $('btnAutoSave').addEventListener('click', async () => {
   const name = $('autoName').value.trim();
   const interval = Number($('autoInterval').value);
   if (!interval || interval < 5) { autoMsg('间隔至少 5 分钟', 'err'); return; }
+  const watch = $('autoWatch').checked;
+  const debounce = Number($('autoDebounce').value) || 60;
+  if (watch && debounce < 10) { autoMsg('静默时间至少 10 秒', 'err'); return; }
   btn.disabled = true;
   btn.textContent = '保存中…';
   try {
     const body = {
       name, scope: S.auto.scope || '',
-      mode: $('autoMode').value,
+      mode: autoModeValue(),
       interval_minutes: interval,
       enabled: $('autoEnabled').checked,
+      watch,
+      debounce_sec: debounce,
     };
     if (S.auto.editing) body.id = S.auto.editing;
     const r = await post('/api/automation/save', body);
@@ -5234,10 +5555,14 @@ $('btnSaveSettings').addEventListener('click', () => saveSettings($('btnSaveSett
 
 paintSortSeg('taskSort', S.taskSort);
 paintSortSeg('fileSort', S.files.sort);
+// HTML 里默认写的是「任务列表 + 按文件夹」，这里按上次记住的样子校正一遍
+document.querySelectorAll('#taskView button').forEach(b =>
+  b.classList.toggle('on', b.dataset.view === S.tasksView));
 loadAccount();
 pollStatus();
 loadTasks(true);
 loadAutomation();
+if (S.tab !== 'tasks') switchTab(S.tab);
 const timer = setInterval(pollStatus, 2000);
 </script>
 </body>

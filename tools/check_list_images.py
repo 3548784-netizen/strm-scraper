@@ -54,6 +54,10 @@ def main() -> int:
 
         page.click('[data-tab="tasks"]')
         page.wait_for_timeout(2500)
+        # 任务列表默认是目录树视图，缩略图在平铺视图里
+        page.click('#taskView button[data-view="flat"]')
+        page.wait_for_selector("#taskBody tr[data-path]", timeout=10000)
+        page.wait_for_timeout(900)
 
         rows = page.query_selector_all("#taskBody tr[data-path]")
         check("任务列表有行", len(rows) > 0, f"{len(rows)} 行")

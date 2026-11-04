@@ -19,7 +19,8 @@ from .auth import (COOKIE_NAME, AuthStore, LoginThrottle, validate_password,
 from . import folderart, frames, probe
 from .config import DEFAULT_CONFIG_PATH, Config, ServerConfig
 from .logs import LogFiles, RingLogHandler, tail_file
-from .media import (IGNORED_NAMES, artifacts, build_target, product_state, signature)
+from .media import (IGNORED_NAMES, artifacts, build_target, is_media_file,
+                    product_state, signature, wanted_extensions)
 from .mediaserver import ServerPool
 from .nfo import display_title
 from .picker import FramePicker
@@ -140,7 +141,7 @@ def _dir_summary(directory: Path, wanted: set[str]) -> dict[str, int]:
 
         here = 0
         for name in names:
-            if name in IGNORED_NAMES or Path(name).suffix.lower() not in wanted:
+            if name in IGNORED_NAMES or not is_media_file(name, wanted):
                 continue
             here += 1
             total += 1
@@ -201,7 +202,7 @@ def _tree_stats(base: Path, wanted: set[str], limit: int = 4000) -> dict[Path, d
         budget[0] -= 1
         own = sum(1 for name in names
                   if name not in IGNORED_NAMES
-                  and Path(name).suffix.lower() in wanted)
+                  and is_media_file(name, wanted))
         total = own
         for sub in subs:
             total += walk(sub, depth + 1)
@@ -1409,8 +1410,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         if breadcrumb:
             parent = str(current.parent) if len(breadcrumb) > 1 else None
 
-        wanted = {e.lower() if e.startswith(".") else f".{e.lower()}"
-                  for e in cfg.scan.extensions}
+        wanted = wanted_extensions(cfg.scan.extensions)
         depth_of = _depth_map(roots)
         keyword = q.strip().lower()
         # 指定过封面的目录：一次读全表，列表里逐行判断，不额外查库
@@ -1439,7 +1439,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             if is_dir and _skip_dir(name):
                 continue
             if not is_dir and (name.lower() in IGNORED_NAMES
-                               or entry.suffix.lower() not in wanted):
+                               or not is_media_file(entry.name, wanted)):
                 continue
             if keyword and keyword not in name.lower():
                 continue
@@ -1526,8 +1526,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         recursive = bool(data.get("recursive", True))
         limit = int(data.get("limit") or 5000)
 
-        wanted = {e.lower() if e.startswith(".") else f".{e.lower()}"
-                  for e in cfg.scan.extensions}
+        wanted = wanted_extensions(cfg.scan.extensions)
         per: dict[str, list[str]] = {}
         total = 0
         truncated = False
@@ -1557,7 +1556,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                                                 stack.append(Path(entry.path))
                                             continue
                                         if (entry.name.lower() not in IGNORED_NAMES
-                                                and Path(entry.name).suffix.lower() in wanted):
+                                                and is_media_file(entry.name, wanted)):
                                             found.append(entry.path)
                                     except OSError:
                                         continue
@@ -1572,7 +1571,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                             try:
                                 if (entry.is_file()
                                         and entry.name.lower() not in IGNORED_NAMES
-                                        and Path(entry.name).suffix.lower() in wanted):
+                                        and is_media_file(entry.name, wanted)):
                                     found.append(entry.path)
                             except OSError:
                                 continue
@@ -1779,8 +1778,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         roots = _roots()
         if not roots:
             raise HTTPException(400, "扫描目录都不存在，检查 volume 挂载")
-        wanted = {e.lower() if e.startswith(".") else f".{e.lower()}"
-                  for e in cfg.scan.extensions}
+        wanted = wanted_extensions(cfg.scan.extensions)
 
         bases: list[Path] = []
         rejected = 0

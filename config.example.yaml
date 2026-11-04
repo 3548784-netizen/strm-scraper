@@ -10,9 +10,23 @@ scan:
   # 是否递归扫描子目录
   recursive: true
 
-  # 处理的文件类型
+  # 处理的文件类型。默认全开：支持的格式放进媒体库就直接刮，不用改这里。
+  # 只有想加冷门容器（.iso / .vob 之类）时才需要往下面补一条。
+  # 想反过来**限制**成只刮 strm，就把列表删到只剩 .strm。
   extensions:
     - .strm
+    - .mp4
+    - .m4v
+    - .mkv
+    - .avi
+    - .ts
+    - .m2ts
+    - .mov
+    - .wmv
+    - .flv
+    - .rmvb
+    - .webm
+    - .mpg
 
   # auto        首次运行全量刮一遍，之后只补缺失
   # full        每次运行都全量重刮，会覆盖已有海报和 NFO

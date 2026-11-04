@@ -1,8 +1,15 @@
 """自动化任务：到点自动扫库 + 刮新文件。
 
-一个任务 = 一条「监控范围 + 间隔 + 执行方式」的规则。范围可以是某个媒体库
+一个任务 = 一条「监控范围 + 触发方式 + 执行方式」的规则。范围可以是某个媒体库
 根目录，也可以是库里的任意子文件夹；到点只跑这个范围里的 strm，别的目录
 不会被顺带拉起来。
+
+触发方式有两种，可以各开各的：
+
+- **定时**：每隔 N 分钟扫一遍范围（老行为）。最小 5 分钟——每轮都要走目录树。
+- **实时**：监听目录，一有新 strm 落地就入队，攒够静默时间一次性处理。只在
+  目录能收到文件事件时才成立（挂载盘、容器跨系统挂载收不到，会自动降级）。
+  开了实时也不耽误定时兜底，重启前落下的文件还是会被定时那轮捡起来。
 
 任务存在 state.db 的 meta 里（不写回 yaml），网页上增删改立即生效，重启后
 接着按上次的时间跑。
@@ -18,8 +25,9 @@ import uuid
 from pathlib import Path
 
 from .config import Config
-from .media import scan_rows
+from .media import scan_rows, signature
 from .state import StateStore
+from .watcher import DEFAULT_DEBOUNCE, MIN_DEBOUNCE as WATCH_MIN_DEBOUNCE, Watcher
 from .worker import Runner
 
 log = logging.getLogger(__name__)
@@ -55,6 +63,8 @@ class Scheduler:
         self._thread: threading.Thread | None = None
         # 正在由哪条任务触发（跑完把成功/失败数写回这条任务）
         self._running_task: str | None = None
+        # 实时监听：只负责攒新文件，入队还是走 runner
+        self.watch = Watcher(cfg, self._fire_files)
 
         self._tasks: list[dict] = []
         self._load()
@@ -62,9 +72,17 @@ class Scheduler:
     # ---------- 任务存取 ----------
 
     def tasks(self) -> list[dict]:
-        """给前端看的任务列表（按创建顺序）。"""
+        """给前端看的任务列表（按创建顺序）。
+
+        顺带把这条任务的实时监听状态拼上去——它只给界面看，不进库。
+        """
         with self._lock:
-            return [dict(task) for task in self._tasks]
+            out = []
+            for task in self._tasks:
+                row = dict(task)
+                row["watchState"] = self.watch.state(task["id"])
+                out.append(row)
+            return out
 
     def get(self, task_id: str) -> dict | None:
         with self._lock:
@@ -111,14 +129,25 @@ class Scheduler:
             if interval > 10080:
                 raise ValueError("间隔最多 7 天（10080 分钟）")
             enabled = bool(data.get("enabled", base.get("enabled", True)))
+            # 实时监听：和定时并行，互不影响
+            watch = bool(data.get("watch", base.get("watch", False)))
+            debounce = data.get("debounce_sec", base.get("debounce_sec", DEFAULT_DEBOUNCE))
+            try:
+                debounce = int(debounce)
+            except (TypeError, ValueError):
+                raise ValueError("静默时间要填整数秒") from None
+            if watch and debounce < WATCH_MIN_DEBOUNCE:
+                raise ValueError(f"静默时间不能小于 {WATCH_MIN_DEBOUNCE} 秒")
 
             now = time.time()
             previous_interval = base.get("interval_minutes")
             base.update({
                 "name": name[:60], "scope": scope, "mode": mode,
                 "interval_minutes": interval, "enabled": enabled,
+                "watch": watch, "debounce_sec": debounce,
             })
             if enabled:
+                # 只开实时、不想定时兜底的场景：间隔留着但不排下一次
                 if (base.get("next_run") is None or previous_interval != interval
                         or data.get("reset_timer")):
                     base["next_run"] = now + interval * 60
@@ -129,9 +158,10 @@ class Scheduler:
                 self._tasks.append(base)
             saved = dict(base)
         self._persist()
-        log.info("自动化任务已保存：%s（%s，每 %d 分钟，%s）",
+        self._sync_watch()
+        log.info("自动化任务已保存：%s（%s，每 %d 分钟%s）",
                  saved["name"], saved["scope"] or "全部媒体库", saved["interval_minutes"],
-                 "启用" if saved["enabled"] else "停用")
+                 ("，实时监听开" if saved.get("watch") else ""))
         return saved
 
     def remove(self, task_id: str) -> bool:
@@ -143,6 +173,7 @@ class Scheduler:
                 self._running_task = None
         if removed:
             self._persist()
+            self._sync_watch()
             log.info("自动化任务已删除：%s", task_id)
         return removed
 
@@ -158,6 +189,7 @@ class Scheduler:
                 task["next_run"] = None
             saved = dict(task)
         self._persist()
+        self._sync_watch()
         log.info("自动化任务「%s」已%s", saved["name"], "启用" if enabled else "停用")
         return saved
 
@@ -181,6 +213,9 @@ class Scheduler:
                 "autostart": bool(self.cfg.scan.autostart),
                 "next_run": min(next_runs) if next_runs else None,
                 "running_task": self._running_task,
+                "watch_available": self.watch.available,
+                "watch_reason": self.watch.unavailable_reason,
+                "watch_count": len([t for t in enabled if t.get("watch")]),
             }
         payload["busy"] = self.runner.busy()
         payload["now"] = time.time()
@@ -196,9 +231,11 @@ class Scheduler:
             self._thread = threading.Thread(
                 target=self._loop, daemon=True, name="ws-scheduler")
             self._thread.start()
+        self._sync_watch()
 
     def stop(self) -> None:
         self._stop.set()
+        self.watch.stop()
 
     def reconfigure(self, announce: bool = True) -> None:
         """媒体库目录改过之后调用：把不在库里的范围标出来，时间不动。"""
@@ -210,6 +247,7 @@ class Scheduler:
         if announce:
             count = len(self._tasks)
             log.info("自动化任务已按新设置重新排期（共 %d 条）", count)
+        self._sync_watch()
 
     # ---------- 内部 ----------
 
@@ -297,6 +335,8 @@ class Scheduler:
             task.setdefault("last_run", None)
             task.setdefault("last_result", "")
             task.setdefault("runs", 0)
+            task.setdefault("watch", False)
+            task.setdefault("debounce_sec", DEFAULT_DEBOUNCE)
             if not task.get("enabled"):
                 task["next_run"] = None
             elif not task.get("next_run"):
@@ -369,6 +409,66 @@ class Scheduler:
                     task["last_result"] = "上一轮还在跑，本次跳过"
                 break
         self._persist()
+
+    def _sync_watch(self) -> None:
+        """任务增删改之后按新列表启停监听；监听不可用时会自己降级。"""
+        try:
+            self.watch.sync(self.tasks())
+        except Exception:  # noqa: BLE001 监听挂了也不能影响定时那套
+            log.exception("实时监听同步失败")
+
+    def _new_or_changed(self, paths: list[str]) -> list[str]:
+        """从监听到的文件里挑出真正需要处理的。
+
+        已经刮好、而且文件没动过的直接跳过——目录里的任何触碰（比如资源管理器
+        打开一下、索引服务扫一遍）都会来事件，全盘照收等于反复重刮。
+        """
+        if self.store is None:
+            return [p for p in paths if Path(p).is_file()]
+        known = self.store.get_many(paths)
+        todo: list[str] = []
+        for path in paths:
+            source = Path(path)
+            if not source.is_file():
+                continue
+            size, mtime = signature(source)
+            item = known.get(path)
+            if item is None:
+                todo.append(path)
+                continue
+            if (item.status in ("ok", "skipped")
+                    and item.size == size and abs(item.mtime - mtime) < 1):
+                continue
+            todo.append(path)
+        return todo
+
+    def _fire_files(self, task_id: str, paths: list[str]) -> bool:
+        """实时监听攒够一批文件后走这里：只处理这几个文件，不整库扫描。"""
+        with self._lock:
+            task = next((t for t in self._tasks if t["id"] == task_id), None)
+        if task is None or not task.get("enabled"):
+            return False
+        if self.runner.busy():
+            return False
+        todo = self._new_or_changed(paths)
+        if not todo:
+            return True  # 都是刮好且没变过的，不用跑
+
+        full = task.get("mode") == "full"
+        started = self.runner.start(only=todo, force=full)
+        if not started:
+            return False
+        with self._lock:
+            self._running_task = task_id
+            for item in self._tasks:
+                if item["id"] != task_id:
+                    continue
+                item["runs"] = int(item.get("runs") or 0) + 1
+                item["last_run"] = time.time()
+                item["last_result"] = f"实时触发：{len(todo)} 个新文件"
+                break
+        self._persist()
+        return True
 
     def _fire(self, task: dict, reason: str) -> dict:
         task_id = task["id"]

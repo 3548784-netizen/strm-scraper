@@ -16,11 +16,13 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import re
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, get_origin, get_type_hints
 
 from . import specs
+from .media import SUPPORTED_EXTENSIONS
 
 try:
     import yaml
@@ -37,7 +39,9 @@ DEFAULTS: dict[str, Any] = {
     "scan": {
         "roots": ["/media"],
         "recursive": True,
-        "extensions": [".strm"],
+        # 支持的格式全开：strm 和本地 mp4/mkv/avi 等放进媒体库就直接刮，
+        # 不用再回来改这里。要加冷门容器（.iso / .vob）往列表里补一条即可。
+        "extensions": list(SUPPORTED_EXTENSIONS),
         # auto: 首次跑全量，之后只补缺失；full: 每次都重刮；incremental: 只补缺失
         # manual: 不自动跑，只在网页上手动触发
         "mode": "manual",
@@ -163,7 +167,7 @@ def _apply_env(cfg: dict, prefix: str = "WS_") -> dict:
 class ScanConfig:
     roots: list[str] = field(default_factory=lambda: ["/media"])
     recursive: bool = True
-    extensions: list[str] = field(default_factory=lambda: [".strm"])
+    extensions: list[str] = field(default_factory=lambda: list(SUPPORTED_EXTENSIONS))
     mode: str = "manual"
     autostart: bool = False
     interval_minutes: int = 0
@@ -299,6 +303,15 @@ class Config:
             # 老版本用的是单个 jellyfin 段，自动转成 servers 列表
             legacy = loaded.pop("jellyfin", None)
             notes, changed = _migrate_stale_defaults(loaded)
+            # 旧版默认只扫 .strm，本地视频得自己加后缀才有反应。现在改成
+            # 全开：任何支持的格式丢进媒体库就能刮，不用再碰配置。
+            if _upgrade_extensions(loaded):
+                notes.append(
+                    "扫描格式从「只扫 .strm」改成支持的全部格式："
+                    "mp4 / mkv / avi / ts / m2ts / mov / wmv / flv / rmvb / webm / mpg "
+                    "放进媒体库就会直接刮，不用再改配置"
+                )
+                _rewrite_extensions(candidate, list(SUPPORTED_EXTENSIONS))
             raw = _deep_merge(raw, loaded)
             if legacy and not raw.get("servers"):
                 raw["servers"] = [_legacy_server(legacy)]
@@ -393,8 +406,8 @@ class Config:
             notes.append("scan.roots 为空，已改成 /media")
             self.scan.roots = ["/media"]
         if not self.scan.extensions:
-            notes.append("scan.extensions 为空，已改成 .strm")
-            self.scan.extensions = [".strm"]
+            notes.append("scan.extensions 为空，已改成支持的全部格式")
+            self.scan.extensions = list(SUPPORTED_EXTENSIONS)
         if not self.scrape.frame_positions:
             self.scrape.frame_positions = [0.15, 0.30, 0.45, 0.60, 0.75]
 
@@ -571,6 +584,78 @@ def _persist_migrations(path: Path, changed: list[tuple[str, str, Any, Any]]) ->
     log.info("已把 %s 项迁移后的默认值写回 %s（注释与其它设置未改动）",
              len(hit), path)
 
+
+
+# extensions 在 yaml 里是列表，可能是块写法（每行一个 ``- .strm``）或行内写法
+# （``extensions: [.strm]``），两种都要能整体换掉。块写法允许列表项和键同缩进
+# （yaml 合法，devserver 生成的配置就是这么写的）。
+_EXT_BLOCK = re.compile(
+    r"^(?P<indent>[ \t]*)extensions:[ \t]*(?P<comment>#[^\n]*)?\n"
+    r"(?:(?P=indent)[ \t]*-[^\n]*\n)*",
+    re.M,
+)
+_EXT_INLINE = re.compile(
+    r"^(?P<indent>[ \t]*)extensions:[ \t]*\[[^\]\n]*\][ \t]*(?P<comment>#[^\n]*)?$",
+    re.M,
+)
+
+
+def _upgrade_extensions(raw: dict) -> bool:
+    """旧默认「只扫 .strm」→ 支持的全部格式。
+
+    只认 ``['.strm']`` 这个旧默认值本身：写成别的组合（比如用户特意加了
+    ``.iso``）说明是手动调过的，一律不动。
+    """
+    scan = raw.get("scan")
+    if not isinstance(scan, dict):
+        return False
+    if scan.get("extensions") != [".strm"]:
+        return False
+    scan["extensions"] = list(SUPPORTED_EXTENSIONS)
+    return True
+
+
+def _rewrite_extensions(path: Path, items: list[str]) -> bool:
+    """只换 yaml 里 extensions 那段列表，注释和其它内容原样保留。
+
+    ``_persist_migrations`` 是按「一行一个标量」写的，列表接不住，所以这里
+    单独处理：块写法和行内写法都认，认不出来就放弃（内存里已经是新值了，
+    只是文件没跟着变，下次启动会再迁一次）。
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("扩展名列表没能写回 %s：%s", path, exc)
+        return False
+
+    def build(indent: str) -> str:
+        # 不带上原来那行的注释：写「只刮 strm」的注释配一份全格式列表是自相矛盾，
+        # 迁移前后的差异由启动时的提示说明
+        body = "".join(f"{indent}  - {item}\n" for item in items)
+        return f"{indent}extensions:\n" + body
+
+    match = _EXT_BLOCK.search(text)
+    if match:
+        new_text = text[:match.start()] + build(match.group("indent")) + text[match.end():]
+    else:
+        match = _EXT_INLINE.search(text)
+        if not match:
+            log.info("没认出 %s 里 extensions 的写法，只在内存里生效", path)
+            return False
+        # 行内写法的换行不在匹配里，替换时手动吃掉一个，免得留下空行
+        rest = text[match.end():]
+        new_text = (text[:match.start()] + build(match.group("indent"))
+                    + (rest[1:] if rest.startswith("\n") else rest))
+
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("扩展名列表没能写回 %s：%s", path, exc)
+        return False
+    log.info("已把 %s 的 scan.extensions 扩成支持的全部格式", path)
+    return True
 
 
 def _legacy_server(legacy: dict) -> dict:

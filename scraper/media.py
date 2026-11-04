@@ -14,10 +14,67 @@ log = logging.getLogger(__name__)
 # 视频目录里常见但不是视频的文件，扫描时直接跳过
 IGNORED_NAMES = {"thumbs.db", "desktop.ini", ".ds_store"}
 
+# 默认扫描的容器格式。**全开**——放进媒体库就能刮，不用改任何配置。
+# strm 排在最前（它只是个写着播放地址的文本，其余都是真实视频文件）。
+# ffmpeg 能解、Emby / Jellyfin 能认的都在这里；想加冷门容器（.iso / .vob 等）
+# 在 scan.extensions 里补一条即可，这里不用动。
+SUPPORTED_EXTENSIONS = (
+    ".strm",
+    ".mp4",
+    ".m4v",
+    ".mkv",
+    ".avi",
+    ".ts",
+    ".m2ts",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".rmvb",
+    ".webm",
+    ".mpg",
+)
+
+# Emby / Jellyfin 的「附加内容」命名后缀（正片之外的预告、花絮、删减片段…）。
+# 这些文件不该生成海报和 NFO —— 媒体服务器会拿正片的图铺满它们，
+# 我们跟着生成只会多出一堆 xxx-trailer-poster.jpg 的垃圾。
+_EXTRA_SUFFIXES = (
+    "-trailer", ".trailer",
+    "-sample", ".sample",
+    "-featurette", ".featurette",
+    "-behindthescenes", ".behindthescenes",
+    "-deleted", ".deleted",
+    "-interview", ".interview",
+    "-scene", ".scene",
+    "-short", ".short",
+    "-other", ".other",
+    "-makingof", ".makingof",
+    "-clip", ".clip",
+    "-theme", ".theme",
+)
+
+
+def is_extra(name: str) -> bool:
+    """是不是媒体服务器眼里的「附加内容」（预告 / 花絮 / 样片…）。"""
+    stem = name.rsplit(".", 1)[0].lower() if "." in name else name.lower()
+    return stem.endswith(_EXTRA_SUFFIXES)
+
+
+def wanted_extensions(extensions: list[str]) -> set[str]:
+    """配置里的扩展名统一成带点的小写集合（``strm`` 和 ``.STRM`` 都认）。"""
+    return {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
+
+
+def is_media_file(path: Path | str, wanted: set[str]) -> bool:
+    """在扫描范围内、而且不是预告花絮这类附加内容。"""
+    path = Path(path)
+    if path.suffix.lower() not in wanted:
+        return False
+    return not is_extra(path.name)
+
 
 @dataclass(frozen=True)
 class Target:
-    """一个 strm 文件及其产物路径。"""
+    """一个媒体文件（strm 或本地视频）及其产物路径。"""
 
     source: Path
     nfo: Path
@@ -40,6 +97,9 @@ def build_target(source: Path) -> Target:
     ``片名.AVI.strm`` → ``片名.AVI.nfo`` / ``片名.AVI-poster.jpg`` /
     ``片名.AVI-fanart.jpg`` / ``片名.AVI-thumb.jpg``
 
+    本地视频走同一条规则，只是去的是自己的后缀：
+    ``片名.mkv`` → ``片名.nfo`` / ``片名-poster.jpg`` …
+
     这套命名是 Emby 和 Jellyfin 共用的（两家都按 ``<视频文件名>-类型.jpg``
     查找本地图片），所以同一份产物两边都能直接识别，不需要为谁单独复制一份。
     """
@@ -57,9 +117,10 @@ def build_target(source: Path) -> Target:
 def iter_sources(roots: list[str], extensions: list[str], recursive: bool = True):
     """遍历所有待处理文件，产出 Path。
 
-    会跳过隐藏目录、``@eaDir``（群晖缩略图目录）和 ``__pycache__``。
+    会跳过隐藏目录、``@eaDir``（群晖缩略图目录）、``__pycache__``，
+    以及预告 / 花絮这类附加内容（媒体服务器自己会给它们配图，用不着我们）。
     """
-    wanted = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
+    wanted = wanted_extensions(extensions)
     for root in roots:
         base = Path(root)
         if not base.is_dir():
@@ -68,7 +129,7 @@ def iter_sources(roots: list[str], extensions: list[str], recursive: bool = True
 
         if not recursive:
             for entry in sorted(base.iterdir()):
-                if entry.is_file() and entry.suffix.lower() in wanted:
+                if entry.is_file() and is_media_file(entry, wanted):
                     yield entry
             continue
 
@@ -82,7 +143,7 @@ def iter_sources(roots: list[str], extensions: list[str], recursive: bool = True
                 if name.lower() in IGNORED_NAMES:
                     continue
                 path = Path(current) / name
-                if path.suffix.lower() in wanted:
+                if is_media_file(path, wanted):
                     yield path
 
 
@@ -97,7 +158,7 @@ def scan_rows(roots: list[str], extensions: list[str], recursive: bool = True,
 
     多个扫描根目录之间用线程并发（网络盘上 IO 等待可以重叠）。
     """
-    wanted = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
+    wanted = wanted_extensions(extensions)
     counter = {"n": 0}
     lock = threading.Lock()
 
@@ -176,8 +237,7 @@ def _row_of(entry: os.DirEntry, wanted: set[str], want_dir: bool):
     name = entry.name
     if want_dir and name.lower() in IGNORED_NAMES:
         return None
-    suffix = os.path.splitext(name)[1].lower()
-    if suffix not in wanted:
+    if not is_media_file(name, wanted):
         return None
     try:
         stat = entry.stat(follow_symlinks=False)

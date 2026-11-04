@@ -20,6 +20,7 @@ from . import specs
 from .auth import AuthStore
 from .config import Config
 from .logs import LogFiles, setup_logging
+from .media import iter_sources
 from .mediaserver import ServerPool
 from .probe import ProbeError, find_binary
 from .scheduler import Scheduler
@@ -117,9 +118,9 @@ def doctor(cfg: Config, log_files: LogFiles) -> int:
             log.error("扫描目录不存在：%s（检查 docker volume 挂载）", base)
             problems += 1
             continue
-        count = sum(1 for _ in base.rglob("*.strm")) if cfg.scan.recursive else \
-            sum(1 for _ in base.glob("*.strm"))
-        log.info("扫描目录：%s 存在，找到 %s 个 strm 文件", base, count)
+        count = sum(1 for _ in iter_sources([str(base)], cfg.scan.extensions,
+                                            cfg.scan.recursive))
+        log.info("扫描目录：%s 存在，找到 %s 个可刮削文件", base, count)
 
     db_path = Path(cfg.storage.state_db)
     try:

@@ -217,12 +217,12 @@ def main() -> int:
                     const r = await fetch('/api/items?size=1&root=' + encodeURIComponent(S.lib));
                     return (await r.json()).total;
                 }""")
-                page.click('#taskView button[data-view="flat"]')
+                page.evaluate("v => setTaskView(v)", "flat")
                 page.wait_for_timeout(1800)
                 shown = page.evaluate("() => document.querySelectorAll('#taskBody tr[data-path]').length")
                 check("按文件视图也只列这个库的", 0 < shown <= max(flat_n, 1),
                       f"{shown} 行 / 共 {flat_n} 条")
-                page.click('#taskView button[data-view="dir"]')
+                page.evaluate("v => setTaskView(v)", "dir")
                 page.wait_for_timeout(1500)
 
         print("\n---------- 6. 无 JS 报错 ----------")

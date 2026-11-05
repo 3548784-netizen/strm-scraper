@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234c8dff'/%3E%3Crect x='7' y='9' width='18' height='14' rx='2.5' fill='none' stroke='white' stroke-width='2'/%3E%3Ccircle cx='12' cy='14' r='1.5' fill='white'/%3E%3Cpath d='M7 21l5-5 3.5 3.5L19 16l6 6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a71ff'/%3E%3Crect x='7' y='9' width='18' height='14' rx='2.5' fill='none' stroke='white' stroke-width='2'/%3E%3Ccircle cx='12' cy='14' r='1.5' fill='white'/%3E%3Cpath d='M7 21l5-5 3.5 3.5L19 16l6 6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
 <title>strm-scraper</title>
 <style>
   /* ==========================================================================
@@ -12,91 +12,103 @@
      组件样式一律引用变量，不要在下面写死十六进制色值
      ========================================================================== */
   :root {
-    /* 表面：从最深的页面底到最亮的选中面，共 5 级 */
-    --bg: #0a0d13;
-    --bg-deep: #070a10;
-    --surface: #11151e;
-    --surface-2: #171d28;
-    --surface-3: #1e2532;
-    --surface-4: #26303f;
+    /* 视觉参考：Amane（Mantine 深色主题）
+       中性灰阶 dark[0..9] + 品牌蓝 brand[0..9]，语义色取 Mantine 默认色板。
+       组件样式一律引用变量，不要在下面写死十六进制色值。 */
+    /* 表面：Amane body #242424，卡片 #1f1f1f，浮层逐级提亮 */
+    --bg: #242424;
+    --bg-deep: #141414;
+    --surface: #1f1f1f;
+    --surface-2: #242424;
+    --surface-3: #2e2e2e;
+    --surface-4: #3b3b3b;
 
-    /* 描边：软分隔线 / 常规边框 / 强调边框 */
-    --line-soft: #1a212d;
-    --line: #232c3b;
-    --line-strong: #33415a;
+    /* 描边：Amane 默认边框 #424242 */
+    --line-soft: #2b2b2b;
+    --line: #424242;
+    --line-strong: #696969;
 
-    /* 文字：正文 / 次要 / 辅助 / 极弱（占位、装饰） */
-    --text: #e9eff8;
-    --text-2: #aab6c8;
-    --text-3: #7b8798;
-    --text-4: #5c687b;
+    /* 文字：正文取 Amane dark[0] #c9c9c9，强调 / 次要 / 极弱按灰阶递进 */
+    --text: #ededed;
+    --text-2: #c9c9c9;
+    --text-3: #828282;
+    --text-4: #696969;
 
-    /* 强调色（品牌蓝） */
-    --accent: #4c8dff;
-    --accent-hover: #3f7deb;
-    --accent-ink: #cfe0ff;
-    --accent-soft: rgba(76, 141, 255, .12);
-    --accent-line: rgba(76, 141, 255, .45);
+    /* 品牌蓝：brand[6] 用于描边与焦点，brand[8] 是 dark 模式的实心主按钮 */
+    --accent: #1a71ff;
+    --accent-hover: #0060e4;
+    --accent-ink: #a1c6ff;
+    --accent-soft: rgba(26, 113, 255, .14);
+    --accent-soft-hover: rgba(26, 113, 255, .26);
+    --accent-line: rgba(26, 113, 255, .48);
+    --accent-solid: #0055cc;
+    --accent-solid-hover: #0049b4;
 
-    /* 语义色：实色 / 浅底 / 文字（浅底上的可读色） */
-    --ok: #3fb950;
-    --ok-soft: rgba(63, 185, 80, .12);
-    --ok-ink: #7ee08d;
-    --warn: #d9a227;
-    --warn-soft: rgba(217, 162, 39, .12);
-    --warn-ink: #f0c674;
-    --err: #f2584f;
-    --err-soft: rgba(242, 88, 79, .12);
-    --err-ink: #ff9f98;
-    --jf: #8b74ff;
-    --jf-soft: rgba(139, 116, 255, .16);
-    --jf-ink: #b9a9ff;
+    /* 语义色：Mantine green / yellow / red 在深色底上的可读档 */
+    --ok: #40c057;
+    --ok-soft: rgba(64, 192, 87, .14);
+    --ok-ink: #8ce99a;
+    --warn: #fab005;
+    --warn-soft: rgba(250, 176, 5, .14);
+    --warn-ink: #ffe066;
+    --err: #fa5252;
+    --err-soft: rgba(250, 82, 82, .14);
+    --err-ink: #ffa8a8;
+    /* Jellyfin 用 blue[4]，和 Emby 的绿区分，不再引入第二套紫 */
+    --jf: #4dabf7;
+    --jf-soft: rgba(77, 171, 247, .16);
+    --jf-ink: #a5d8ff;
 
-    /* 字号：6 档，正文 13，辅助 12，微标 11 */
+    /* 字号：紧凑信息架构保留 6 档；字重与行高统一到 Amane 的 400/500/600 */
     --fs-2xs: 11px;
     --fs-xs: 12px;
     --fs-sm: 13px;
     --fs-md: 14px;
     --fs-lg: 16px;
     --fs-xl: 20px;
+    --fw-regular: 400;
+    --fw-medium: 500;
+    --fw-semibold: 600;
+    --lh: 1.55;
 
-    /* 间距：4 的倍数，页面左右留白统一用 --gutter */
+    /* 间距：4 的倍数；页面左右留白统一用 --gutter，大间距对齐 Mantine xl=32 */
     --s1: 4px;
     --s2: 8px;
     --s3: 12px;
     --s4: 16px;
     --s5: 20px;
-    --s6: 24px;
-    --gutter: 20px;
+    --s6: 32px;
+    --gutter: 24px;
 
-    /* 圆角 */
-    --r-xs: 6px;
-    --r-sm: 8px;
-    --r-md: 10px;
-    --r-lg: 14px;
+    /* 圆角：统一 Mantine md=8px，小控件 4/6，胶囊只留给状态标签 */
+    --r-xs: 4px;
+    --r-sm: 6px;
+    --r-md: 8px;
+    --r-lg: 8px;
     --r-pill: 999px;
 
-    /* 控件高度：输入框和按钮同高，工具栏混排时才齐平 */
+    /* 控件高度：输入框和按钮同高，工具栏混排时才齐平。
+       按钮三档：弹窗确认 36 / 主次操作 32 / 工具栏与行内 28 */
     --h-ctl: 32px;
+    --h-btn-lg: 36px;
     --h-btn: 32px;
     --h-btn-sm: 28px;
 
-    /* 阴影：贴边 / 浮层 / 弹窗 */
-    --sh-1: 0 1px 2px rgba(0, 0, 0, .28);
-    --sh-2: 0 8px 26px rgba(0, 0, 0, .38);
-    --sh-3: 0 24px 64px rgba(0, 0, 0, .56);
+    /* 阴影：Amane 界面几乎不用投影，只给浮层留极轻的一层 */
+    --sh-1: 0 1px 2px rgba(0, 0, 0, .18);
+    --sh-2: 0 4px 12px rgba(0, 0, 0, .26);
+    --sh-3: 0 12px 32px rgba(0, 0, 0, .38);
 
     /* 动效 */
     --ease: cubic-bezier(.4, 0, .2, 1);
     --dur: .16s;
 
-    /* 顶栏顶部渐变起点（比 bg 略亮，做出层次） */
-    --topbar-top: #0e131c;
+    /* 顶栏与页面同底，Amane 不用渐变 */
+    --topbar-top: #242424;
 
-    /* 字体 */
-    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-            "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    /* 字体栈与 Amane 完全一致；等宽用于路径、日志、计数 */
+    --font: "IBM Plex Sans", "Noto Sans SC", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --font-mono: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
@@ -114,14 +126,13 @@
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-xs); }
 
   /* ---------- 按钮 ----------
-     尺寸两档：默认 32（主 / 次操作）、.tiny 28（工具栏、表格行内）
-     语义四级：
-       默认           次级操作（描边 + surface-2）
-       .primary       主操作，一屏只留一个实心蓝按钮（顶栏的「开始任务」）
-       .accent-outline 页面内的主操作，描边蓝，不跟顶栏抢实心主按钮
-       .ghost         第三级：图标 / 关闭 / 分页这类不该抢视线的
-       .danger        破坏性操作，默认只染文字，hover 才铺红底
-     所有状态都覆盖：hover / active / focus-visible / disabled。 */
+     尺寸三档：--h-btn-lg 36（弹窗确认）、--h-btn 32（主 / 次操作）、
+               --h-btn-sm 28（工具栏、表格行内、分段控件）
+     语义四级：默认（描边次操作）、.primary（一屏唯一的实心蓝主操作）、
+               .accent-outline（页面内主操作，不与顶栏抢实心）、.ghost（弱操作）、
+               .danger（破坏性；行内加 .subtle 平时不染红，悬停才示警）、.on（选中态）
+     状态只有这一套定义：hover / active / focus-visible / disabled / is-loading。
+     各容器不许再重复改状态值，避免同名 class 在不同位置长得不一样。 */
   button {
     font: inherit; font-size: var(--fs-xs); font-weight: 500;
     height: var(--h-btn); padding: 0 var(--s3);
@@ -132,51 +143,79 @@
                 color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
                 transform var(--dur) var(--ease);
   }
-  button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--surface-3); }
-  button:active:not(:disabled) { transform: translateY(.5px); }
-  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  /* 禁用：降不透明度到 0.42 仍能读出文字，鼠标提示不可点 */
-  button:disabled { opacity: .42; cursor: not-allowed; box-shadow: none; transform: none; }
-  button.primary {
-    background: var(--accent); border-color: transparent; color: #fff; font-weight: 600;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .14) inset, 0 2px 10px rgba(76, 141, 255, .28);
+  button:hover:not(:disabled):not(.is-loading) {
+    border-color: var(--line-strong); background: var(--surface-3);
   }
-  button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; }
-  button.primary:active:not(:disabled) { background: var(--accent-hover); }
+  button:active:not(:disabled):not(.is-loading) { transform: translateY(.5px); }
+  button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm);
+  }
+  /* 可点的非 button 控件（面包屑、标签）跟按钮同一套焦点环 */
+  .picksel:focus-visible, .chip-btn:focus-visible, .crumb:focus-visible,
+  .tab:focus-visible, .gbtn:focus-visible, .libbtn:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm);
+  }
+  /* 禁用：统一 0.38，仍读得出文字；aria-disabled 让非原生控件也能复用 */
+  button:disabled, button[aria-disabled="true"] {
+    opacity: .38; cursor: not-allowed; box-shadow: none; transform: none;
+  }
+  /* 加载态：统一旋转圆环，文字照常显示；JS 由 runBtn() 统一挂上 / 摘下 */
+  button.is-loading, button[data-loading="1"] { pointer-events: none; }
+  button.is-loading::before, button[data-loading="1"]::before {
+    content: ''; flex: none; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid currentColor; border-top-color: transparent;
+    animation: amane-spin .7s linear infinite;
+  }
+  @keyframes amane-spin { to { transform: rotate(360deg); } }
+
+  button.primary {
+    background: var(--accent-solid); border-color: transparent; color: #fff;
+    font-weight: var(--fw-semibold); box-shadow: none;
+  }
+  button.primary:hover:not(:disabled), button.primary:active:not(:disabled) {
+    background: var(--accent-solid-hover);
+  }
   /* 页面内的主操作：蓝描边不用实心，保证一屏只有一个实心主按钮 */
   button.accent-outline {
     color: var(--accent-ink); border-color: var(--accent-line);
     background: var(--accent-soft); font-weight: 500;
   }
-  button.accent-outline:hover:not(:disabled) {
-    background: rgba(76, 141, 255, .18); border-color: var(--accent); color: #fff;
+  button.accent-outline:hover:not(:disabled), button.on:hover:not(:disabled) {
+    background: var(--accent-soft-hover); border-color: var(--accent); color: #fff;
   }
   button.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
-  button.ghost:hover:not(:disabled) { background: var(--surface-3); color: var(--text); border-color: transparent; }
-  button.danger { color: var(--err-ink); border-color: rgba(242, 88, 79, .32); background: transparent; }
-  button.danger:hover:not(:disabled) { background: var(--err-soft); border-color: rgba(242, 88, 79, .5); }
+  button.ghost:hover:not(:disabled) {
+    background: var(--surface-3); color: var(--text); border-color: transparent;
+  }
+  button.danger { color: var(--err-ink); border-color: rgba(250, 82, 82, .32); background: transparent; }
+  button.danger:hover:not(:disabled) {
+    background: var(--err-soft); border-color: rgba(250, 82, 82, .5); color: var(--err-ink);
+  }
   /* 禁用时红框还在喊「危险」，退成中性色更安静 */
   button.danger:disabled { color: var(--text-3); border-color: var(--line); background: transparent; }
-  /* 破坏性操作放在行内 / 工具栏时：默认只染文字，hover 才铺底色，避免一排红字 */
-  button.danger.subtle { border-color: transparent; color: var(--text-2); }
-  button.danger.subtle:hover:not(:disabled) { color: var(--err-ink); border-color: transparent; }
+  /* 行内 / 工具栏的破坏性操作：默认与旁边按钮同轻重，hover 才示警 */
+  button.danger.subtle, .rowbtns button.danger.subtle {
+    border-color: transparent; color: var(--text-2); background: transparent;
+  }
+  button.danger.subtle:hover:not(:disabled), .rowbtns button.danger.subtle:hover:not(:disabled) {
+    color: var(--err-ink); border-color: rgba(250, 82, 82, .4); background: var(--err-soft);
+  }
   button.tiny { height: var(--h-btn-sm); padding: 0 10px; font-size: var(--fs-xs); border-radius: var(--r-xs); }
   button.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-ink); }
-  button.on:hover:not(:disabled) { background: rgba(76, 141, 255, .18); border-color: var(--accent-line); }
 
   /* ---------- 顶栏 ---------- */
   .topbar {
     display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap;
     padding: var(--s2) var(--gutter); min-height: 56px;
     border-bottom: 1px solid var(--line);
-    background: linear-gradient(180deg, var(--topbar-top), var(--bg-deep)); flex: none;
+    background: var(--surface-2); flex: none;
   }
   .brand { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
   .mark {
     width: 34px; height: 34px; border-radius: var(--r-md); flex: none;
-    background: linear-gradient(140deg, var(--accent), var(--jf));
+    background: var(--accent-solid);
     display: grid; place-items: center;
-    box-shadow: 0 3px 14px rgba(76, 141, 255, .3);
+    box-shadow: none;
   }
   .mark svg { width: 19px; height: 19px; }
   h1 { margin: 0; font-size: var(--fs-md); font-weight: 600; letter-spacing: .1px; line-height: 1.3; }
@@ -208,11 +247,11 @@
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-4); flex: none; }
   .badge.scanning { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
   .badge.scanning .dot { background: var(--accent); }
-  .badge.running { color: var(--ok); border-color: rgba(63, 185, 80, .34); background: var(--ok-soft); }
+  .badge.running { color: var(--ok); border-color: rgba(64, 192, 87, .34); background: var(--ok-soft); }
   .badge.running .dot { background: var(--ok); }
-  .badge.paused { color: var(--warn); border-color: rgba(217, 162, 39, .34); background: var(--warn-soft); }
+  .badge.paused { color: var(--warn); border-color: rgba(250, 176, 5, .34); background: var(--warn-soft); }
   .badge.paused .dot { background: var(--warn); }
-  .badge.stopping { color: var(--warn); border-color: rgba(217, 162, 39, .3); }
+  .badge.stopping { color: var(--warn); border-color: rgba(250, 176, 5, .3); }
   .badge.stopping .dot { background: var(--warn); }
   .badge.scanning .dot, .badge.running .dot { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .3; transform: scale(.75); } }
@@ -222,7 +261,7 @@
   .bar { flex: 1; height: 6px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
   .bar span {
     display: block; height: 100%; width: 0; border-radius: var(--r-pill);
-    background: linear-gradient(90deg, var(--accent), var(--jf));
+    background: var(--accent);
     transition: width .4s var(--ease);
   }
   /* 扫描阶段还不知道总量，用流动的条纹表示「在动，但还没有进度可算」 */
@@ -299,7 +338,11 @@
   .switch { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--fs-xs);
             color: var(--text-2); cursor: pointer; user-select: none; }
   .switch input { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; }
-  .selcount { font-size: var(--fs-xs); color: var(--text-2); }
+  /* 选中数量是工具条里唯一的动态文案槽：宽度固定，勾选前后整行宽度不变，
+     按钮就不会左右跑、右侧筛选组也不会被挤到第二行；完整说明放 title。 */
+  .selcount { font-size: var(--fs-xs); color: var(--text-2);
+              display: inline-block; width: 6em; flex: none; vertical-align: middle;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .selcount b { color: var(--accent); font-weight: 600; }
   /* 下拉菜单：删除这类破坏性操作用它收起来，避免和「开始刮削」混在一排 */
   .menu-wrap { position: relative; display: inline-flex; }
@@ -328,7 +371,7 @@
   .chip-btn:hover:not(.active) { border-color: var(--line-strong); color: var(--text); background: var(--surface-2); }
   .chip-btn.active { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
 
-  /* 视图切换：按文件 / 按文件夹。整体当一个大按钮，内部用分隔线切段 */
+  /* 分段控件：排序 / 状态筛选。整体当一个大按钮，内部用分隔线切段 */
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm);
          overflow: hidden; background: var(--surface-2); }
   .seg button {
@@ -355,8 +398,8 @@
   tr.grouprow td { background: var(--surface); border-bottom: 1px solid var(--line); }
   tr.grouprow:hover td { background: var(--surface-2); }
   /* 刚从文件管理选中的那个：置顶 + 淡蓝底 + 左侧竖条，一眼能找到 */
-  tr.grouprow.pinned td { background: rgba(76, 141, 255, .07); }
-  tr.grouprow.pinned:hover td { background: rgba(76, 141, 255, .11); }
+  tr.grouprow.pinned td { background: rgba(26, 113, 255, .07); }
+  tr.grouprow.pinned:hover td { background: rgba(26, 113, 255, .11); }
   tr.grouprow.pinned td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
   .tagpin {
     font-size: var(--fs-2xs); font-weight: 500; padding: 1px var(--s2); border-radius: var(--r-pill);
@@ -441,7 +484,9 @@
   .gbtn:hover:not(:disabled) { background: transparent; color: var(--accent-ink); }
   .gcaret { color: var(--text-3); font-size: 9px; width: 10px; display: inline-block; transition: transform var(--dur) var(--ease); }
   .gopen .gcaret { transform: rotate(90deg); }
-  .gname { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 分组行的文件夹名同样折行显示全名；右侧计数 / 进度交给 flex 推到行尾 */
+  .gname { min-width: 0; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+           word-break: break-word; }
   .gsub {
     color: var(--text-3); font-weight: 400; font-size: var(--fs-2xs);
     max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -461,8 +506,16 @@
   }
 
   /* ---------- 表格 ---------- */
+  /* 固定列宽：列宽只认表头，任何一行的超长名字 / 备注都不会把表格撑宽。
+     名称列故意不写 width，吃掉所有剩余空间，右侧列因此永远停在视口内。 */
   .tablewrap { flex: 1; overflow: auto; min-height: 0; }
-  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-sm); }
+  table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0;
+          font-size: var(--fs-sm); }
+  /* 备注 / 操作两列单独命名：宽屏给足，窄屏让一点宽度给名称列 */
+  .pane[data-pane="tasks"] .c-note { width: 220px; }
+  .pane[data-pane="tasks"] .c-acts { width: 172px; }
+  .pane[data-pane="files"] .c-note { width: 240px; }
+  .pane[data-pane="files"] .c-acts { width: 196px; }
   thead th {
     position: sticky; top: 0; z-index: 2; text-align: left; font-weight: 600;
     font-size: var(--fs-2xs); color: var(--text-3); letter-spacing: .3px;
@@ -474,10 +527,14 @@
     vertical-align: middle; color: var(--text-2); transition: background var(--dur) var(--ease);
   }
   tbody tr:hover td { background: var(--surface-2); }
-  tbody tr.sel td { background: rgba(76, 141, 255, .08); }
-  tbody tr.sel:hover td { background: rgba(76, 141, 255, .12); }
-  .name { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-          color: var(--text); font-weight: 500; }
+  tbody tr.sel td { background: rgba(26, 113, 255, .08); }
+  tbody tr.sel:hover td { background: rgba(26, 113, 255, .12); }
+  /* 名称不做省略：长文件名在列内折行，全名完整可读，用行高换横向空间。
+     anywhere 保证一长串无空格的英文 / 数字 / 标点也能断行，不会撑破格子。 */
+  .name { width: 100%; min-width: 0; color: var(--text); font-weight: 500;
+          line-height: 1.45; white-space: normal; overflow-wrap: anywhere;
+          word-break: break-word; }
+  /* 副标题是所属目录，属于辅助信息，仍保持单行；完整路径在 title 里 */
   .name .path { color: var(--text-3); font-size: var(--fs-2xs); display: block; font-weight: 400;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .num { color: var(--text-2); white-space: nowrap; }
@@ -485,21 +542,22 @@
   .st { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2xs);
         font-weight: 500; padding: 2px 9px; border-radius: var(--r-pill); white-space: nowrap;
         border: 1px solid transparent; }
-  .st.ok { color: var(--ok-ink); background: var(--ok-soft); border-color: rgba(63, 185, 80, .28); }
-  .st.failed { color: var(--err-ink); background: var(--err-soft); border-color: rgba(242, 88, 79, .28); }
-  .st.pending { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(76, 141, 255, .28); }
-  .st.running { color: var(--warn-ink); background: var(--warn-soft); border-color: rgba(217, 162, 39, .28); }
+  .st.ok { color: var(--ok-ink); background: var(--ok-soft); border-color: rgba(64, 192, 87, .28); }
+  .st.failed { color: var(--err-ink); background: var(--err-soft); border-color: rgba(250, 82, 82, .28); }
+  .st.pending { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(26, 113, 255, .28); }
+  .st.running { color: var(--warn-ink); background: var(--warn-soft); border-color: rgba(250, 176, 5, .28); }
   .st.skipped { color: var(--text-2); background: var(--surface-3); border-color: var(--line); }
   .st.new { color: var(--text-3); background: var(--surface-3); border-color: var(--line); }
   /* 文件夹特有的两态：partial=还有没刮的（蓝色，表示「活没干完」，与运行中的黄区分）；
      empty=这个文件夹里压根没有视频，不该染任何颜色去抢注意力 */
-  .st.part { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(76, 141, 255, .28); }
+  .st.part { color: var(--accent-ink); background: var(--accent-soft); border-color: rgba(26, 113, 255, .28); }
   .st.empty { color: var(--text-3); background: transparent; border-color: transparent; }
   .dirrow .st.dirst { font-variant-numeric: tabular-nums; }
   /* 文件管理的文件夹行也按目录树排：缩进由 --ind 控制（每层 20px，和任务列表一样），
      左侧一条小横线表示从属。箭头只管就地展开，点名字仍然是进入那一层 */
+  /* 文件夹行：名字折不下了就让计数整块换到下一行，别把右边几列顶出视口 */
   .fwrap {
-    display: flex; align-items: center; gap: var(--s2); min-width: 0;
+    display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); min-width: 0;
     position: relative; padding-left: var(--ind, 0px);
   }
   .fwrap.nest::before {
@@ -517,17 +575,19 @@
   tr.dirrow.fopen .fcaret .gcaret { transform: rotate(90deg); }
   /* 没有子目录的层留个空位，箭头列才不会参差不齐 */
   .fcaret.blank { visibility: hidden; }
-  .dirrow .fwrap .dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 长目录名折行完整显示；计数是辅助信息，保持单行 */
+  .dirrow .fwrap .dir { min-width: 0; max-width: 100%; line-height: 1.45;
+                        white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
   .dirrow .fwrap .cnt { flex: none; }
   /* 多层文件夹提示：Emby 里那一层会变成「文件夹条目」，只认 folder.jpg。
      缺的时候用琥珀色提醒（可修），补好了就用中性灰收掉注意力。 */
   .foldertag { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs);
                padding: 1px 7px; border-radius: var(--r-pill); border: 1px solid transparent;
                white-space: nowrap; vertical-align: middle; }
-  .foldertag.miss { color: var(--warn-ink); background: var(--warn-soft); border-color: rgba(217, 162, 39, .28); }
+  .foldertag.miss { color: var(--warn-ink); background: var(--warn-soft); border-color: rgba(250, 176, 5, .28); }
   .foldertag.done { color: var(--text-3); background: var(--surface-3); border-color: var(--line); }
   .foldertag + .reason, .reason + .foldertag { margin-left: var(--s2); }
-  .reason { color: var(--err-ink); font-size: var(--fs-2xs); max-width: 300px; display: inline-block;
+  .reason { color: var(--err-ink); font-size: var(--fs-2xs); max-width: 100%; display: inline-block;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   .reason.mute { color: var(--text-3); }
   /* 海报生成进度条：贴在文件列表上方，回答「当前目录还有多少张海报没生成」。
@@ -552,7 +612,7 @@
   .pstrip .phint { color: var(--text-3); font-size: var(--fs-2xs); }
   .pstrip .pspin { color: var(--accent-ink); }
   /* 「只看未生成」是个开关，不是普通按钮，按下后要能一眼看出筛选生效了 */
-  .pstrip .ptoggle.on { background: var(--warn-soft); border-color: rgba(217, 162, 39, .45);
+  .pstrip .ptoggle.on { background: var(--warn-soft); border-color: rgba(250, 176, 5, .45);
                         color: var(--warn-ink); }
   /* 全局 button 是 inline-flex，会把 [hidden] 的 UA 样式顶掉；
      全部生成完毕时这个开关要真的消失，不能留个灰的「只看未生成 (0)」 */
@@ -564,7 +624,7 @@
     display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 3px; width: 42px; height: 51px; border-radius: var(--r-xs);
     color: var(--warn-ink); background: var(--warn-soft);
-    border: 1px dashed rgba(217, 162, 39, .5); font-size: 10px; line-height: 1.05;
+    border: 1px dashed rgba(250, 176, 5, .5); font-size: 10px; line-height: 1.05;
     white-space: nowrap; vertical-align: middle;
   }
   .pmiss b { font-weight: 500; }
@@ -589,10 +649,8 @@
                     background: transparent; border-color: transparent; color: var(--text-2); }
   .rowbtns button:hover:not(:disabled) { background: var(--surface-4); color: var(--text);
                                         border-color: var(--line); }
-  /* 行内三个按钮平时同样轻重，只有悬停到「删产物」才示警，避免整列都是红字 */
-  .rowbtns button.danger { color: var(--text-2); }
-  .rowbtns button.danger:hover:not(:disabled) { color: var(--err-ink); background: var(--err-soft);
-                                               border-color: rgba(242, 88, 79, .4); }
+  /* 危险按钮的悬停 / 禁用态统一在「按钮」段，容器里不再各写一套 */
+  .rowbtns button.danger { background: transparent; border-color: transparent; }
   .empty { padding: var(--s6) var(--s4); text-align: center; color: var(--text-3); font-size: var(--fs-xs); }
 
   .footbar {
@@ -686,22 +744,22 @@
     z-index: 200; max-width: min(720px, 90vw);
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
-  .toast.err { border-color: rgba(242, 88, 79, .45); color: var(--err-ink); }
+  .toast.err { border-color: rgba(250, 82, 82, .45); color: var(--err-ink); }
 
   .notice {
     display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
-    background: var(--warn-soft); border-bottom: 1px solid rgba(217, 162, 39, .3);
+    background: var(--warn-soft); border-bottom: 1px solid rgba(250, 176, 5, .3);
     color: var(--warn-ink); font-size: var(--fs-xs); padding: var(--s2) var(--gutter); flex: none;
   }
   .notice[hidden] { display: none; }
   .notice button { height: var(--h-btn-sm); padding: 0 var(--s3); font-size: var(--fs-xs);
                    border-radius: var(--r-xs); background: transparent;
-                   border-color: rgba(217, 162, 39, .45); color: var(--warn-ink); }
-  .notice button:hover:not(:disabled) { background: rgba(217, 162, 39, .14); border-color: rgba(217, 162, 39, .6); }
+                   border-color: rgba(250, 176, 5, .45); color: var(--warn-ink); }
+  .notice button:hover:not(:disabled) { background: rgba(250, 176, 5, .14); border-color: rgba(250, 176, 5, .6); }
 
   .modal {
     position: fixed; inset: 0; z-index: 220; display: grid; place-items: center;
-    background: rgba(4, 6, 11, .76); backdrop-filter: blur(3px); padding: var(--s5);
+    background: rgba(10, 10, 10, .72); padding: var(--s5);
   }
   .modal[hidden] { display: none; }
   .modal-card {
@@ -733,8 +791,8 @@
   .msg-line { display: none; font-size: var(--fs-xs); padding: var(--s2) var(--s3);
               border-radius: var(--r-sm); margin-bottom: var(--s3); }
   .msg-line.show { display: block; }
-  .msg-line.err { background: var(--err-soft); border: 1px solid rgba(242, 88, 79, .35); color: var(--err-ink); }
-  .msg-line.ok { background: var(--ok-soft); border: 1px solid rgba(63, 185, 80, .35); color: var(--ok-ink); }
+  .msg-line.err { background: var(--err-soft); border: 1px solid rgba(250, 82, 82, .35); color: var(--err-ink); }
+  .msg-line.ok { background: var(--ok-soft); border: 1px solid rgba(64, 192, 87, .35); color: var(--ok-ink); }
   .preview-body { padding: 0; background: var(--bg-deep); display: grid; place-items: center; }
   .preview-body img { max-width: 100%; max-height: 70vh; display: block; }
   .preview-foot { padding: var(--s2) var(--s5); border-top: 1px solid var(--line-soft);
@@ -747,7 +805,21 @@
     background: var(--accent-soft); color: var(--accent-ink); margin-left: var(--s2);
     vertical-align: middle; white-space: nowrap;
   }
-  .modal-card.pick { max-width: 920px; }
+  /* 选帧是「工作区」而不是小卡片：铺满弹窗的可用区域，四周不再留遮罩空白。
+     卡片是纵向 flex，中间内容区吃剩余高度；尺寸只由容器决定，窗口变大变小 /
+     浏览器缩放时各区块一起伸缩，不会出现页面级滚动条。 */
+  #pickModal {
+    /* 8px 安全边距只用来保留「点外部关闭」这个既有交互，不是内容留白 */
+    padding: var(--s2); place-items: stretch;
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  }
+  .modal-card.pick {
+    width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0;
+    border: 0; border-radius: 0;
+    display: flex; flex-direction: column;
+  }
+  .modal-card.pick > .modal-head,
+  .modal-card.pick > .modal-foot { flex: none; }
 
   /* ---------- 指定文件夹封面 ---------- */
   .modal-card.art-pick { max-width: 780px; }
@@ -783,21 +855,27 @@
   }
   /* 海报底色深浅都有，角标要压得住：深底半透明 + 一层细描边，
      放在纯黑或纯白的图上都能看清 */
-  .art-card .now.auto { background: rgba(7, 10, 16, .84); color: var(--text);
+  .art-card .now.auto { background: rgba(20, 20, 20, .84); color: var(--text);
                         border: 1px solid rgba(255, 255, 255, .24); }
   .art-empty { padding: var(--s5) 0; text-align: center; color: var(--text-3); font-size: var(--fs-xs); }
   .art-foot .cur { font-size: var(--fs-2xs); color: var(--text-3); max-width: 380px;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .pick-body {
-    display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: var(--s4);
-    padding: var(--s4) var(--s5) var(--s1);
+    flex: 1; min-height: 0; overflow: hidden;
+    display: grid; grid-template-columns: minmax(0, 1fr) clamp(176px, 17vw, 320px);
+    grid-template-rows: minmax(0, 1fr);
+    gap: var(--s4);
+    padding: var(--s4) var(--s5) var(--s2);
   }
-  /* 缩略图条是 flex + overflow，栅格列必须允许被压缩，否则整列会被撑宽 */
+  /* 左列同样是纵向 flex：工具条 / 时间轴 / 胶片条固定，舞台吃掉剩余高度 */
+  .pick-body > .pick-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .pick-body > div { min-width: 0; }
+  .pick-main > .pick-cropbar, .pick-main > .pick-line,
+  .pick-main > .pick-ctrl, .pick-main > .pick-strip { flex: none; }
   .pick-stage {
+    flex: 1 1 auto; height: auto; min-height: 0;
     background: var(--bg-deep); border: 1px solid var(--line); border-radius: var(--r-md);
-    height: 48vh; min-height: 200px;
     overflow: hidden; position: relative;
   }
   /* 画面位置由 JS 按「适应 / 缩放 / 平移」算好，直接给像素尺寸，不走 object-fit */
@@ -811,11 +889,11 @@
   .pick-zoom {
     position: absolute; right: var(--s2); bottom: var(--s2); z-index: 4;
     display: flex; align-items: center; gap: 1px; padding: 2px;
-    background: rgba(10, 14, 22, .78); border: 1px solid rgba(255, 255, 255, .14);
+    background: rgba(20, 20, 20, .78); border: 1px solid rgba(255, 255, 255, .14);
     border-radius: var(--r-sm); backdrop-filter: blur(4px);
   }
   .pick-zoom button {
-    background: none; border: 0; color: #dbe6ff; font: inherit; font-size: var(--fs-xs);
+    background: none; border: 0; color: var(--text-2); font: inherit; font-size: var(--fs-xs);
     width: 28px; height: 24px; padding: 0; border-radius: var(--r-xs); cursor: pointer; line-height: 1;
   }
   .pick-zoom button:hover:not(:disabled) { background: rgba(255, 255, 255, .14); }
@@ -826,7 +904,7 @@
   .pick-zoom .pct:hover { background: rgba(255, 255, 255, .14); }
   .pick-stage .hint {
     position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
-    color: var(--text-3); font-size: var(--fs-xs); padding: var(--s4); background: rgba(7, 10, 16, .88);
+    color: var(--text-3); font-size: var(--fs-xs); padding: var(--s4); background: rgba(20, 20, 20, .88);
   }
   .pick-stage .hint[hidden] { display: none; }
   /* 取景框：框外压暗，四角可拖拽缩放，框内拖动整体平移 */
@@ -839,12 +917,12 @@
   .pick-cropbar button.on {
     background: var(--accent-soft); color: var(--accent-ink); border-color: var(--accent-line);
   }
-  .pick-cropbar button:disabled { opacity: .38; }
+  /* 禁用态统一在「按钮」段定义，这里不再单独写 opacity */
   /* 裁切框：和 PC 版一致——细白框 + 九宫格 + 四角 L 形把手，框内拖动平移 */
   .pick-box {
     position: absolute; box-sizing: border-box;
     border: 1.5px solid #fff;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 0 0 9999px rgba(4, 7, 14, .55);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 0 0 9999px rgba(10, 10, 10, .55);
     cursor: grab; touch-action: none; z-index: 2;
   }
   .pick-box[hidden] { display: none; }
@@ -876,41 +954,53 @@
   .pick-box i[data-h="sw"]::after { left: 2px; bottom: 2px; border-left-width: 2.5px; border-bottom-width: 2.5px; }
   .pick-box i[data-h="se"] { right: -3px; bottom: -3px; cursor: nwse-resize; }
   .pick-box i[data-h="se"]::after { right: 2px; bottom: 2px; border-right-width: 2.5px; border-bottom-width: 2.5px; }
-  .pick-side { overflow: auto; max-height: 47vh; }
-  .pick-side #pickCropView { aspect-ratio: auto; max-height: 168px; object-fit: contain; }
+  /* 右侧预览列跟着容器一起长大：宽度按视口 clamp，高度由 flex 分给两张预览 */
+  .pick-side {
+    display: flex; flex-direction: column; gap: var(--s2);
+    height: 100%; max-height: none; min-height: 0; min-width: 0; overflow: hidden;
+  }
+  .pick-side .t { flex: none; font-size: var(--fs-2xs); color: var(--text-2); }
+  /* contain 保证预览不会被拉伸或裁切；图片框本身按剩余高度伸缩 */
+  .pick-side > img {
+    flex: 1 1 0; min-height: 0; height: 0; max-height: none;
+    width: 100%; object-fit: contain;
+    border-radius: var(--r-sm); border: 1px solid var(--line);
+    background: var(--bg-deep); display: block;
+  }
+  .pick-side .meta { flex: none; font-size: var(--fs-2xs); color: var(--text-3);
+                     line-height: 1.7; white-space: pre-line; }
   .pick-line { display: flex; align-items: center; gap: var(--s3); margin: var(--s3) 0 3px; }
   .pick-line input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
   .pick-ctrl { display: flex; align-items: center; gap: var(--s2);
                font-size: var(--fs-2xs); color: var(--text-3); }
   .pick-ctrl .grow { flex: 1; }
-  .pick-strip { display: flex; gap: var(--s2); overflow-x: auto; padding: var(--s2) 0 var(--s1); min-height: 84px; }
-  .pick-strip figure { margin: 0; flex: none; width: 104px; cursor: pointer; }
+  /* 胶片条铺满左列宽度；缩略图随视口略放大，一行能看到的帧数也跟着变多 */
+  .pick-strip { display: flex; gap: var(--s2); overflow-x: auto; flex: none;
+                padding: var(--s2) 0 var(--s1); min-height: 84px; }
+  .pick-strip figure { margin: 0; flex: none; width: clamp(104px, 8vw, 148px); cursor: pointer; }
   .pick-strip img {
-    width: 104px; height: 59px; object-fit: cover; border-radius: var(--r-xs); display: block;
+    width: 100%; aspect-ratio: 16 / 9; height: auto;
+    object-fit: cover; border-radius: var(--r-xs); display: block;
     border: 1px solid var(--line); background: var(--bg-deep);
     transition: border-color var(--dur) var(--ease), opacity var(--dur) var(--ease);
   }
   .pick-strip figure.on img { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
   .pick-strip figcaption { font-size: var(--fs-2xs); color: var(--text-3); text-align: center; margin-top: 3px; }
-  .pick-side .t { font-size: var(--fs-2xs); color: var(--text-2); margin-bottom: var(--s2); }
-  .pick-side img { width: 100%; border-radius: var(--r-sm); border: 1px solid var(--line);
-                   background: var(--bg-deep); display: block; }
-  .pick-side .meta { font-size: var(--fs-2xs); color: var(--text-3); margin-top: var(--s2);
-                     line-height: 1.7; white-space: pre-line; }
   .pick-foot { flex-wrap: wrap; gap: var(--s3); }
   .pick-foot .opts { display: flex; gap: var(--s4); flex-wrap: wrap; align-items: center; }
-  /* 「确定裁切」：主按钮用品牌蓝，和全站主色一致 */
-  .pick-confirm {
-    margin-left: auto; min-width: 200px; height: 36px; padding: 0 var(--s6);
-    border-radius: var(--r-sm); border: 1px solid transparent; cursor: pointer;
-    font-size: var(--fs-md); font-weight: 600; letter-spacing: .4px; color: #fff;
-    background: linear-gradient(180deg, #5c99ff, var(--accent-hover));
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 6px 18px rgba(76, 141, 255, .3);
-    transition: filter var(--dur) var(--ease), transform var(--dur) var(--ease);
+  /* 「确定裁切」的层级 / 尺寸 / 状态统一走按钮规范，这里只留它在弹窗底部的位置 */
+  .pick-confirm { margin-left: auto; }
+
+  /* 极矮窗口 / 高倍缩放：收紧固定区块，保证舞台仍有高度、底部按钮不被裁掉 */
+  @media (max-height: 640px) {
+    .pick-body { padding-top: var(--s2); padding-bottom: var(--s1); gap: var(--s3); }
+    .pick-cropbar { margin-bottom: var(--s1); }
+    .pick-line { margin: var(--s2) 0 2px; }
+    .pick-strip { min-height: 0; padding-top: var(--s1); }
+    .pick-strip figure { width: 88px; }
+    .modal-card.pick > .modal-head,
+    .modal-card.pick > .modal-foot { padding-top: var(--s2); padding-bottom: var(--s2); }
   }
-  .pick-confirm:hover:not(:disabled) { filter: brightness(1.08); }
-  .pick-confirm:active:not(:disabled) { transform: translateY(1px); }
-  .pick-confirm:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
 
   /* ---------- 自动化 ---------- */
   .auto-list {
@@ -971,9 +1061,9 @@
     background: var(--surface-3); border: 1px solid var(--line); color: var(--text-2);
     white-space: nowrap;
   }
-  .pill.on { background: var(--ok-soft); border-color: rgba(63, 185, 80, .35); color: var(--ok-ink); }
+  .pill.on { background: var(--ok-soft); border-color: rgba(64, 192, 87, .35); color: var(--ok-ink); }
   .pill.accent { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-ink); }
-  .pill.warn { background: var(--warn-soft); border-color: rgba(224, 168, 60, .38); color: var(--warn-ink); }
+  .pill.warn { background: var(--warn-soft); border-color: rgba(250, 176, 5, .38); color: var(--warn-ink); }
 
   .modal-card.auto-modal { max-width: 600px; }
   .auto-body {
@@ -1067,6 +1157,77 @@
   .set-note { font-size: var(--fs-xs); color: var(--text-2); line-height: 1.75; }
 
   /* ==========================================================================
+     Amane 视觉适配层
+     参考 Amane 的 Mantine 深色主题：中性灰阶 + 品牌蓝、纯色无渐变、1px 边框、
+     8px 圆角、克制的悬停、明确的焦点环，以及统一的可复用加载态。
+     这里只覆盖视觉属性，不碰 DOM、定位、层级和显示逻辑：.libmenu 的层级、
+     弹窗四种关法、滚动收起、表格换行等一律沿用原实现。
+     ========================================================================== */
+  /* 字体层级：正文 400 / 控件 500 / 标题 600，行高统一 1.55 */
+  body { font: var(--fs-sm)/var(--lh) var(--font); }
+  h1, h2, h3, h4, h5, h6, .modal-head h2, .set-head h3 {
+    font-family: var(--font); font-weight: var(--fw-semibold); letter-spacing: 0;
+  }
+  .kind { font-weight: var(--fw-semibold); letter-spacing: .2px; }
+  .counts b, .selcount b, .auto-card .a-meta b { font-weight: var(--fw-semibold); }
+
+  /* 顶栏 / 品牌 / 进度：Amane 不用渐变与发光 */
+  .topbar { background: var(--surface-2); }
+  .mark { background: var(--accent-solid); box-shadow: none; }
+  .bar span { background: var(--accent); }
+  .bar span.indeterminate {
+    background-image: repeating-linear-gradient(115deg,
+      var(--accent) 0 12px, rgba(255, 255, 255, .18) 12px 24px);
+  }
+  .pstrip .pbar i, .gbar i { background: var(--accent); }
+
+  /* 卡片：统一 8px / 1px 边框 / 无投影；状态色竖条保留，是信息架构的一部分 */
+  .server, .auto-card, .set-card, .srv-edit, .modal-card, .menu, .toast, .art-card {
+    border-radius: var(--r-md);
+  }
+  .server:hover, .auto-card:hover { box-shadow: none; }
+
+  /* 按钮的层级、尺寸与五态统一定义在文件开头的「按钮」段，这里不再重复改写，
+     否则同一个 class 会被后面的规则悄悄改掉。下面只补弹窗确认按钮的尺寸档。 */
+  .pick-confirm {
+    height: var(--h-btn-lg); min-width: 200px; padding: 0 var(--s6);
+    font-size: var(--fs-sm); border-radius: var(--r-md);
+    background: var(--accent-solid); border-color: transparent; color: #fff;
+    box-shadow: none; font-family: var(--font); font-weight: var(--fw-semibold);
+    letter-spacing: 0;
+  }
+  .pick-confirm:hover:not(:disabled), .pick-confirm:active:not(:disabled) {
+    background: var(--accent-solid-hover); filter: none;
+  }
+
+  /* 表单：focus 用细环而不是发光，禁用降透明度 */
+  select:focus, input[type="search"]:focus, input[type="text"]:focus,
+  input[type="password"]:focus, input[type="number"]:focus, .fld textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  input:disabled, select:disabled, textarea:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* 表格 / 目录 / 抽帧共用的「正在…」提示 */
+  .empty, .pick-stage .hint, .pstrip .pspin { color: var(--text-3); }
+
+  /* 弹窗：Amane 不用毛玻璃，遮罩改中性深灰（同时消除原生弹层的定位隐患） */
+  .modal { background: rgba(10, 10, 10, .72); backdrop-filter: none; }
+  .modal-card { box-shadow: var(--sh-2); }
+
+  /* 选中 / 当前项：统一用品牌蓝的浅底 */
+  tbody tr.sel td { background: rgba(26, 113, 255, .10); }
+  tbody tr.sel:hover td { background: rgba(26, 113, 255, .16); }
+  tr.grouprow.pinned td { background: rgba(26, 113, 255, .09); }
+  tr.grouprow.pinned:hover td { background: rgba(26, 113, 255, .14); }
+
+  /* 减弱动效偏好：加载圆环与扫描脉冲停下来，颜色过渡照旧 */
+  @media (prefers-reduced-motion: reduce) {
+    button.is-loading::before, button[data-loading="1"]::before,
+    .badge.scanning .dot, .badge.running .dot,
+    .bar span.indeterminate { animation: none; }
+  }
+
+  /* ==========================================================================
      滚动条：全站统一，细、无箭头、悬停变亮
      ========================================================================== */
   * { scrollbar-width: thin; scrollbar-color: var(--surface-4) transparent; }
@@ -1082,10 +1243,11 @@
      响应式：1280 收窄表格 / 1024 双列变单列 / 760 顶栏折行 / 480 手机
      ========================================================================== */
   @media (max-width: 1280px) {
-    .name { max-width: 320px; }
-    .gname { max-width: 280px; }
+    /* 名称折行后，把备注 / 操作两列让出约 130px 给名称列：
+       1024 下长名字也只要两三行，右侧列依旧整表可见 */
+    .pane[data-pane="tasks"] .c-note, .pane[data-pane="files"] .c-note { width: 150px; }
+    .pane[data-pane="tasks"] .c-acts, .pane[data-pane="files"] .c-acts { width: 156px; }
     .gsub { max-width: 300px; }
-    .reason { max-width: 220px; }
   }
   @media (max-width: 1180px) {
     /* 放不下「左筛选 + 右侧一组」的时候，取消留白和竖线，
@@ -1095,6 +1257,9 @@
   }
   @media (max-width: 1024px) {
     :root { --gutter: 16px; }
+    /* 换成 Amane 字体后表格比原来宽了约 18px，收紧左右内边距，
+       让 10 列在 1024 下仍能整表放进视口，不用横向滚动找行尾按钮 */
+    thead th, tbody td { padding-left: 8px; padding-right: 8px; }
     .sub, .sub.fmts { max-width: 40vw; }
     .set-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
     .auto-grid { grid-template-columns: 1fr; }
@@ -1121,13 +1286,14 @@
     .toolbar .grow { display: none; }
     /* 手机上右侧操作组独占一行，按钮等高排列 */
     .tb-ops { margin-left: 0; width: 100%; flex-wrap: wrap; }
-    .name { max-width: 180px; }
-    .gname { max-width: 160px; }
+    /* 手机上固定列宽要有下限：名称列留 280px，其余靠表格容器内部横向滚动够到 */
+    .tablewrap table { min-width: 1120px; }
+    .c-name { width: 280px; }
     .gsub { max-width: 160px; }
     .rowbtns button { padding: 0 6px; }
     .pick-body { grid-template-columns: minmax(0, 1fr); padding: var(--s3) var(--gutter) var(--s1); }
+    /* 窄屏下舞台仍交给纵向 flex 吃剩余高度，不再回退到固定 28vh */
     .pick-side { display: none; }
-    .pick-stage { height: 28vh; }
     .pick-foot .acts { margin-left: 0; width: 100%; justify-content: flex-end; }
     .auto-card { flex-direction: column; align-items: stretch; gap: var(--s2); }
     .auto-card .a-acts { flex-wrap: wrap; }
@@ -1233,11 +1399,7 @@
       <label class="switch"><input type="checkbox" id="onlyFail"> 只看失败</label>
       <input type="search" id="taskSearch" placeholder="搜索片名 / 路径">
       <span class="grow"></span>
-      <!-- 中：列表视图与排序 -->
-      <div class="seg" id="taskView">
-        <button data-view="flat">按文件</button>
-        <button class="on" data-view="dir">按文件夹</button>
-      </div>
+      <!-- 中：排序。任务列表按「提交的是文件还是文件夹」自动呈现，不再手切视图 -->
       <div class="tb-mini" id="taskTreeOps" hidden>
         <button class="tiny ghost" id="btnExpandAll"
                 title="把整棵目录树展开（文件列表先加载前 30 个，其余点开再看）">展开全部</button>
@@ -1272,14 +1434,14 @@
             <th style="width:34px"><input class="check" type="checkbox" id="taskAll"
                   title="全选当前列表里的任务"></th>
             <th style="width:88px">状态</th>
-            <th>视频名称</th>
+            <th class="c-name">视频名称</th>
             <th style="width:86px">时长</th>
             <th style="width:82px" title="视频文件本身的大小">大小</th>
             <th style="width:56px">海报</th>
             <th style="width:82px">背景图</th>
             <th style="width:46px">NFO</th>
-            <th style="width:220px">备注</th>
-            <th style="width:172px"></th>
+            <th class="c-note">备注</th>
+            <th class="c-acts"></th>
           </tr>
         </thead>
         <tbody id="taskBody">
@@ -1373,14 +1535,14 @@
         <thead>
           <tr>
             <th style="width:34px"></th>
-            <th>名称</th>
+            <th class="c-name">名称</th>
             <th style="width:86px">大小</th>
             <th style="width:56px">海报</th>
             <th style="width:82px">背景图</th>
             <th style="width:46px">NFO</th>
             <th style="width:92px">状态</th>
-            <th style="width:240px">备注</th>
-            <th style="width:196px"></th>
+            <th class="c-note">备注</th>
+            <th class="c-acts"></th>
           </tr>
         </thead>
         <tbody id="fileBody">
@@ -1417,8 +1579,8 @@
       <span class="grow"></span>
       <label class="switch" title="和具体任务无关：容器起来后先整库跑一轮">
         <input type="checkbox" id="autoAutostart"> 启动后先跑一轮</label>
-      <button class="tiny" id="btnAutoRefresh">刷新</button>
-      <button class="tiny primary" id="btnAutoAdd">+ 新建任务</button>
+      <button class="tiny ghost" id="btnAutoRefresh">刷新</button>
+      <button class="tiny accent-outline" id="btnAutoAdd">+ 新建任务</button>
     </div>
     <div class="auto-list" id="autoList">
       <div class="empty">正在加载…</div>
@@ -1694,7 +1856,7 @@
       <button class="tiny" id="btnClosePick">关闭</button>
     </div>
     <div class="pick-body">
-      <div>
+      <div class="pick-main">
         <div class="pick-cropbar" id="pickCropBar">
           <span class="lbl">裁切</span>
           <button class="tiny on" data-crop="poster" title="按海报 2:3 画框，只作用于海报">海报 2:3</button>
@@ -1733,7 +1895,7 @@
       <aside class="pick-side">
         <div class="t">取景预览</div>
         <img id="pickCropView" alt="">
-        <div class="t" style="margin-top:10px">当前海报</div>
+        <div class="t">当前海报</div>
         <img id="pickPoster" alt="">
         <div class="meta" id="pickMeta">—</div>
       </aside>
@@ -1758,9 +1920,9 @@ const $ = id => document.getElementById(id);
 const NEW_PWD_KEY = 'new' + '_' + 'pass' + 'word';
 
 /* ---------- 记住上次看的样子 ----------
-   刷新一下就回到「任务列表 + 按文件夹 + 按添加时间」太烦人：在文件管理里翻了
-   三层目录，或者正按名称排，F5 一下全没了。这几个偏好只有自己看，存在浏览器
-   本地就够了（换浏览器 / 无痕模式回到默认）。 */
+   刷新一下就回到「任务列表 + 按添加时间」太烦人：在文件管理里翻了三层目录，
+   或者正按名称排，F5 一下全没了。这几个偏好只有自己看，存在浏览器本地就够了
+   （换浏览器 / 无痕模式回到默认）。 */
 const PREF_KEY = 'strm-scraper.prefs.v1';
 const PREF_SORT_KEYS = new Set(['name', 'added', 'updated', 'size']);
 const PREFS = (() => {
@@ -1780,8 +1942,15 @@ function prefSort(raw, fallback) {
 
 const PREFS_TABS = new Set(['tasks', 'files', 'servers', 'automation', 'logs', 'settings']);
 
+/* 深链接：?tab=files 直接落在某个标签，?path=... 直接进某个目录。
+   不带参数时行为完全不变，仍然按 localStorage 记住的浏览上下文恢复。
+   主要用于把某个视图（比如超长文件名那一行）直接发给别人看。 */
+const URL_QUERY = new URLSearchParams(location.search);
+const URL_TAB = URL_QUERY.get('tab');
+const URL_PATH = URL_QUERY.get('path');
+
 const S = {
-  tab: PREFS_TABS.has(PREFS.tab) ? PREFS.tab : 'tasks',
+  tab: PREFS_TABS.has(URL_TAB) ? URL_TAB : (PREFS_TABS.has(PREFS.tab) ? PREFS.tab : 'tasks'),
   page: 1,
   size: 60,
   status: 'all',
@@ -1790,8 +1959,12 @@ const S = {
   total: 0,
   taskSig: '',
   lastTasks: 0,
-  // 任务列表视图：flat 平铺 / dir 按文件夹（默认按文件夹，媒体库本来就是一堆目录）
-  tasksView: PREFS.tasksView === 'flat' ? 'flat' : 'dir',
+  // 任务列表按「最近一次提交的是什么」呈现：勾文件提交 → flat 文件行，
+  // 勾文件夹提交 → dir 文件夹行。界面上不再提供手动切换，刷新后仍按上次来源恢复。
+  // taskSource 是新的语义键；兼容老版本存下来的 tasksView。
+  tasksView: PREFS.taskSource === 'file' ? 'flat'
+           : PREFS.taskSource === 'dir' ? 'dir'
+           : (PREFS.tasksView === 'flat' ? 'flat' : 'dir'),
   // 任务列表一次只看一个媒体库：lib 是当前库的路径，libs 是全部库（顶部那条横条用）
   lib: '',
   libs: [],
@@ -1815,7 +1988,7 @@ const S = {
   taskSort: prefSort(PREFS.taskSort, { key: 'added', order: 'desc' }),
   settings: null,
   files: {
-    path: PREFS.filesPath || '', q: '', sel: new Set(), data: null, sig: '',
+    path: URL_PATH || PREFS.filesPath || '', q: '', sel: new Set(), data: null, sig: '',
     sort: prefSort(PREFS.filesSort, { key: 'added', order: 'desc' }),
     // 状态筛选：只在已经拿到的这一屏数据里过滤，不重新请求接口
     filter: 'all',
@@ -1867,6 +2040,151 @@ const post = (path, body) => api(path, {
   headers: body ? { 'Content-Type': 'application/json' } : {},
   body: body ? JSON.stringify(body) : undefined,
 });
+
+/* ---------- 按钮契约 ----------
+   一张表写清「什么时候能用」和「点了会发生什么」，同时作为统一的悬停说明。
+   带 title 的按钮以 HTML 里写的为准，不覆盖；表格行内按钮按 data-act 补。 */
+const BTN_HINTS = {
+  btnStart: '空闲时可用：增量刮削整库，只补缺的产物',
+  btnFull: '空闲时可用：全量重刮整库，会覆盖已生成的海报 / NFO（需二次确认）',
+  btnPause: '任务运行中或已暂停时可用：暂停 / 继续本轮任务',
+  btnCancel: '仅任务运行中可用：取消本轮，处理中的结果退回待处理（需二次确认）',
+  btnAccount: '启用了登录时显示：跳到设置页的账号卡片',
+  btnLogoutTop: '启用了登录时显示：退出当前会话（需二次确认）',
+  btnOpenAccount: '还在用默认密码时显示：去设置页修改账号',
+  btnExpandAll: '提交的是文件夹、且有分组时显示：展开全部目录',
+  btnCollapseAll: '提交的是文件夹、且有分组时显示：收起全部目录',
+  btnTaskDel: '勾选任务后可用：展开「仅移除记录 / 移除并删产物」菜单',
+  btnRetry: '空闲时可用：把所有失败项重置为待处理',
+  btnTaskRefresh: '重新拉取当前媒体库的任务列表',
+  btnPrev: '有上一页时可用：翻到上一页',
+  btnNext: '有下一页时可用：翻到下一页',
+  btnFileScrape: '勾选文件后可用：只补选中文件缺的产物',
+  btnFileRescrape: '勾选文件后可用：覆盖重刮选中文件（需二次确认）',
+  btnFolderArt: '勾选文件或文件夹后可用：展开补文件夹封面的方式',
+  btnFileDel: '勾选文件后可用：展开删除产物的方式',
+  btnFileRefresh: '重新读取当前目录的文件与产物状态',
+  btnPosterOnly: '存在未生成海报的文件时显示：只看 / 退出只看未生成',
+  btnSrvTest: '测试已配置的媒体服务器能否连通',
+  btnSrvScan: '让媒体服务器扫描媒体库',
+  btnSrvRefresh: '让媒体服务器重建图片缓存（需二次确认）',
+  btnAutoRefresh: '重新拉取自动化任务与运行状态',
+  btnAutoAdd: '新建一条自动化任务，打开配置弹窗',
+  btnLogFile: '在实时日志与原始日志文件之间切换',
+  btnLogDownload: '在新窗口下载完整运行日志',
+  btnLogErrors: '在新窗口下载只含错误级别的日志',
+  btnLogout: '退出当前登录（需二次确认）',
+  btnSaveAccount: '启用了登录时可用：保存新用户名 / 密码',
+  btnSrvAdd: '设置加载完成后可用：新增一行媒体服务器配置',
+  btnSaveSettings: '保存当前设置并立即生效',
+  btnCloseAuto: '关闭弹窗，未保存的修改会丢弃',
+  btnAutoCancel: '关闭弹窗，未保存的修改会丢弃',
+  btnAutoSave: '校验通过后保存这条自动化任务',
+  autoScopeHere: '把当前浏览到的目录设为监控范围',
+  btnClosePreview: '关闭图片预览',
+  btnCloseArt: '关闭指定封面弹窗',
+  btnArtAuto: '取消手动指定的封面，恢复自动挑选',
+  btnArtApply: '选中一张图后可用：把它固定为这一层的封面',
+  btnClosePick: '关闭手动选帧，未应用的裁切会丢弃',
+  pickCropReset: '把取景框恢复为默认位置',
+  pickZoomOut: '缩小预览画面',
+  pickZoomFit: '恢复 100% 预览',
+  pickZoomIn: '放大预览画面',
+  pickBack: '取帧位置往前 1 秒',
+  pickFwd: '取帧位置往后 1 秒',
+  btnPickAuto: '恢复自动选帧（需二次确认）',
+  btnPickApply: '至少选一种图片时可用：用当前帧生成海报 / 背景图 / 缩略图',
+};
+const ACT_HINTS = {
+  pick: '手动挑一帧当封面',
+  redo: '重新刮削这一条并覆盖旧产物',
+  clean: '删除这一条的产物（需二次确认）',
+  scrape: '立刻刮削这个文件',
+  add: '新建一条自动化任务',
+  run: '不等定时点，马上按这条任务的设置跑一轮',
+  toggle: '停用 / 启用这条自动化任务',
+  edit: '编辑这条自动化任务',
+  del: '删除这条自动化任务（需二次确认）',
+  srvdel: '移除这一行服务器配置（需二次确认）',
+  artdir: '给这一层指定用哪张图当封面',
+};
+
+function applyBtnHints(root) {
+  const scope = root || document;
+  for (const [id, hint] of Object.entries(BTN_HINTS)) {
+    const b = document.getElementById(id);
+    if (b && !b.hasAttribute('title')) b.title = hint;
+  }
+  scope.querySelectorAll('button[data-act], button[data-srvdel], button[data-artdir]').forEach(b => {
+    const hint = ACT_HINTS[b.dataset.act || b.dataset.srvdel || b.dataset.artdir];
+    if (hint && !b.hasAttribute('title')) b.title = hint;
+  });
+}
+
+/* ---------- 按钮统一状态机 ----------
+   所有会发请求的按钮都走 runBtn()：
+     进入 → 置灰 + 旋转圆环 + 可选「…中」文案 + aria-busy，同级按钮一起锁住
+     退出 → 成功 / 失败 / 异常一律恢复，并可按最新业务状态重算禁用（after）
+     反馈 → 失败统一 toast；成功保留服务端返回的具体消息，不被通用文案盖掉
+   处理中的按钮再点一次直接忽略，从根上挡住重复提交。 */
+const BTN_BUSY = new WeakSet();
+const btnNode = x => (typeof x === 'string' ? $(x) : x);
+
+function setBtnDisabled(el, off) {
+  const b = btnNode(el);
+  if (!b) return;
+  b.disabled = !!off;
+  if (off) b.setAttribute('aria-disabled', 'true');
+  else b.removeAttribute('aria-disabled');
+}
+
+function btnBegin(b, busyText) {
+  b._busyWasDisabled = b.disabled;
+  b._busyLabel = b.textContent;
+  setBtnDisabled(b, true);
+  b.classList.add('is-loading');
+  b.dataset.loading = '1';
+  b.setAttribute('aria-busy', 'true');
+  // 只有纯文本按钮换「…中」文案；带计数 / 图标的保留结构，靠圆环表达进行中
+  if (busyText && !b.children.length) b.textContent = busyText;
+}
+
+function btnEnd(b) {
+  if (!b) return;
+  b.classList.remove('is-loading');
+  delete b.dataset.loading;
+  b.removeAttribute('aria-busy');
+  if (b._busyLabel !== undefined && !b.children.length) b.textContent = b._busyLabel;
+  setBtnDisabled(b, !!b._busyWasDisabled);
+}
+
+async function runBtn(el, job, opt = {}) {
+  const main = btnNode(el);
+  if (!main) return null;
+  // 条件不满足（未勾选 / 未启用）或上一次请求还没回来：直接忽略，不再发第二次请求
+  if (BTN_BUSY.has(main) || main.disabled) return null;
+  const all = [main, ...(opt.peers || []).map(btnNode).filter(Boolean)];
+  BTN_BUSY.add(main);
+  all.forEach(b => btnBegin(b, b === main ? opt.busyText : ''));
+  try {
+    return await job();
+  } catch (e) {
+    const msg = (e && e.message) || '操作失败';
+    if (!opt.quiet) toast(opt.errPrefix ? `${opt.errPrefix}：${msg}` : msg, true);
+    if (opt.onError) opt.onError(e, msg);
+    return null;
+  } finally {
+    all.forEach(btnEnd);
+    // 按最新业务状态重算禁用，而不是硬写 false
+    if (opt.after) opt.after();
+    BTN_BUSY.delete(main);
+  }
+}
+
+/* 破坏性操作统一确认格式：一句话说清做什么，第二行说清影响范围 */
+function askConfirm(action, detail) {
+  return window.confirm(`确定${action}？${detail ? '\n' + detail : ''}`);
+}
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
@@ -2074,6 +2392,11 @@ $('tabs').addEventListener('click', e => {
 
 let lastStatus = null;
 
+/* 全局唯一的忙碌口径：顶栏、轮询、文件页都用它，不再各算一套 */
+function isBusy(st) {
+  return ['scanning', 'running', 'paused', 'stopping'].includes((st && st.state) || 'idle');
+}
+
 function renderStatus(st) {
   const stats = st.stats || {};
   const ok = (stats.ok || 0) + (stats.skipped || 0);
@@ -2097,7 +2420,7 @@ function renderStatus(st) {
     $('badgeText').textContent = '单独执行中';
   }
 
-  const busy = ['scanning', 'running', 'paused', 'stopping'].includes(state);
+  const busy = isBusy(st);
   const paused = state === 'paused';
 
   // 源站限流正在退避：状态徽标换成倒计时，让人知道不是卡死了
@@ -2111,14 +2434,15 @@ function renderStatus(st) {
     $('badge').removeAttribute('title');
   }
 
-  $('btnStart').disabled = busy;
-  $('btnFull').disabled = busy;
-  $('btnPause').disabled = !(state === 'running' || state === 'scanning' || paused);
+  setBtnDisabled('btnStart', busy);
+  setBtnDisabled('btnFull', busy);
+  setBtnDisabled('btnPause', !(state === 'running' || state === 'scanning' || paused));
   $('btnPause').textContent = paused ? '继续任务' : '暂停';
   // 暂停中显示为「继续任务」，用软蓝状态色而不是实心主按钮，避免和「开始任务」抢焦点
-  $('btnPause').className = paused ? 'on' : 'ghost';
-  $('btnCancel').disabled = !busy;
-  $('btnRetry').disabled = busy;
+  $('btnPause').classList.toggle('on', paused);
+  $('btnPause').classList.toggle('ghost', !paused);
+  setBtnDisabled('btnCancel', !busy);
+  setBtnDisabled('btnRetry', busy);
 
   $('rootInfo').textContent = (st.roots || []).join('   ·   ') || '未配置扫描目录';
   // 路径太长会被截断，悬停给完整值
@@ -2160,6 +2484,9 @@ async function pollStatus() {
   } catch (e) {
     $('badgeText').textContent = '连接失败';
     $('badge').className = 'badge stopping';
+    // 状态接口拿不到时不能把顶栏按钮永久锁死，留一个手动重试的出口
+    setBtnDisabled('btnStart', false);
+    setBtnDisabled('btnFull', false);
     return;
   }
   renderStatus(st);
@@ -2167,8 +2494,7 @@ async function pollStatus() {
   if (S.tab === 'automation' && Date.now() - S.auto.lastLoad > 4000) loadAutomation();
   if (S.tab === 'tasks' && Date.now() - S.lastTasks > 2700) loadTasks();
   // 文件管理页：任务在跑就跟着刷，跑完的那一下也要刷（filesBusy 还留着 true）
-  const busy = ['scanning', 'running', 'paused', 'stopping'].includes(st.state)
-    || (st.single && st.single.count > 0);
+  const busy = isBusy(st) || (st.single && st.single.count > 0);
   if (S.tab === 'files' && (busy || S.filesBusy)
       && Date.now() - (S.filesTick || 0) > 1500) {
     S.filesTick = Date.now();
@@ -2666,7 +2992,7 @@ function nodeRowHtml(n, open, baseDepth) {
              stroke-linejoin="round" style="flex:none">
           <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
         </svg>
-        <span class="gname">${esc(n.name || n.path)}</span>
+        <span class="gname" title="${esc(n.path)}">${esc(n.name || n.path)}</span>
         ${pinned ? '<span class="tagpin">刚选择</span>' : ''}
         ${sub}
       </button>
@@ -2778,7 +3104,7 @@ function itemRowHtml(it, opts = {}) {
       <div class="rowbtns">
         <button class="tiny" data-act="pick">选帧</button>
         <button class="tiny" data-act="redo">重刮</button>
-        <button class="tiny danger" data-act="clean">删产物</button>
+        <button class="tiny danger subtle" data-act="clean">删产物</button>
       </div>
     </td>
   </tr>`;
@@ -2801,9 +3127,13 @@ function renderTasks(items) {
 
 function updateTaskSelInfo() {
   const n = S.taskSel.size, d = S.taskSelDirs.size;
-  $('taskSelInfo').innerHTML = (n || d)
-    ? `已选 <b>${n}</b> 个文件${d ? ` + <b>${d}</b> 个文件夹` : ''}`
-    : '未选择';
+  const el = $('taskSelInfo');
+  // 常显文案固定成「已选 N 项」，避免工具条宽度随勾选变化把按钮挤走；
+  // 文件 / 文件夹各多少放到悬停说明里，信息不丢。
+  el.innerHTML = (n || d) ? `已选 <b>${n + d}</b> 项` : '未选择';
+  el.title = (n || d)
+    ? `已选 ${n} 个文件${d ? ` + ${d} 个文件夹（连同子目录）` : ''}`
+    : '未选择任何任务';
   $('btnTaskDel').disabled = !(n || d);
   if (!(n || d)) closeTaskMenu();
 
@@ -2867,7 +3197,7 @@ $('taskBody').addEventListener('change', e => {
   updateTaskSelInfo();
 });
 
-/* 表头全选：按文件视图选当前这一页，按文件夹视图选当前列出的所有文件夹 */
+/* 表头全选：显示文件行时选当前这一页，显示文件夹行时选当前列出的所有文件夹 */
 $('taskAll').addEventListener('change', e => {
   const on = e.target.checked;
   S.taskSel.clear();
@@ -2879,7 +3209,10 @@ $('taskAll').addEventListener('change', e => {
   updateTaskSelInfo();
 });
 
-function closeTaskMenu() { $('taskDelMenu').hidden = true; }
+function closeTaskMenu() {
+  $('taskDelMenu').hidden = true;
+  $('btnTaskDel').setAttribute('aria-expanded', 'false');
+}
 
 $('btnTaskDel').addEventListener('click', e => {
   e.stopPropagation();
@@ -2891,6 +3224,7 @@ $('btnTaskDel').addEventListener('click', e => {
       : '先勾选任务';
   }
   menu.hidden = !menu.hidden;
+  $('btnTaskDel').setAttribute('aria-expanded', String(!menu.hidden));
 });
 
 document.addEventListener('click', e => {
@@ -2905,14 +3239,10 @@ async function deleteTasks(mode) {
   const what = mode === 'purge'
     ? '移除记录，并删除已生成的海报 / 背景图 / NFO'
     : '仅从任务列表移除（下次扫描会重新登记）';
-  if (!confirm(`确定${what}？\n共 ${scope}。`)) return;
+  if (!askConfirm(what, `共 ${scope}。`)) return;
 
-  const btn = $('btnTaskDel');
-  btn.disabled = true;
-  try {
-    const r = await post('/api/items/delete', {
-      paths, dirs, purge: mode === 'purge',
-    });
+  await runBtn('btnTaskDel', async () => {
+    const r = await post('/api/items/delete', { paths, dirs, purge: mode === 'purge' });
     toast(r.message, !r.ok);
     S.taskSel.clear();
     S.taskSelDirs.clear();
@@ -2921,11 +3251,8 @@ async function deleteTasks(mode) {
     S.taskSig = '';
     loadTasks(true);
     pollStatus();
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    updateTaskSelInfo();
-  }
+    return r;
+  }, { busyText: '移除中…', after: updateTaskSelInfo });
 }
 
 $('taskDelMenu').addEventListener('click', e => {
@@ -2948,104 +3275,102 @@ $('taskBody').addEventListener('click', async e => {
   const path = tr.dataset.path;
   if (btn.dataset.act === 'pick') { openPicker(path); return; }
   if (btn.dataset.act === 'redo') {
-    btn.disabled = true;
-    try {
+    await runBtn(btn, async () => {
       const r = await post('/api/files/scrape', { paths: [path] });
       toast(r.message || '已加入队列');
       setTimeout(() => loadTasks(true), 600);
-    } catch (err) { toast(err.message, true); btn.disabled = false; }
+      return r;
+    }, { busyText: '重刮中…' });
   } else {
-    if (!confirm('删除这条记录的产物（海报 / 背景图 / NFO）？删除后可以重新刮削生成。')) return;
-    try {
+    if (!askConfirm('删除这条记录的产物（海报 / 背景图 / NFO）',
+                    '删除后可以重新刮削生成。')) return;
+    await runBtn(btn, async () => {
       const r = await post('/api/files/delete', {
         paths: [path], what: ['poster', 'fanart', 'thumb', 'nfo'], reset: true,
       });
       toast(r.message);
       loadTasks(true);
-    } catch (err) { toast(err.message, true); }
+      return r;
+    }, { busyText: '删除中…' });
   }
 });
 
 /* ---------- 任务按钮 ---------- */
 
 async function startTask(full) {
-  if (full && !confirm('全量重刮会覆盖所有已生成的海报和 NFO，确定继续？')) return;
-  $('btnStart').disabled = $('btnFull').disabled = true;
-  try {
+  if (full && !askConfirm('全量重刮整库', '所有已生成的海报和 NFO 会被覆盖。')) return;
+  await runBtn('btnStart', async () => {
     const r = await post('/api/task/start?full=' + (full ? 'true' : 'false'));
     toast(r.message || '已开始');
     S.taskSig = '';
     setTimeout(() => { pollStatus(); loadTasks(true); }, 400);
-  } catch (e) {
-    toast(e.message, true);
-    pollStatus();
-  }
+    return r;
+  }, { peers: ['btnFull'], busyText: '启动中…', onError: () => pollStatus() });
 }
 $('btnStart').addEventListener('click', () => startTask(false));
 $('btnFull').addEventListener('click', () => startTask(true));
 
-$('btnPause').addEventListener('click', async () => {
+$('btnPause').addEventListener('click', () => runBtn('btnPause', async () => {
   const paused = lastStatus && lastStatus.state === 'paused';
-  try {
-    const r = await post('/api/task/' + (paused ? 'resume' : 'pause'));
-    toast(r.message);
-    setTimeout(pollStatus, 300);
-  } catch (e) { toast(e.message, true); }
-});
+  const r = await post('/api/task/' + (paused ? 'resume' : 'pause'));
+  toast(r.message);
+  setTimeout(pollStatus, 300);
+  return r;
+}, { busyText: '切换中…' }));
 
-$('btnCancel').addEventListener('click', async () => {
-  if (!confirm('取消当前任务？正在处理的结果会作废并退回待处理。')) return;
-  try {
+$('btnCancel').addEventListener('click', () => {
+  if (!askConfirm('取消当前任务', '正在处理的结果会作废并退回待处理。')) return;
+  return runBtn('btnCancel', async () => {
     const r = await post('/api/task/cancel');
     toast(r.message);
     setTimeout(() => { pollStatus(); loadTasks(true); }, 500);
-  } catch (e) { toast(e.message, true); }
+    return r;
+  }, { busyText: '取消中…' });
 });
 
-$('btnRetry').addEventListener('click', async () => {
-  try {
-    const r = await post('/api/retry-failed');
-    toast(r.message);
-    S.taskSig = '';
-    loadTasks(true);
-  } catch (e) { toast(e.message, true); }
-});
-$('btnTaskRefresh').addEventListener('click', () => { S.taskSig = ''; loadTasks(true); });
-$('taskLibBar').addEventListener('click', e => {
-  const tab = e.target.closest('[data-lib]');
-  if (tab) switchLib(tab.dataset.lib);
-});
-$('btnExpandAll').addEventListener('click', () => expandTree(true));
-$('btnCollapseAll').addEventListener('click', () => expandTree(false));
-$('btnPrev').addEventListener('click', () => { S.page = Math.max(1, S.page - 1); loadTasks(true); });
-$('btnNext').addEventListener('click', () => { S.page += 1; loadTasks(true); });
+$('btnRetry').addEventListener('click', () => runBtn('btnRetry', async () => {
+  const r = await post('/api/retry-failed');
+  toast(r.message);
+  S.taskSig = '';
+  loadTasks(true);
+  return r;
+}, { busyText: '重试中…' }));
+$('btnTaskRefresh').addEventListener('click', () => runBtn('btnTaskRefresh', () => {
+  S.taskSig = '';
+  return loadTasks(true);
+}, { busyText: '刷新中…' }));
+// 库横条的事件在 renderTaskLibBar 里已经绑过一次，这里不再重复监听（旧分支永不命中）
+$('btnExpandAll').addEventListener('click', () => runBtn('btnExpandAll',
+  () => expandTree(true), { busyText: '展开中…' }));
+$('btnCollapseAll').addEventListener('click', () => runBtn('btnCollapseAll',
+  () => expandTree(false), { busyText: '收起中…' }));
+$('btnPrev').addEventListener('click', () => runBtn('btnPrev', () => {
+  S.page = Math.max(1, S.page - 1); return loadTasks(true);
+}, { busyText: '加载中…' }));
+$('btnNext').addEventListener('click', () => runBtn('btnNext', () => {
+  S.page += 1; return loadTasks(true);
+}, { busyText: '加载中…' }));
 
-/* 按文件 / 按文件夹 */
-$('taskView').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-view]');
-  if (!btn || btn.dataset.view === S.tasksView) return;
-  S.tasksView = btn.dataset.view;
-  savePrefs({ tasksView: S.tasksView });
-  document.querySelectorAll('#taskView button').forEach(b =>
-    b.classList.toggle('on', b.dataset.view === S.tasksView));
+/* 任务列表不再有「按文件 / 按文件夹」手动切换：提交时选的是文件就显示文件行，
+   选的是文件夹就显示文件夹行。这个函数只在提交任务时调用（自动化验收也会用它
+   直接设定渲染形态），顺便把来源记到本地，刷新后还是同一种呈现。
+   返回 true 表示形态真的变了并已重拉列表；false 表示本来就是这种，调用方自己
+   决定要不要刷新。 */
+function setTaskView(view) {
+  const next = view === 'flat' ? 'flat' : 'dir';
+  savePrefs({ taskSource: next === 'flat' ? 'file' : 'dir' });
+  if (S.tasksView === next) return false;
+  S.tasksView = next;
   S.taskSel.clear();
   S.taskSelDirs.clear();
   S.taskSig = '';
   S.page = 1;
   paintTreeOps();
+  // 提交发生在「文件管理」页，这里不能只在任务列表页才重拉：否则切过去时
+  // 看到的还是上一次的分组行 / 文件行，得手动刷新才对。列表 DOM 先按新形态
+  // 备好，切标签时直接就是它。
   loadTasks(true);
-});
-
-function setTaskView(view) {
-  if (S.tasksView === view) return;
-  S.tasksView = view;
-  S.taskSel.clear();
-  S.taskSelDirs.clear();
-  document.querySelectorAll('#taskView button').forEach(b =>
-    b.classList.toggle('on', b.dataset.view === view));
-  S.taskSig = '';
-  paintTreeOps();
-  if (S.tab === 'tasks') loadTasks(true);
+  return true;
 }
 
 /* ---------- 排序（任务列表 / 文件管理共用） ---------- */
@@ -3607,7 +3932,7 @@ function renderFiles(data) {
       <td><div class="rowbtns">
         <button class="tiny" data-act="pick">选帧</button>
         <button class="tiny" data-act="scrape">刮削</button>
-        <button class="tiny danger" data-act="clean">删产物</button>
+        <button class="tiny danger subtle" data-act="clean">删产物</button>
       </div></td>
     </tr>`);
   });
@@ -3639,10 +3964,13 @@ function renderFiles(data) {
 function updateFileSelInfo() {
   const n = S.files.sel.size;
   const pickedDirs = S.files.dirPaths.size;
-  $('fileSelInfo').innerHTML =
-    `已选 <b>${n}</b> 项` + (pickedDirs ? `（含 ${pickedDirs} 个文件夹）` : '');
-  $('btnFileScrape').textContent = n > 1 ? `开始刮削 (${n})` : '开始刮削';
-  $('btnFileRescrape').textContent = n > 1 ? `开始重刮 (${n})` : '开始重刮';
+  const el = $('fileSelInfo');
+  // 数量只在左侧这个固定宽度的槽里显示一次：按钮文案保持恒定，
+  // 勾选 / 取消勾选时工具条宽度不变，按钮位置与右侧控件组都不会跳。
+  el.innerHTML = `已选 <b>${n}</b> 项`;
+  el.title = `已选 ${n} 项` + (pickedDirs
+    ? `（含 ${pickedDirs} 个文件夹，会连同子目录一起处理）`
+    : '（都是文件）');
   $('btnFileScrape').disabled = n === 0;
   $('btnFileRescrape').disabled = n === 0;
   $('btnFileDel').disabled = n === 0;
@@ -3702,17 +4030,16 @@ $('fileBody').addEventListener('click', async e => {
   if (!btn) return;
   const path = btn.closest('tr').dataset.path;
   if (btn.dataset.act === 'pick') { openPicker(path); return; }
-  btn.disabled = true;
-  try {
+  // 确认放在发请求之前，取消时按钮根本没进入处理中态，不用再手工回滚
+  if (btn.dataset.act === 'clean' && !askConfirm(
+      `删除 ${path.split(/[\\/]/).pop()} 的产物（海报 / 背景图 / NFO）`,
+      '删除后下次刮削会重新生成。')) return;
+  await runBtn(btn, async () => {
     if (btn.dataset.act === 'scrape') {
       const r = await post('/api/files/scrape', { paths: [path], now: true });
       toast(r.message, !r.ok);
       if (r.ok) watchFiles();
     } else {
-      if (!confirm(`删除 ${path.split(/[\\/]/).pop()} 的产物（海报 / 背景图 / NFO）？`)) {
-        btn.disabled = false;
-        return;
-      }
       const r = await post('/api/files/delete', {
         paths: [path], what: ['poster', 'fanart', 'thumb', 'nfo'], reset: true,
       });
@@ -3720,10 +4047,7 @@ $('fileBody').addEventListener('click', async e => {
     }
     S.files.sig = '';
     loadFiles(true);
-  } catch (err) {
-    toast(err.message, true);
-    btn.disabled = false;
-  }
+  }, { busyText: '处理中…' });
 });
 
 $('fileBody').addEventListener('change', e => {
@@ -3765,7 +4089,10 @@ $('fileAll').addEventListener('change', async e => {
 });
 
 /* 删除是破坏性操作，收进下拉菜单，不和「开始刮削」并排 */
-function closeFileMenu() { $('fileDelMenu').hidden = true; }
+function closeFileMenu() {
+  $('fileDelMenu').hidden = true;
+  $('btnFileDel').setAttribute('aria-expanded', 'false');
+}
 
 $('btnFileDel').addEventListener('click', e => {
   e.stopPropagation();
@@ -3777,6 +4104,7 @@ $('btnFileDel').addEventListener('click', e => {
       `将对选中的 ${n} 个文件操作${d ? `（含 ${d} 个文件夹里的）` : ''}，删掉后下次刮削会重新生成`;
   }
   menu.hidden = !menu.hidden;
+  $('btnFileDel').setAttribute('aria-expanded', String(!menu.hidden));
 });
 
 document.addEventListener('click', e => {
@@ -3796,13 +4124,15 @@ $('fileDelMenu').addEventListener('click', async e => {
   const spec = DEL_KINDS[btn.dataset.del];
   const paths = [...S.files.sel];
   if (!spec || !paths.length) { toast('先勾选文件', true); return; }
-  if (!confirm(`删除选中的 ${paths.length} 个文件的${spec.label}？删掉后下次刮削会重新生成。`)) return;
-  try {
+  if (!askConfirm(`删除选中的 ${paths.length} 个文件的${spec.label}`,
+                  '删掉后下次刮削会重新生成。')) return;
+  await runBtn('btnFileDel', async () => {
     const r = await post('/api/files/delete', { paths, what: spec.kinds, reset: true });
     toast(r.message, !r.ok);
     S.files.sig = '';
     loadFiles(true);
-  } catch (err) { toast(err.message, true); }
+    return r;
+  }, { busyText: '删除中…', after: updateFileSelInfo });
 });
 
 /* 任务在跑的时候文件管理自动跟随刷新（见 pollStatus），这里只留一个空函数名
@@ -3813,10 +4143,9 @@ function watchFiles() { S.filesTick = 0; }
 async function scrapeSelected(force) {
   const paths = [...S.files.sel];
   if (!paths.length) { toast('先勾选文件', true); return; }
-  if (force && !confirm(
-    `把选中的 ${paths.length} 个文件全部重新刮削？\n现有的海报 / 背景图 / NFO 会被覆盖。`)) return;  const btns = [$('btnFileScrape'), $('btnFileRescrape')];
-  btns.forEach(b => { b.disabled = true; });
-  try {
+  if (force && !askConfirm(`把选中的 ${paths.length} 个文件全部重新刮削`,
+                           '现有的海报 / 背景图 / NFO 会被覆盖。')) return;
+  await runBtn('btnFileScrape', async () => {
     // 只选了一个就立刻单独执行，不必等批量队列里排在前面的几百个
     const r = await post('/api/files/scrape',
       { paths, now: paths.length === 1, force: !!force });
@@ -3824,22 +4153,24 @@ async function scrapeSelected(force) {
     S.files.sig = '';
     setTimeout(() => loadFiles(true), 700);
     watchFiles();
-    // 按文件夹选的：任务列表切到文件夹视图，并把刚选的文件夹置顶标出来，
-    // 但先不展开 —— 里面的文件等用户点开再看
-    if (r.started && S.files.dirPaths.size) {
-      S.pinnedDirs = new Set(S.files.dirPaths.keys());
-      S.pinnedScrolled = false;
-      const was = S.tasksView;
-      setTaskView('dir');
-      // 本来就在按文件夹视图时 setTaskView 会直接返回，得自己重拉一次，
-      // 否则「刚选择」那一支的祖先不会展开，也不会滚到眼前
-      if (was === 'dir') { S.taskSig = ''; loadTasks(true); }
+    // 提交的是什么，任务列表就显示什么：勾文件 → 文件行，勾文件夹 → 文件夹行。
+    // 勾文件夹时顺手把刚选的目录置顶（但先不展开，里面的文件等用户点开再看）。
+    if (r.started) {
+      const byDir = S.files.dirPaths.size > 0;
+      if (byDir) {
+        S.pinnedDirs = new Set(S.files.dirPaths.keys());
+        S.pinnedScrolled = false;
+      } else {
+        S.pinnedDirs.clear();
+      }
+      // 形态没变时 setTaskView 不会重拉，得自己拉一次：否则文件夹那一支的祖先
+      // 不会展开、不会滚到眼前，新提交的文件行也不会及时出现
+      if (!setTaskView(byDir ? 'dir' : 'flat')) {
+        S.taskSig = '';
+        loadTasks(true);
+      }
     }
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    updateFileSelInfo();
-  }
+  }, { peers: ['btnFileRescrape'], busyText: '启动中…', after: updateFileSelInfo });
 }
 
 $('btnFileScrape').addEventListener('click', () => scrapeSelected(false));
@@ -3851,7 +4182,10 @@ $('btnFileRescrape').addEventListener('click', () => scrapeSelected(true));
    之后整条链路都没封面。这件事和多层结构有关、只对一部分库有用，因此不做进
    刮削流程，放在这里让人手动点。 */
 
-function closeFolderArtMenu() { $('folderArtMenu').hidden = true; }
+function closeFolderArtMenu() {
+  $('folderArtMenu').hidden = true;
+  $('btnFolderArt').setAttribute('aria-expanded', 'false');
+}
 
 $('btnFolderArt').addEventListener('click', e => {
   e.stopPropagation();
@@ -3864,6 +4198,7 @@ $('btnFolderArt').addEventListener('click', e => {
       : `按选中的 ${n} 个文件所在目录补封面和背景图`;
   }
   menu.hidden = !menu.hidden;
+  $('btnFolderArt').setAttribute('aria-expanded', String(!menu.hidden));
 });
 
 document.addEventListener('click', e => {
@@ -3886,18 +4221,15 @@ $('folderArtMenu').addEventListener('click', async e => {
     return;
   }
   const force = btn.dataset.fart === 'all';
-  if (force && !confirm('把选中范围里所有封面和背景图都重新生成一遍？已有的会被覆盖。')) return;
-  $('btnFolderArt').disabled = true;
-  try {
+  if (force && !askConfirm('把选中范围里所有封面和背景图都重新生成一遍',
+                           '已有的会被覆盖。')) return;
+  await runBtn('btnFolderArt', async () => {
     const r = await post('/api/files/folder-poster', { dirs, paths, force });
     toast(r.message, !r.ok);
     S.files.sig = '';
     setTimeout(() => loadFiles(true), 400);
-  } catch (err) {
-    toast(err.message, true);
-  } finally {
-    updateFileSelInfo();
-  }
+    return r;
+  }, { busyText: '补图中…', after: updateFileSelInfo });
 });
 
 /* ---------- 指定这一层用哪张图当封面 ----------
@@ -3982,36 +4314,28 @@ $('artGrid').addEventListener('click', e => {
   $('btnArtApply').disabled = false;
 });
 
-$('btnArtApply').addEventListener('click', async () => {
+$('btnArtApply').addEventListener('click', () => {
   if (!S_ART.pick) return;
-  const btn = $('btnArtApply');
-  btn.disabled = true;
-  try {
+  return runBtn('btnArtApply', async () => {
     const r = await post('/api/files/art-pin', { dir: S_ART.dir, source: S_ART.pick });
     toast(r.message);
     closeArtPicker();
     S.files.sig = '';
     loadFiles(true);
-  } catch (err) {
-    toast(err.message, true);
-    btn.disabled = false;
-  }
+    return r;
+  }, { busyText: '应用中…' });
 });
 
-$('btnArtAuto').addEventListener('click', async () => {
+$('btnArtAuto').addEventListener('click', () => {
   if (!S_ART.pinned) { closeArtPicker(); return; }
-  $('btnArtAuto').disabled = true;
-  try {
+  return runBtn('btnArtAuto', async () => {
     const r = await post('/api/files/art-pin', { dir: S_ART.dir, source: '' });
     toast(r.message);
     closeArtPicker();
     S.files.sig = '';
     loadFiles(true);
-  } catch (err) {
-    toast(err.message, true);
-  } finally {
-    $('btnArtAuto').disabled = false;
-  }
+    return r;
+  }, { busyText: '恢复中…' });
 });
 
 $('btnCloseArt').addEventListener('click', closeArtPicker);
@@ -4019,7 +4343,10 @@ $('artModal').addEventListener('click', e => {
   if (e.target === $('artModal')) closeArtPicker();
 });
 
-$('btnFileRefresh').addEventListener('click', () => { S.files.sig = ''; loadFiles(true); });
+$('btnFileRefresh').addEventListener('click', () => runBtn('btnFileRefresh', () => {
+  S.files.sig = '';
+  return loadFiles(true);
+}, { busyText: '刷新中…' }));
 
 let fileTimer = null;
 $('fileSearch').addEventListener('input', e => {
@@ -4068,31 +4395,28 @@ function renderServers(list) {
   box.innerHTML = html;
 }
 
-$('btnSrvTest').addEventListener('click', async () => {
-  const btn = $('btnSrvTest');
-  btn.disabled = true;
-  try {
-    const r = await post('/api/servers/test');
-    const detail = (r.servers || []).map(s => `${s.name}: ${s.detail || s.version || '未知'}`);
-    toast([r.message, ...detail].join(' · '), !r.ok);
-    srvCache = '';
-    pollStatus();
-  } catch (e) { toast(e.message, true); }
-  finally { btn.disabled = false; }
-});
-$('btnSrvScan').addEventListener('click', async () => {
-  try {
-    const r = await post('/api/servers/scan');
-    toast(r.message);
-  } catch (e) { toast(e.message, true); }
-});
-$('btnSrvRefresh').addEventListener('click', async () => {
-  if (!confirm('让媒体服务器重建这些文件的图片？Jellyfin 需要这一步才会显示新海报。')) return;
-  try {
+$('btnSrvTest').addEventListener('click', () => runBtn('btnSrvTest', async () => {
+  const r = await post('/api/servers/test');
+  const detail = (r.servers || []).map(s => `${s.name}: ${s.detail || s.version || '未知'}`);
+  toast([r.message, ...detail].join(' · '), !r.ok);
+  srvCache = '';
+  pollStatus();
+  return r;
+}, { busyText: '测试中…' }));
+$('btnSrvScan').addEventListener('click', () => runBtn('btnSrvScan', async () => {
+  const r = await post('/api/servers/scan');
+  toast(r.message);
+  return r;
+}, { busyText: '扫描中…' }));
+$('btnSrvRefresh').addEventListener('click', () => {
+  if (!askConfirm('让媒体服务器重建这些文件的图片',
+                  'Jellyfin 需要这一步才会显示新海报。')) return;
+  return runBtn('btnSrvRefresh', async () => {
     const r = await post('/api/servers/refresh');
     toast(r.message);
     setTimeout(pollStatus, 600);
-  } catch (e) { toast(e.message, true); }
+    return r;
+  }, { busyText: '刷新中…' });
 });
 
 /* ---------- 日志 ---------- */
@@ -4133,15 +4457,13 @@ async function pollLogs() {
 }
 
 async function showRawLog() {
-  try {
-    const data = await api('/api/logs/file?limit=400');
-    if (!data.lines || !data.lines.length) { toast('日志文件还没内容', true); return; }
-    S.logMode = 'file';
-    $('btnLogFile').textContent = '回到实时';
-    $('logBody').innerHTML = data.lines.map(line =>
-      `<div class="log-line dim"><span class="m">${esc(line)}</span></div>`).join('');
-    $('logBody').scrollTop = $('logBody').scrollHeight;
-  } catch (e) { toast(e.message, true); }
+  const data = await api('/api/logs/file?limit=400');
+  if (!data.lines || !data.lines.length) throw new Error('日志文件还没内容');
+  S.logMode = 'file';
+  $('btnLogFile').textContent = '回到实时';
+  $('logBody').innerHTML = data.lines.map(line =>
+    `<div class="log-line dim"><span class="m">${esc(line)}</span></div>`).join('');
+  $('logBody').scrollTop = $('logBody').scrollHeight;
 }
 
 function backToLive() {
@@ -4154,12 +4476,17 @@ function backToLive() {
 }
 
 $('btnLogFile').addEventListener('click', () => {
-  if (S.logMode === 'live') showRawLog(); else backToLive();
+  if (S.logMode === 'live') runBtn('btnLogFile', showRawLog, { busyText: '读取中…' });
+  else backToLive();
 });
-$('btnLogDownload').addEventListener('click', () =>
-  window.open('/api/logs/download?which=main', '_blank'));
-$('btnLogErrors').addEventListener('click', () =>
-  window.open('/api/logs/download?which=errors', '_blank'));
+/* 下载走 window.open，成功 / 被浏览器拦截都要给一句反馈，别点了没反应 */
+function downloadLog(which, label) {
+  const win = window.open('/api/logs/download?which=' + which, '_blank');
+  toast(win ? `已在新窗口打开${label}下载`
+            : '浏览器拦截了下载窗口，请允许弹出窗口后重试', !win);
+}
+$('btnLogDownload').addEventListener('click', () => downloadLog('main', '完整日志'));
+$('btnLogErrors').addEventListener('click', () => downloadLog('errors', '错误日志'));
 $('logSearch').addEventListener('input', () => { S.logFilter = ''; });
 $('logLevel').addEventListener('change', () => { S.logFilter = ''; });
 
@@ -4769,20 +5096,17 @@ function refreshAfterPick() {
   if (S.tab === 'files') loadFiles(true); else loadTasks(true);
 }
 
-$('btnPickApply').addEventListener('click', async () => {
+$('btnPickApply').addEventListener('click', () => {
   const kinds = [];
   if ($('pickPosterOn').checked) kinds.push('poster');
   if ($('pickFanartOn').checked) kinds.push('fanart');
   if ($('pickThumbOn').checked) kinds.push('thumb');
   if (!kinds.length) { toast('至少选一种图片', true); return; }
 
-  const btn = $('btnPickApply');
-  btn.disabled = true;
-  btn.textContent = '生成中…';
   // 取景框只作用于它对应的那种图：海报模式只裁海报，背景图模式只裁背景图
   const box = PICK.cropMode === 'none' ? null
     : [PICK.crop.x, PICK.crop.y, PICK.crop.w, PICK.crop.h].map(v => Number(v.toFixed(4)));
-  try {
+  return runBtn('btnPickApply', async () => {
     const r = await post('/api/frames/apply', {
       path: PICK.path, seconds: PICK.t, kinds,
       refresh: $('pickRefreshOn').checked,
@@ -4792,22 +5116,20 @@ $('btnPickApply').addEventListener('click', async () => {
     toast(r.message);
     closePicker();
     refreshAfterPick();
-  } catch (e) {
-    toast(e.message, true);
-    btn.disabled = false;
-  } finally {
-    btn.textContent = PICK.cropMode === 'none' ? '使用整帧' : '确定裁切';
-  }
+    return r;
+  }, { busyText: '生成中…' });
 });
 
-$('btnPickAuto').addEventListener('click', async () => {
-  if (!confirm('恢复自动选帧？现有图片不变，下次重刮会按采样自动挑最清晰的一帧。')) return;
-  try {
+$('btnPickAuto').addEventListener('click', () => {
+  if (!askConfirm('恢复自动选帧',
+                  '现有图片不变，下次重刮会按采样自动挑最清晰的一帧。')) return;
+  return runBtn('btnPickAuto', async () => {
     const r = await post('/api/frames/auto', { path: PICK.path });
     toast(r.message);
     closePicker();
     refreshAfterPick();
-  } catch (e) { toast(e.message, true); }
+    return r;
+  }, { busyText: '恢复中…' });
 });
 
 /* ---------- 账号 ---------- */
@@ -4817,16 +5139,18 @@ let account = null;
 async function loadAccount() {
   try { account = await api('/api/account'); } catch (e) { return; }
   const enabled = account.auth_enabled;
+  // 顶栏与设置页用同一套显隐条件，别出现一处能退出、一处不能的怪现象
   $('btnAccount').hidden = !enabled;
   $('btnLogoutTop').hidden = !enabled;
-  $('btnAccount').textContent = enabled ? '账号 · ' + account.username : '设置';
+  $('btnLogout').hidden = !enabled;
+  $('btnAccount').textContent = '账号 · ' + account.username;
   $('pwNotice').hidden = !(enabled && account.default_password);
   $('accUser').value = enabled ? account.username : '';
   $('setAccHint').textContent = enabled
     ? `当前账号 ${account.username}，登录状态保持 ${Math.round(account.session_hours / 24)} 天`
       + (account.default_password ? ' · 还是默认密码，建议改掉' : '')
     : '当前没有启用登录（web.auth.enabled = false）';
-  $('btnSaveAccount').disabled = !enabled;
+  setBtnDisabled('btnSaveAccount', !enabled);
 }
 
 function accMsg(text, kind) {
@@ -4859,9 +5183,7 @@ async function saveAccount() {
   const body = { current_password: current, username };
   if (next) body[NEW_PWD_KEY] = next;
 
-  btn.disabled = true;
-  btn.textContent = '保存中…';
-  try {
+  await runBtn(btn, async () => {
     const r = await post('/api/account', body);
     account.username = r.username;
     account.default_password = r.default_password;
@@ -4871,18 +5193,20 @@ async function saveAccount() {
     accMsg(r.message || '已保存', 'ok');
     toast(r.message || '账号已更新');
     loadAccount();
-  } catch (e) {
-    accMsg(e.message, 'err');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '保存账号';
-  }
+    return r;
+  }, { busyText: '保存中…', onError: (e, msg) => accMsg(msg, 'err') });
 }
 
+let logoutBusy = false;
 async function logout() {
-  if (!confirm('退出登录？下次需要重新输入密码。')) return;
+  if (logoutBusy) return;
+  if (!askConfirm('退出登录', '下次需要重新输入密码。')) return;
+  logoutBusy = true;
+  setBtnDisabled('btnLogoutTop', true);
+  setBtnDisabled('btnLogout', true);
   clearInterval(timer);
-  try { await post('/api/logout'); } catch (e) {}
+  try { await post('/api/logout'); }
+  catch (e) { toast('退出请求失败，仍会跳转到登录页', true); }
   location.replace('/login');
 }
 
@@ -4957,7 +5281,7 @@ function serverEditorHtml(s, index) {
         ${s.enabled ? 'checked' : ''}> 启用</label>
       <span class="srv-name">${esc(s.name || '新服务器')}</span>
       <span class="grow"></span>
-      <button class="tiny danger" data-srvdel="${index}">删除</button>
+      <button class="tiny danger subtle" data-srvdel="${index}">删除</button>
     </div>
     <div class="set-grid">
       <label class="fld"><span>名称</span>
@@ -5055,7 +5379,7 @@ async function loadSettings() {
 }
 
 $('btnSrvAdd').addEventListener('click', () => {
-  if (!S.settings) return;
+  if (!S.settings) { toast('设置还没加载完，请稍后再试', true); return; }
   S.settings.servers = [...collectServers(), {
     name: '', type: 'auto', enabled: true, url: '', api_key: '', has_key: false,
     path_map: {}, refresh_after: true, verify_after: true, scan_after: false,
@@ -5065,6 +5389,7 @@ $('btnSrvAdd').addEventListener('click', () => {
   const rows = document.querySelectorAll('#srvEditor .srv-edit');
   const last = rows[rows.length - 1];
   if (last) last.querySelector('[data-f="name"]').focus();
+  toast('已新增一行，填好后点「保存设置」才会生效');
 });
 
 $('srvEditor').addEventListener('click', e => {
@@ -5072,7 +5397,7 @@ $('srvEditor').addEventListener('click', e => {
   if (!del) return;
   const row = del.closest('.srv-edit');
   const name = row.querySelector('[data-f="name"]').value.trim() || '这台服务器';
-  if (!confirm(`移除「${name}」？保存设置后才会真正生效。`)) return;
+  if (!askConfirm(`移除「${name}」`, '保存设置后才会真正生效。')) return;
   S.settings.servers = collectServers();
   S.settings.servers.splice(Number(del.dataset.srvdel), 1);
   renderSrvEditor();
@@ -5112,6 +5437,19 @@ function renderAutoSummary(sch) {
   }
   const auto = $('autoAutostart');
   if (auto && document.activeElement !== auto) auto.checked = !!sch.autostart;
+  // 实时监听依赖 watchdog：不可用时把开关一起禁掉，避免保存一条永远不会生效的任务
+  const watchBox = $('autoWatch');
+  if (watchBox) {
+    const unavailable = sch.watch_available === false;
+    setBtnDisabled(watchBox, unavailable);
+    if (unavailable) {
+      watchBox.checked = false;
+      watchBox.title = sch.watch_reason || '当前环境不支持实时监听';
+      $('autoWatchOpts').hidden = true;
+    } else if (watchBox.title && watchBox.title === (sch.watch_reason || '')) {
+      watchBox.removeAttribute('title');
+    }
+  }
   $('tabAutoCount').textContent = n ? `(${n})` : '';
 }
 
@@ -5218,46 +5556,36 @@ $('autoList').addEventListener('click', async e => {
 
   if (act === 'edit') { openAutoModal(task); return; }
   if (act === 'run') {
-    btn.disabled = true;
-    btn.textContent = '触发中…';
-    try {
+    return runBtn(btn, async () => {
       const r = await post('/api/automation/run', { id });
       toast(r.message || '已触发', r.started !== true);
       S.auto.tasks = r.tasks || S.auto.tasks;
       renderAutomation(r.status || {});
       renderAutoSummary(r.status);
       pollStatus();
-    } catch (err) {
-      toast(err.message, true);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = '立即执行';
-    }
-    return;
+      return r;
+    }, { busyText: '触发中…' });
   }
   if (act === 'toggle') {
-    try {
+    return runBtn(btn, async () => {
       const r = await post('/api/automation/toggle', { id, enabled: !task.enabled });
       S.auto.tasks = r.tasks || S.auto.tasks;
       renderAutomation(r.status || {});
       renderAutoSummary(r.status);
       toast(r.message || '已切换');
-    } catch (err) {
-      toast(err.message, true);
-    }
-    return;
+      return r;
+    }, { busyText: '切换中…' });
   }
   if (act === 'del') {
-    if (!confirm(`删除自动化任务「${task.name}」？已生成的海报 / NFO 不会动。`)) return;
-    try {
+    if (!askConfirm(`删除自动化任务「${task.name}」`, '已生成的海报 / NFO 不会动。')) return;
+    return runBtn(btn, async () => {
       const r = await post('/api/automation/delete', { id });
       S.auto.tasks = r.tasks || [];
       renderAutomation(r.status || {});
       renderAutoSummary(r.status);
       toast(r.message || '已删除');
-    } catch (err) {
-      toast(err.message, true);
-    }
+      return r;
+    }, { busyText: '删除中…' });
   }
 });
 
@@ -5433,7 +5761,8 @@ $('btnAutoCancel').addEventListener('click', closeAutoModal);
 $('autoModal').addEventListener('click', e => {
   if (e.target === $('autoModal')) closeAutoModal();
 });
-$('btnAutoRefresh').addEventListener('click', () => loadAutomation());
+$('btnAutoRefresh').addEventListener('click', () => runBtn('btnAutoRefresh',
+  () => loadAutomation(), { busyText: '刷新中…' }));
 
 $('autoScopeHere').addEventListener('click', () => {
   if (!S.auto.browse) return;
@@ -5451,15 +5780,22 @@ $('autoWatch').addEventListener('change', e => {
 });
 
 $('autoAutostart').addEventListener('change', async e => {
-  const on = e.target.checked;
+  const box = e.target;
+  if (BTN_BUSY.has(box)) return;
+  BTN_BUSY.add(box);
+  const on = box.checked;
+  setBtnDisabled(box, true);
   try {
     const r = await post('/api/automation/autostart', { enabled: on });
     toast(on ? '容器启动后会先跑一轮整库' : '容器启动后不再自动跑', false);
     renderAutoSummary({ ...(r.status || {}), count: S.auto.tasks.length,
       enabled_count: S.auto.tasks.filter(t => t.enabled).length, autostart: r.autostart });
   } catch (err) {
-    e.target.checked = !on;
+    box.checked = !on;
     toast(err.message, true);
+  } finally {
+    setBtnDisabled(box, false);
+    BTN_BUSY.delete(box);
   }
 });
 
@@ -5471,9 +5807,7 @@ $('btnAutoSave').addEventListener('click', async () => {
   const watch = $('autoWatch').checked;
   const debounce = Number($('autoDebounce').value) || 60;
   if (watch && debounce < 10) { autoMsg('静默时间至少 10 秒', 'err'); return; }
-  btn.disabled = true;
-  btn.textContent = '保存中…';
-  try {
+  await runBtn(btn, async () => {
     const body = {
       name, scope: S.auto.scope || '',
       mode: autoModeValue(),
@@ -5489,12 +5823,8 @@ $('btnAutoSave').addEventListener('click', async () => {
     renderAutoSummary(r.status);
     closeAutoModal();
     toast(r.message || '任务已保存');
-  } catch (e) {
-    autoMsg(e.message, 'err');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '保存任务';
-  }
+    return r;
+  }, { busyText: '保存中…', onError: (e, msg) => autoMsg(msg, 'err') });
 });
 
 function settingsPayload(roots) {
@@ -5521,13 +5851,10 @@ function settingsPayload(roots) {
   };
 }
 
-async function saveSettings(btn, label) {
+async function saveSettings(btn) {
   const roots = $('setRoots').value.split('\n').map(s => s.trim()).filter(Boolean);
   if (!roots.length) { setMsg('媒体库目录至少要留一个', 'err'); toast('媒体库目录不能为空', true); return null; }
-  const text = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '保存中…';
-  try {
+  return runBtn(btn, async () => {
     const r = await post('/api/settings', settingsPayload(roots));
     setMsg(r.message || '已保存', r.ok === false ? 'err' : 'ok');
     toast(r.message || '设置已保存', r.ok === false);
@@ -5539,25 +5866,31 @@ async function saveSettings(btn, label) {
     if (S.tab === 'tasks') loadTasks(true);
     if (S.tab === 'files') { S.files.sig = ''; loadFiles(true); }
     return r;
-  } catch (e) {
-    setMsg(e.message, 'err');
-    toast(e.message, true);
-    return null;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label || text;
-  }
+  }, { busyText: '保存中…', onError: (e, msg) => setMsg(msg, 'err') });
 }
 
-$('btnSaveSettings').addEventListener('click', () => saveSettings($('btnSaveSettings'), '保存设置'));
+$('btnSaveSettings').addEventListener('click', () => saveSettings($('btnSaveSettings')));
 
 /* ---------- 启动 ---------- */
 
+/* 三个下拉触发按钮的无障碍标记也集中声明，和各自的 close 函数配对 */
+['btnTaskDel', 'btnFileDel', 'btnFolderArt'].forEach(id => {
+  const b = $(id);
+  if (b) { b.setAttribute('aria-haspopup', 'menu'); b.setAttribute('aria-expanded', 'false'); }
+});
+applyBtnHints();
+// 表格行 / 卡片是动态渲染的：只在真的新增了按钮时给新节点补说明，每帧最多一次
+let hintPending = false;
+new MutationObserver(list => {
+  const addedButtons = list.some(m => [...m.addedNodes].some(n =>
+    n.nodeType === 1 && (n.tagName === 'BUTTON' || n.querySelector('button'))));
+  if (!addedButtons || hintPending) return;
+  hintPending = true;
+  requestAnimationFrame(() => { hintPending = false; applyBtnHints(); });
+}).observe(document.body, { childList: true, subtree: true });
+
 paintSortSeg('taskSort', S.taskSort);
 paintSortSeg('fileSort', S.files.sort);
-// HTML 里默认写的是「任务列表 + 按文件夹」，这里按上次记住的样子校正一遍
-document.querySelectorAll('#taskView button').forEach(b =>
-  b.classList.toggle('on', b.dataset.view === S.tasksView));
 loadAccount();
 pollStatus();
 loadTasks(true);

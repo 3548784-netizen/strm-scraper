@@ -2,16 +2,17 @@
 """列表缩略图回归：任务列表走小图，预览走原图。
 
 先 `python tools/devserver.py` 起环境，再跑本脚本（需要本机 Edge）。
+服务不在默认 6670 时用 `--base` 指过去。
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:6670"
 FAIL: list[str] = []
 
 
@@ -22,6 +23,9 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default="http://127.0.0.1:6670")
+    base = ap.parse_args().base.rstrip("/")
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="msedge", headless=True)
         ctx = browser.new_context(viewport={"width": 1500, "height": 950})
@@ -44,7 +48,7 @@ def main() -> int:
         page.on("response", on_response)
 
         print("========== 列表缩略图 ==========")
-        page.goto(BASE + "/", wait_until="domcontentloaded")
+        page.goto(base + "/", wait_until="domcontentloaded")
         page.wait_for_timeout(800)
         if page.query_selector("#username"):
             page.fill("#username", "admin")
@@ -54,8 +58,8 @@ def main() -> int:
 
         page.click('[data-tab="tasks"]')
         page.wait_for_timeout(2500)
-        # 任务列表默认是目录树视图，缩略图在平铺视图里
-        page.click('#taskView button[data-view="flat"]')
+        # 缩略图在文件行里，用内部设定切过去
+        page.evaluate("v => setTaskView(v)", "flat")
         page.wait_for_selector("#taskBody tr[data-path]", timeout=10000)
         page.wait_for_timeout(900)
 

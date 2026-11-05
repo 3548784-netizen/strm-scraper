@@ -107,8 +107,17 @@ def main() -> int:
     check("二次请求更快", b["ms"] <= max(a["ms"] * 1.5, a["ms"] + 20), f"{a['ms']} → {b['ms']} ms")
 
     print("---------- 4. 原图接口未受影响 ----------")
+    # 别写死像素值：夹具里的测试图会随 devserver 重建/重刮变成别的尺寸，
+    # 这里要验证的是「不带 w 就是磁盘上的原图，没被缩略图逻辑改小」。
     plain = image(base, path, "poster", art["poster"])
-    check("不带 w 返回原尺寸", plain["size"] == (1000, 1500), str(plain["size"]))
+    ref = image(base, path, "poster", art["poster"], w=96)
+    check("不带 w 返回的是原图、没有被缩略图改小",
+          plain["code"] == 200 and plain["size"][0] > ref["size"][0]
+          and plain["bytes"] > ref["bytes"],
+          f"原图 {plain['size']} / 小图 {ref['size']}")
+    check("海报原图仍是 2:3 比例",
+          abs(plain["size"][0] / plain["size"][1] - 2 / 3) < 0.02,
+          str(plain["size"]))
 
     print("---------- 5. 异常输入 ----------")
     bad = image(base, "C:/definitely/not/here.strm", "poster", 1, w=96)

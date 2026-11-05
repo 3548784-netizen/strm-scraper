@@ -256,13 +256,13 @@ def main() -> int:
         print("\n---------- 2. 任务列表：同一套判据 ----------")
         page.click('[data-tab="tasks"]')
         page.wait_for_timeout(1400)
-        # 默认是「按文件夹」，先切到「按文件」再断言：文件行不该再挂文件夹标签
-        page.click('#taskView button[data-view="flat"]')
+        # 用内部设定切到文件行再断言：文件行不该再挂文件夹标签
+        page.evaluate("v => setTaskView(v)", "flat")
         page.wait_for_timeout(1200)
         task_tags = page.evaluate("""() => [...document.querySelectorAll('#taskBody .foldertag')]
             .map(e => e.textContent.trim())""")
         check("平铺视图里文件行不带文件夹标签", not task_tags, str(task_tags))
-        page.click('#taskView button[data-view="dir"]')
+        page.evaluate("v => setTaskView(v)", "dir")
         page.wait_for_timeout(1200)
         first_tag = page.evaluate("""() => {
           const row = [...document.querySelectorAll('#taskBody tr.grouprow')]

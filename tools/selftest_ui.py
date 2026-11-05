@@ -234,8 +234,8 @@ with sync_playwright() as p:
           f"{len(touched)} 个别的目录被重跑：{touched[:2]}")
     pg.click('[data-tab="tasks"]'); pg.wait_for_timeout(2200)
 
-    check("自动切到文件夹视图",
-          pg.eval_on_selector("#taskView button.on", "e => e.dataset.view") == "dir")
+    check("提交文件夹后自动显示文件夹行",
+          pg.evaluate("() => S.tasksView") == "dir")
     # 这一屏是目录树：结构跟文件管理里一层层点进去的一样，刚选的文件夹不挪到最前，
     # 而是把它的祖先展开，让它在原来的位置上露出来
     rows = pg.eval_on_selector_all("#taskBody tr.grouprow", """els => els.map(e => ({
@@ -306,8 +306,8 @@ with sync_playwright() as p:
     else:
         check("没有失败项时失败视图为空", not names, str(names))
     pg.click('#statusChips .chip-btn[data-status="all"]'); pg.wait_for_timeout(1200)
-    pg.click('#taskView button[data-view="flat"]'); pg.wait_for_timeout(1200)
-    check("能切回按文件视图", len(pg.query_selector_all("#taskBody tr.grouprow")) == 0)
+    pg.evaluate("v => setTaskView(v)", "flat"); pg.wait_for_timeout(1200)
+    check("内部设定能切回文件行", len(pg.query_selector_all("#taskBody tr.grouprow")) == 0)
 
     print("========== 7. 齐全跳过 / 开始重刮 ==========")
     ju = [d for d in api("/api/files")["dirs"] if d["name"] == "剧集"][0]["path"]
@@ -456,7 +456,7 @@ with sync_playwright() as p:
 
     print("========== 8. 任务列表勾选与删除 ==========")
     pg.click('[data-tab="tasks"]'); pg.wait_for_timeout(1200)
-    pg.click('#taskView button[data-view="flat"]'); pg.wait_for_timeout(1400)
+    pg.evaluate("v => setTaskView(v)", "flat"); pg.wait_for_timeout(1400)
     pg.click('#statusChips .chip-btn[data-status="all"]'); pg.wait_for_timeout(1400)
     total_before = api("/api/items?size=1")["total"]
     boxes = pg.query_selector_all("#taskBody input[data-tpick]")
@@ -486,7 +486,7 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1200)
     pg.click("#btnTaskRefresh"); pg.wait_for_timeout(1400)
 
-    pg.click('#taskView button[data-view="dir"]'); pg.wait_for_timeout(1800)
+    pg.evaluate("v => setTaskView(v)", "dir"); pg.wait_for_timeout(1800)
     groups = pg.query_selector_all("#taskBody tr.grouprow")
     check("按文件夹视图有分组", len(groups) >= 2, f"{len(groups)} 组")
     group_before = len(groups)

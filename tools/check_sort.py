@@ -67,7 +67,7 @@ def test_sort(store: StateStore) -> None:
     paged = store.items(limit=2, offset=2, sort="name", order="asc")
     check("排序 + 分页一起用", names(paged) == asc[2:4], str(names(paged)))
 
-    print("\n---------- 2. 按文件夹视图排序 ----------")
+    print("\n---------- 2. 文件夹行排序 ----------")
     by_name = store.dir_groups(sort="name", order="asc")
     check("文件夹按名称正序",
           [g["name"] for g in by_name] == sorted([g["name"] for g in by_name]),

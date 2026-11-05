@@ -77,12 +77,12 @@ def main() -> int:
         page.wait_for_timeout(800)
 
         print("\n---------- 0. 默认视图 ----------")
-        check("任务列表默认按文件夹显示",
-              page.eval_on_selector("#taskView button.on", "e => e.dataset.view") == "dir")
+        check("任务列表默认显示文件夹行",
+              page.evaluate("() => S.tasksView") == "dir")
         check("首屏直接是目录树",
               len(page.query_selector_all("#taskBody tr.grouprow")) >= 1)
-        # 下面几节比的是平铺视图里的排序，先切过去
-        page.click('#taskView button[data-view="flat"]')
+        # 下面几节比的是文件行里的排序，先切过去
+        page.evaluate("v => setTaskView(v)", "flat")
         page.wait_for_selector("#taskBody tr[data-path]", timeout=15000)
         page.wait_for_timeout(600)
 
@@ -118,8 +118,8 @@ def main() -> int:
         check("列表确实反过来了", task_names(page) == by_name_desc,
               str(task_names(page)[:3]))
 
-        print("\n---------- 4. 按文件夹视图也跟着排 ----------")
-        page.click('#taskView button[data-view="dir"]')
+        print("\n---------- 4. 文件夹行也跟着排 ----------")
+        page.evaluate("v => setTaskView(v)", "dir")
         page.wait_for_timeout(1500)
         # 这一屏是目录树，顺序要按「父在前、同层按名字倒序」来比：
         # 直接把整屏扁平排序会比错（根节点总在最前面）
@@ -151,7 +151,7 @@ def main() -> int:
         page.click('#taskSort button[data-sort="added"]')
         page.wait_for_timeout(1400)
         check("文件夹能切回按添加时间", seg_state(page, "#taskSort")[0] == "added")
-        page.click('#taskView button[data-view="flat"]')
+        page.evaluate("v => setTaskView(v)", "flat")
         page.wait_for_timeout(1200)
 
         print("\n---------- 5. 文件管理排序 ----------")

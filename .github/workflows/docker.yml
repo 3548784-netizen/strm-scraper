@@ -110,8 +110,8 @@ jobs:
               f"https://hub.docker.com/v2/repositories/{user}/strm-scraper/",
               data=json.dumps({
                   "full_description": body,
-                  "description": "115 网盘 strm 刮削器 · 海报/NFO · "
-                                 "定时自动化 · Emby & Jellyfin 联动",
+                  "description": "给没有刮削信息的视频补海报/背景图/NFO · "
+                                 "全格式开箱即用 · Emby & Jellyfin 联动",
               }, ensure_ascii=False).encode(),
               headers={
                   "Content-Type": "application/json",

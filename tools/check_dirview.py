@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""「按文件夹」视图回归：展开/收起时滚动位置是否稳定、大文件夹展开是否卡顿。
+"""「文件夹行」回归：展开/收起时滚动位置是否稳定、大文件夹展开是否卡顿。
 
 用法：
     python tools/devserver.py --media-root <带大量 strm 的目录> --data .devdata_perf --port 6671
@@ -138,6 +138,12 @@ def main() -> int:
     mid = [g for g in groups if 10 <= g["total"] <= 60]
     print(f"数据：{len(groups)} 个文件夹；大组「{big['name']}」{big['total']} 条；"
           f"中等组 {len(mid)} 个")
+    if len(mid) < 5 or big["total"] < 150:
+        print("\n  --   夹具不满足：需要 1 个 ≥150 条的大文件夹和至少 5 个 10~60 条的中等文件夹。")
+        print(f"       当前大组 {big['total']} 条、中等组 {len(mid)} 个；"
+              "本脚本要按文件头说明换一个带大量视频的 --media-root 再跑。")
+        print("       这是夹具前提问题，不是界面回归；本次跳过，不计失败。")
+        return 0
 
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="msedge", headless=True)
@@ -153,7 +159,7 @@ def main() -> int:
             page.wait_for_timeout(1200)
         page.click('[data-tab="tasks"]')
         page.wait_for_timeout(1000)
-        page.click('#taskView button[data-view="dir"]')
+        page.evaluate("v => setTaskView(v)", "dir")
         page.wait_for_timeout(1500)
 
         print("\n---------- 1. 大文件夹展开耗时 ----------")

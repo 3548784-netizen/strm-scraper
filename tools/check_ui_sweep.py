@@ -170,7 +170,7 @@ class Sweep:
 
     def _open_preview(self, page) -> bool:
         try:
-            page.click('#taskView button[data-view="flat"]')
+            page.evaluate("v => setTaskView(v)", "flat")
             page.wait_for_selector("#taskBody img.thumb", timeout=6000)
             page.locator("#taskBody img.thumb").first.click()
             page.wait_for_selector("#previewModal:not([hidden])", timeout=6000)
@@ -194,7 +194,7 @@ class Sweep:
         try:
             page.click('[data-tab="tasks"]')
             page.wait_for_timeout(1200)
-            page.click('#taskView button[data-view="flat"]')
+            page.evaluate("v => setTaskView(v)", "flat")
             page.wait_for_selector('#taskBody [data-act="pick"]', timeout=6000)
             page.locator('#taskBody [data-act="pick"]').first.click()
             page.wait_for_selector("#pickModal:not([hidden])", timeout=6000)

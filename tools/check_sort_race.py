@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -16,7 +17,9 @@ import urllib.request
 
 from playwright.async_api import async_playwright
 
-BASE = "http://127.0.0.1:6670"
+_ap = argparse.ArgumentParser(add_help=False)
+_ap.add_argument("--base", default="http://127.0.0.1:6670")
+BASE = _ap.parse_known_args()[0].base.rstrip("/")
 FAIL: list[str] = []
 
 
@@ -58,7 +61,7 @@ async def main_async() -> int:
         # 任务列表默认是目录树视图；这一节比的是平铺列表里的顺序，先切过去。
         # 切换本身也会发一次 /api/items —— 没关系，被拖慢的那次（首屏）照样会晚到，
         # 晚到的旧响应如果把平铺列表盖回目录树，后面的行数断言就会抓到。
-        await page.click('#taskView button[data-view="flat"]')
+        await page.evaluate("v => setTaskView(v)", "flat")
         await page.wait_for_selector("#taskBody tr[data-path]", timeout=8000)
         await page.wait_for_timeout(300)
         size = int(await page.evaluate("() => S.size"))

@@ -14,7 +14,7 @@ from typing import Callable, Iterable
 from . import frames, nfo, picker, probe, throttle
 from .config import Config
 from .media import (Target, artifacts, build_target, product_state, scan_rows,
-                    signature)
+                    signature, split_by_products)
 from .state import Item, StateStore
 
 log = logging.getLogger(__name__)
@@ -369,6 +369,8 @@ class Runner:
 
     def _scan(self, full: bool, only: set[str] | None = None) -> int:
         cfg = self.cfg
+        flags = (cfg.scrape.write_nfo, cfg.scrape.write_poster,
+                 cfg.scrape.write_fanart, cfg.scrape.thumb.enabled)
         if only is not None:
             # 只处理勾选的文件：不遍历媒体库，别的文件夹里的待处理项也不会被拉起来
             rows = []
@@ -378,9 +380,27 @@ class Runner:
                     continue
                 size, mtime = signature(source)
                 rows.append((str(source), size, mtime))
+            paths = [path for path, _s, _m in rows]
+            # ensure() 之后所有文件都有记录了，得先记下「原本没记录」的那些：
+            # 用户可能刚把已完成的任务从列表里删掉，但磁盘上的产物还在。
+            before = self.store.get_many(paths)
             self.store.ensure(rows)
-            for path, _size, _mtime in rows:
-                self.store.reset_one(path)
+            if self._force:
+                # 「开始重刮」是明确的覆盖意图，全部重新入队
+                for path in paths:
+                    self.store.reset_one(path)
+            else:
+                fresh = [p for p in paths if p not in before]
+                ready, _missing = split_by_products(fresh, *flags)
+                for path in ready:
+                    self.store.mark_skipped(path, "产物齐全，跳过")
+                reused = set(ready)
+                for path in paths:
+                    if path not in reused:
+                        self.store.reset_one(path)
+                if ready:
+                    log.info("复用本地产物：%s 个文件记录已删但产物齐全，直接跳过",
+                             len(ready))
             return len(rows)
 
         started = time.monotonic()
@@ -388,6 +408,8 @@ class Runner:
                          progress=self._note_scan)
         if not rows:
             return 0
+        all_paths = [path for path, _s, _m in rows]
+        before = self.store.get_many(all_paths)
         added = self.store.ensure(rows)
 
         if full:
@@ -398,15 +420,25 @@ class Runner:
             # 增量：失败的自动重试；成功的只要产物缺失也会重新入队
             self.store.reset(("failed",))
             # 一次批量取状态：逐个 get() 几千个文件就是几千次查询
-            known = self.store.get_many(path for path, _s, _m in rows)
+            known = self.store.get_many(all_paths)
             stale: list[str] = []
-            for path, _size, _mtime in rows:
+            for path in all_paths:
                 item = known.get(path)
                 if not item or item.status not in ("ok", "skipped"):
                     continue
                 stale.append(path)
             for path in self._missing_products(stale):
                 self.store.reset_one(path)
+            # 记录被删过 / 换了数据目录：产物齐全的直接标成「已复用」，
+            # 别因为 state.db 里没有这一行就把它当成新片重新刮一遍。
+            fresh = [p for p in all_paths if p not in before]
+            if fresh:
+                ready, _missing = split_by_products(fresh, *flags)
+                for path in ready:
+                    self.store.mark_skipped(path, "产物齐全，跳过")
+                if ready:
+                    log.info("复用本地产物：%s 个新登记文件产物齐全，直接跳过",
+                             len(ready))
 
         log.info("扫描完成：%s 个文件，新增 %s 个，用时 %.1f 秒",
                  len(rows), added, time.monotonic() - started)

@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 
 from .config import Config
-from .media import scan_rows, signature
+from .media import scan_rows, signature, split_by_products
 from .state import StateStore
 from .watcher import DEFAULT_DEBOUNCE, MIN_DEBOUNCE as WATCH_MIN_DEBOUNCE, Watcher
 from .worker import Runner
@@ -422,24 +422,46 @@ class Scheduler:
 
         已经刮好、而且文件没动过的直接跳过——目录里的任何触碰（比如资源管理器
         打开一下、索引服务扫一遍）都会来事件，全盘照收等于反复重刮。
+        任务记录被从列表里删掉时也一样：产物还在磁盘上就直接复用，不能因为
+        state.db 里少了这一行就把已有结果重新刮一遍。
         """
+        files = [p for p in paths if Path(p).is_file()]
+        cfg = getattr(self, "cfg", None)
+        scrape = getattr(cfg, "scrape", None) if cfg is not None else None
+        if scrape is not None:
+            flags = (scrape.write_nfo, scrape.write_poster,
+                     scrape.write_fanart, scrape.thumb.enabled)
+        else:
+            # 只装了 store 的最小化桩对象（回归脚本会用）：退回项目默认配置
+            flags = (True, True, True, False)
         if self.store is None:
-            return [p for p in paths if Path(p).is_file()]
+            _ready, missing = split_by_products(files, *flags)
+            return missing
+
         known = self.store.get_many(paths)
         todo: list[str] = []
-        for path in paths:
+        fresh: list[str] = []
+        for path in files:
             source = Path(path)
-            if not source.is_file():
-                continue
             size, mtime = signature(source)
             item = known.get(path)
             if item is None:
-                todo.append(path)
+                fresh.append(path)   # 记录缺失：先看磁盘产物再决定
                 continue
             if (item.status in ("ok", "skipped")
                     and item.size == size and abs(item.mtime - mtime) < 1):
                 continue
             todo.append(path)
+        if fresh:
+            ready, missing = split_by_products(fresh, *flags)
+            for path in ready:
+                try:
+                    size, mtime = signature(Path(path))
+                except OSError:
+                    size, mtime = 0, 0.0
+                self.store.ensure([(path, size, mtime)])
+                self.store.mark_skipped(path, "产物齐全，跳过")
+            todo.extend(missing)
         return todo
 
     def _fire_files(self, task_id: str, paths: list[str]) -> bool:

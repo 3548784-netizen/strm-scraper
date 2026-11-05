@@ -1312,6 +1312,19 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 with single_lock:
                     single_active.pop(raw, None)
                 continue
+            # 最后一道保险：任务记录被删过、但产物还在磁盘上就别起线程。
+            # 入队那几处已经按产物过滤了，这里防止将来新增入口绕过守卫，
+            # 把可复用的海报 / NFO 又跑一遍。
+            if item is None and not force and _products_ready(Path(raw)):
+                try:
+                    size, mtime = signature(Path(raw))
+                except OSError:
+                    size, mtime = 0, 0.0
+                store.ensure([(raw, size, mtime)])
+                store.mark_skipped(raw, "产物齐全，跳过")
+                with single_lock:
+                    single_active.pop(raw, None)
+                continue
             # 没扫描过的文件在库里还没有记录，mark_* 都是 UPDATE，不先登记就写不进去
             if item is None:
                 try:

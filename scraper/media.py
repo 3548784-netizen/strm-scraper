@@ -8,6 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +262,32 @@ def product_state(target: Target, want_nfo: bool, want_poster: bool,
     if want_thumb and not _non_empty(target.thumb):
         missing.append("thumb")
     return (not missing), missing
+
+
+def split_by_products(sources: Iterable[str | Path], want_nfo: bool,
+                      want_poster: bool, want_fanart: bool,
+                      want_thumb: bool = False) -> tuple[list[str], list[str]]:
+    """按**磁盘上的产物**把媒体文件分成（齐全, 缺失）两组。
+
+    这里刻意不查任务状态库：任务记录可能被用户从列表里删掉、换台机器、
+    重建容器，但海报 / NFO 还在磁盘上，就仍然是可以直接复用的结果。
+    并发 stat 只是为了大库时别把串行 I/O 拖成瓶颈，判断口径和
+    :func:`product_state` 完全一致。
+    """
+    paths = list(dict.fromkeys(str(p) for p in sources))
+    if not paths:
+        return [], []
+
+    def complete(path: str) -> bool:
+        ready, _missing = product_state(
+            build_target(Path(path)), want_nfo, want_poster, want_fanart, want_thumb
+        )
+        return ready
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        ready = [p for p, ok in zip(paths, pool.map(complete, paths)) if ok]
+    done = set(ready)
+    return ready, [p for p in paths if p not in done]
 
 
 def artifacts(target: Target) -> dict[str, int]:

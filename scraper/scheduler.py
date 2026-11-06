@@ -454,13 +454,11 @@ class Scheduler:
             todo.append(path)
         if fresh:
             ready, missing = split_by_products(fresh, *flags)
-            for path in ready:
-                try:
-                    size, mtime = signature(Path(path))
-                except OSError:
-                    size, mtime = 0, 0.0
-                self.store.ensure([(path, size, mtime)])
-                self.store.mark_skipped(path, "产物齐全，跳过")
+            if ready:
+                # 记录缺失且产物齐全，多半是用户刚从列表里删掉过。不再登记：
+                # 要是这里写回 skipped 记录，下一次自动化一跑，列表就又把
+                # 这些文件复活一遍，删了等于白删。缺产物的照常入队补刮。
+                log.info("监听：%s 个文件产物齐全（记录已删，不再登记）", len(ready))
             todo.extend(missing)
         return todo
 
@@ -514,8 +512,9 @@ class Scheduler:
                 self._persist()
                 return {"ok": False, "started": False,
                         "message": "监控目录里没有 strm 文件，检查一下路径"}
-            # 范围模式：只碰这个目录里的文件，force 决定要不要覆盖已有产物
-            started = self.runner.start(only=paths, force=full)
+            # 范围模式：只碰这个目录里的文件。register_ready=False：这是后台
+            # 例行扫描，用户从列表里删掉的任务（产物还齐）不要重新登记回来。
+            started = self.runner.start(only=paths, force=full, register_ready=False)
         else:
             started = self.runner.start(full=full, force=full)
 

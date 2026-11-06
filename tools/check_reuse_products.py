@@ -165,16 +165,17 @@ def unit_checks(directory: Path) -> None:
         def mark_skipped(self, path, _reason=""):
             self.skipped.append(path)
 
-    # 记录被全部删掉：产物齐全的 A/C 不该进 todo，B 缺 NFO 才要处理
+    # 记录被全部删掉：产物齐全的 A/C 不该进 todo，B 缺 NFO 才要处理；
+    # 而且不再登记 skipped 记录——不然自动化一跑，删掉的列表就复活了
     store = FakeStore({})
     sched = Scheduler.__new__(Scheduler)
     sched.cfg, sched.store = cfg, store
     todo = sched._new_or_changed(paths)
     check("实时监听：记录全缺时只把缺产物的 B 入队",
           [Path(p).name for p in todo] == ["B.strm"], str(todo))
-    check("实时监听：齐全文件被登记为可复用（skipped）",
-          set(Path(p).name for p in store.skipped) == {"A.strm", "C.strm"},
-          str(store.skipped))
+    check("实时监听：齐全文件不再登记（删除后不复活）",
+          store.skipped == [] and store.ensured == [],
+          f"skipped={store.skipped} ensured={store.ensured}")
 
     # 没有状态库时也不能把齐全文件当成新片
     sched.store = None
@@ -258,7 +259,7 @@ def main() -> int:
     check("再次批量：产物指纹不变", snapshot(d) in (base_snap, after)
           or all(snapshot(d).get(k) == v for k, v in after.items()))
 
-    print("\n========== 5. 整库增量：记录被删也不进执行队列 ==========")
+    print("\n========== 5. 整库增量：删除的记录不再被登记回来 ==========")
     drop_records(c, d)
     wait_idle(c, 20)
     before_p = c.get("/api/status").get("processed", 0)
@@ -271,10 +272,60 @@ def main() -> int:
     check("整库增量：产物仍未被覆盖",
           all(snapshot(d).get(k) == v for k, v in base_snap.items()))
     st5 = states(c, d)
-    check("整库增量：记录恢复为「可复用」",
-          all(st5.get(f"{n}.strm") == "skipped" for n in "AC"), str(st5))
+    check("整库增量：删过的记录保持缺失（列表不再复活）",
+          all(st5.get(f"{n}.strm") is None for n in "ABC"), str(st5))
 
-    print("\n========== 6. 源码契约 ==========")
+    print("\n========== 6. 自动化范围任务：删除的记录同样不复活 ==========")
+    # 复现用户报告的链路：建一个 scope 指向测试目录的自动化任务，
+    # 「立即执行」之后 A/C 不能因为产物齐全就重新出现在任务列表里。
+    drop_records(c, d)
+    wait_idle(c, 20)
+    saved = c.post("/api/automation/save", {
+        "name": "__reuse_scope__", "scope": str(d), "mode": "incremental",
+        "interval_minutes": 60, "enabled": True, "watch": False,
+    })
+    tid = ""
+    for t in saved.get("tasks", []):
+        if t.get("name") == "__reuse_scope__":
+            tid = t.get("id") or ""
+            break
+    check("范围任务保存成功", bool(tid), str(saved)[:120])
+    if tid:
+        run = c.post("/api/automation/run", {"id": tid})
+        check("范围任务立即执行成功",
+              run.get("ok") is True and run.get("started") is True, str(run)[:120])
+        wait_idle(c, 40)
+        st6 = states(c, d)
+        check("范围任务：删过的记录保持缺失",
+              all(st6.get(f"{n}.strm") is None for n in "ABC"), str(st6))
+        check("范围任务：产物仍未被覆盖",
+              all(snapshot(d).get(k) == v for k, v in base_snap.items()))
+        c.post("/api/automation/delete", {"id": tid})
+        check("范围任务已清理",
+              all(t.get("id") != tid for t in c.get("/api/automation").get("tasks", [])))
+
+    print("\n========== 7. purge 删掉产物：缺产物的照常登记补刮 ==========")
+    # 删除记录 + purge 删产物之后，下一轮扫描要能把缺产物的文件重新
+    # 登记入队补刮——「不再登记」只针对产物齐全的，不能误伤这条路径。
+    c.post("/api/items/delete", {"paths": [p["B"]], "purge": True})
+    wait_idle(c, 10)
+    before_p = c.get("/api/status").get("processed", 0)
+    r7 = c.post("/api/task/start?full=false")
+    check("purge 后增量启动成功", r7.get("ok") is True, str(r7))
+    wait_idle(c, 40)
+    after_p = c.get("/api/status").get("processed", 0)
+    check("purge 后：缺产物的 B 被重新登记并补刮",
+          after_p - before_p >= 1, f"processed {before_p} -> {after_p}")
+    st7 = states(c, d)
+    check("purge 后：B 记录恢复（补刮路径未断）",
+          st7.get("B.strm") is not None, str(st7))
+    check("purge 后：A/C 仍不复活",
+          st7.get("A.strm") is None and st7.get("C.strm") is None, str(st7))
+    check("purge 后：A/C 产物仍原样",
+          all(snapshot(d).get(k) == v for k, v in base_snap.items()
+              if k.startswith(("A", "C"))))
+
+    print("\n========== 8. 源码契约 ==========")
     from pathlib import Path as _P
     src = {f: _P("scraper") / f for f in
            ("media.py", "worker.py", "scheduler.py", "web.py")}
@@ -286,6 +337,8 @@ def main() -> int:
     check("单条立即执行有最后一道保险",
           "item is None and not force and _products_ready" in text["web.py"])
     check("明确重刮仍保留覆盖语义", "if self._force:" in text["worker.py"])
+    check("后台扫描带不登记开关", "register_ready" in text["worker.py"]
+          and "register_ready=False" in text["scheduler.py"])
 
     print("\n========== 清理 ==========")
     drop_records(c, d)

@@ -137,13 +137,26 @@ class StateStore:
     def mark_running(self, path: str) -> None:
         self._set(path, status="running", reason="")
 
-    def mark_ok(self, path: str, title: str = "", duration: float = 0.0) -> None:
+    def mark_ok(self, path: str, title: str = "", duration: float = 0.0,
+                size: int | None = None, mtime: float | None = None) -> None:
+        """标记成功；带上签名时顺手回写，省掉一次单独的事务提交。
+
+        处理完一个文件要写状态、又要把新的 size/mtime 记下来，以前是两条
+        UPDATE 两次 commit，合并后大批量任务能少刷一半磁盘。
+        """
         with self._lock:
-            self._conn.execute(
-                "UPDATE items SET status='ok', reason='', title=?, duration=?, "
-                "attempts=attempts+1, updated=? WHERE path=?",
-                (title, duration, time.time(), path),
-            )
+            if size is None:
+                self._conn.execute(
+                    "UPDATE items SET status='ok', reason='', title=?, duration=?, "
+                    "attempts=attempts+1, updated=? WHERE path=?",
+                    (title, duration, time.time(), path),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE items SET status='ok', reason='', title=?, duration=?, "
+                    "size=?, mtime=?, attempts=attempts+1, updated=? WHERE path=?",
+                    (title, duration, size, mtime or 0.0, time.time(), path),
+                )
             self._conn.commit()
 
     def mark_skipped(self, path: str, reason: str = "产物已存在") -> None:
@@ -180,6 +193,45 @@ class StateStore:
                 "UPDATE items SET status='pending', reason='' WHERE path=?", (path,)
             )
             self._conn.commit()
+
+    # ---------- 批量写入 ----------
+    # 勾选几百个文件「开始刮削」时，逐条 UPDATE + commit 就是几百次 fsync：
+    # 本机 SSD 感觉不到，NAS / 机械盘上一次要几毫秒到几十毫秒，几千条能拖到
+    # 好几分钟。下面几个方法把同批改动并进**一个事务**，SQL 与逐条版本完全
+    # 一致（都不改 updated，因此队列顺序不变），只是提交次数从 N 降到 1。
+
+    def _update_many(self, sql: str, paths: Iterable[str],
+                     prefix: tuple = ()) -> int:
+        """共用的批量 UPDATE：分块只是绕开 SQLite 的绑定参数上限。"""
+        wanted = [p for p in dict.fromkeys(paths) if p]
+        if not wanted:
+            return 0
+        with self._lock:
+            for start in range(0, len(wanted), 400):
+                chunk = wanted[start:start + 400]
+                self._conn.executemany(sql, (prefix + (p,) for p in chunk))
+            self._conn.commit()
+        return len(wanted)
+
+    def reset_many(self, paths: Iterable[str]) -> int:
+        """批量重置为 pending（等价于对每个路径调用一次 reset_one）。"""
+        return self._update_many(
+            "UPDATE items SET status='pending', reason='' WHERE path=?", paths
+        )
+
+    def mark_skipped_many(self, paths: Iterable[str],
+                          reason: str = "产物已存在") -> int:
+        """批量标记「产物齐全，跳过」。"""
+        return self._update_many(
+            "UPDATE items SET status='skipped', reason=?, updated=? WHERE path=?",
+            paths, (reason, time.time()),
+        )
+
+    def mark_running_many(self, paths: Iterable[str]) -> int:
+        """一次派发多条时批量改状态，别为每条任务单独 commit。"""
+        return self._update_many(
+            "UPDATE items SET status='running', reason='' WHERE path=?", paths
+        )
 
     def touch_signature(self, path: str, size: int, mtime: float) -> None:
         with self._lock:

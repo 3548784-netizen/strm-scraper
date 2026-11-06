@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import stat as stat_mod
 import tempfile
 import threading
 import time
@@ -177,6 +178,10 @@ class Runner:
         self.current: dict[str, float] = {}
         self.started_at = 0.0
         self.finished_at = 0.0
+        # 暂停时长要从「用时」里扣掉：暂停一小时再继续，界面和日志
+        # 都不该显示这轮跑了一小时
+        self._paused_at = 0.0
+        self._paused_total = 0.0
         self.last_error = ""
         self.last_message = ""
         self.mode = ""
@@ -212,6 +217,8 @@ class Runner:
             self.current.clear()
             self.started_at = time.time()
             self.finished_at = 0.0
+            self._paused_at = 0.0
+            self._paused_total = 0.0
             self.scanned = 0
             self.last_error = ""
             self.last_message = ""
@@ -247,6 +254,22 @@ class Runner:
         with self._lock:
             return set(self._only) if self._only is not None else None
 
+    def _settle_pause_locked(self) -> None:
+        """把一段已结束的暂停计入总时长；调用方需持有 _lock。"""
+        if self._paused_at:
+            self._paused_total += max(0.0, time.time() - self._paused_at)
+            self._paused_at = 0.0
+
+    def _net_elapsed(self) -> float:
+        """本轮净耗时（秒）：不含暂停，任务结束后停在结束那一刻。"""
+        end = self.finished_at or time.time()
+        raw = max(0.0, end - self.started_at) if self.started_at else 0.0
+        paused = self._paused_total
+        if self._paused_at:
+            # 仍在暂停中，这一段也不计入
+            paused += max(0.0, end - self._paused_at)
+        return max(0.0, raw - paused)
+
     def pause(self) -> bool:
         """暂停：不再派发新任务，并立刻中断正在跑的抓帧。
 
@@ -256,6 +279,8 @@ class Runner:
             if self.state not in ("scanning", "running"):
                 return False
             self._paused.set()
+            if not self._paused_at:
+                self._paused_at = time.time()
             self._abort.set()
             self.state = "paused"
             active = len(self.current)
@@ -266,6 +291,7 @@ class Runner:
         with self._lock:
             if not self._paused.is_set():
                 return False
+            self._settle_pause_locked()
             self._paused.clear()
             self._abort.clear()
             alive = self._thread is not None and self._thread.is_alive()
@@ -282,6 +308,7 @@ class Runner:
             if not self.busy():
                 return False
             self._cancelled = True
+            self._settle_pause_locked()
             self._paused.clear()
             self._abort.set()
             self._stop.set()
@@ -297,6 +324,7 @@ class Runner:
                 self._abort.set()
                 return
             self._cancelled = True
+            self._settle_pause_locked()
             self._paused.clear()
             self._abort.set()
             self._stop.set()
@@ -304,10 +332,9 @@ class Runner:
 
     def snapshot(self) -> dict:
         with self._lock:
-            # 任务结束后要停在结束那一刻，否则「用时」会一直往上涨，
-            # 让人误以为这轮还在跑、或者觉得速度没变快
-            end = self.finished_at if self.finished_at else time.time()
-            elapsed = max(0.0, end - self.started_at) if self.started_at else 0
+            # 「用时」停在结束那一刻，并扣掉暂停时长：否则暂停一小时后
+            # 继续，界面会一直显示这轮跑了一小时
+            elapsed = self._net_elapsed()
             paused = self._paused.is_set()
             return {
                 "state": self.state,
@@ -329,7 +356,6 @@ class Runner:
     # ---------- 内部流程 ----------
 
     def _run(self, full: bool) -> None:
-        started = time.time()
         try:
             only = self._scope()
             added = self._scan(full, only)
@@ -365,7 +391,7 @@ class Runner:
             else:
                 log.info("本轮结束：处理 %s，成功 %s，失败 %s，用时 %.1f 分钟",
                          self.processed, self.succeeded, self.failed,
-                         (time.time() - started) / 60)
+                         self._net_elapsed() / 60)
 
     def _scan(self, full: bool, only: set[str] | None = None) -> int:
         cfg = self.cfg
@@ -373,13 +399,20 @@ class Runner:
                  cfg.scrape.write_fanart, cfg.scrape.thumb.enabled)
         if only is not None:
             # 只处理勾选的文件：不遍历媒体库，别的文件夹里的待处理项也不会被拉起来
-            rows = []
-            for path in only:
-                source = Path(path)
-                if not source.is_file():
-                    continue
-                size, mtime = signature(source)
-                rows.append((str(source), size, mtime))
+            started = time.monotonic()
+
+            def row_of(path: str):
+                # 一次 stat 拿到「是不是文件 + 签名」，别再串行发两遍
+                try:
+                    info = Path(path).stat()
+                except OSError:
+                    return None
+                if not stat_mod.S_ISREG(info.st_mode):
+                    return None
+                return (path, info.st_size, round(info.st_mtime, 3))
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                rows = [r for r in pool.map(row_of, sorted(only)) if r]
             paths = [path for path, _s, _m in rows]
             # ensure() 之后所有文件都有记录了，得先记下「原本没记录」的那些：
             # 用户可能刚把已完成的任务从列表里删掉，但磁盘上的产物还在。
@@ -387,20 +420,20 @@ class Runner:
             self.store.ensure(rows)
             if self._force:
                 # 「开始重刮」是明确的覆盖意图，全部重新入队
-                for path in paths:
-                    self.store.reset_one(path)
+                self.store.reset_many(paths)
             else:
-                fresh = [p for p in paths if p not in before]
-                ready, _missing = split_by_products(fresh, *flags)
-                for path in ready:
-                    self.store.mark_skipped(path, "产物齐全，跳过")
-                reused = set(ready)
-                for path in paths:
-                    if path not in reused:
-                        self.store.reset_one(path)
+                # 只要磁盘产物齐全就一律复用，不看任务记录在不在：用户删过
+                # 记录、重复点「开始刮削」时口径完全一致，也不会把齐全的
+                # 文件又塞回队列白跑一趟探测（文件多时这一趟相当费时）。
+                ready, missing = split_by_products(paths, *flags)
+                self.store.mark_skipped_many(ready, "产物齐全，跳过")
+                self.store.reset_many(missing)
                 if ready:
-                    log.info("复用本地产物：%s 个文件记录已删但产物齐全，直接跳过",
-                             len(ready))
+                    log.info("复用本地产物：%s 个文件产物齐全直接跳过（%s 个记录已删）",
+                             len(ready), sum(1 for p in ready if p not in before))
+            # 大批量勾选时用户会盯着「点了没反应」，把准备耗时写进日志好定位
+            log.info("勾选文件准备完成：%s 个，用时 %.1f 秒",
+                     len(rows), time.monotonic() - started)
             return len(rows)
 
         started = time.monotonic()
@@ -427,15 +460,13 @@ class Runner:
                 if not item or item.status not in ("ok", "skipped"):
                     continue
                 stale.append(path)
-            for path in self._missing_products(stale):
-                self.store.reset_one(path)
+            self.store.reset_many(self._missing_products(stale))
             # 记录被删过 / 换了数据目录：产物齐全的直接标成「已复用」，
             # 别因为 state.db 里没有这一行就把它当成新片重新刮一遍。
             fresh = [p for p in all_paths if p not in before]
             if fresh:
                 ready, _missing = split_by_products(fresh, *flags)
-                for path in ready:
-                    self.store.mark_skipped(path, "产物齐全，跳过")
+                self.store.mark_skipped_many(ready, "产物齐全，跳过")
                 if ready:
                     log.info("复用本地产物：%s 个新登记文件产物齐全，直接跳过",
                              len(ready))
@@ -497,15 +528,17 @@ class Runner:
                     log.info("任务继续，剩余 %s 个待处理", self.store.count("pending"))
                     continue
 
-                while len(pending) < workers:
-                    batch = self.store.next_pending(1, only=self._scope())
-                    if not batch:
-                        break
-                    item = batch[0]
-                    self.store.mark_running(item.path)
-                    with self._lock:
-                        self.current[item.path] = time.time()
-                    pending.add(executor.submit(self._work, item))
+                need = workers - len(pending)
+                if need:
+                    # 一次取一批、一次改状态：逐条 next_pending(1) +
+                    # mark_running 在大批量时就是几千次查询和事务提交
+                    batch = self.store.next_pending(need, only=self._scope())
+                    if batch:
+                        self.store.mark_running_many(i.path for i in batch)
+                        for item in batch:
+                            with self._lock:
+                                self.current[item.path] = time.time()
+                            pending.add(executor.submit(self._work, item))
 
                 if not pending:
                     # 队列看起来空了，但文件管理那边可能刚塞进新的待处理（
@@ -574,8 +607,9 @@ class Runner:
                 self.store.mark_skipped(item.path, result.reason)
                 log.debug("[跳过] %s（产物齐全）", target.stem[:60], extra={"item": item.path})
             else:
-                self.store.mark_ok(item.path, result.title, result.duration)
-                self.store.touch_signature(item.path, size, mtime)
+                # 状态和签名一次写完，少一次事务提交
+                self.store.mark_ok(item.path, result.title, result.duration,
+                                   size, mtime)
                 log.info(
                     "[完成] %s | %.1fs | 海报 %s 背景 %s%s NFO %s",
                     result.title[:60], result.elapsed,

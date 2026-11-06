@@ -197,13 +197,35 @@ def main() -> int:
           const rows = [...body.querySelectorAll('tr')];
           const btns = [...body.querySelectorAll('.rowbtns button')];
           const names = [...body.querySelectorAll('.name, .gname, .dir')];
+          // nowrap/ellipsis 落在内层 .nm 上，探针取省略载体而不是容器
+          const carrier = n => n.querySelector(':scope > .nm') || n;
+          const ell = n => {
+            const c = carrier(n);
+            const cs = getComputedStyle(c);
+            const full = n.dataset.full || '';
+            const text = c.textContent;
+            return {
+              ws: cs.whiteSpace, to: cs.textOverflow,
+              truncated: c.scrollWidth > c.clientWidth + 1,
+              badClip: c.scrollWidth > c.clientWidth + 1 && cs.overflowX !== 'hidden',
+              domLost: full ? text !== full : false,
+              titleLost: full ? !(n.getAttribute('title') || '').includes(full) : false,
+              len: text.length,
+            };
+          };
           return {
             rows: rows.length, layout: getComputedStyle(table).tableLayout,
             docSW: document.documentElement.scrollWidth, vw: innerWidth,
             maxRight: btns.length ? Math.max(...btns.map(b => b.getBoundingClientRect().right)) : 0,
             btnCount: btns.length,
-            nameOverflow: names.filter(n => n.scrollWidth > n.clientWidth + 1).length,
-            longest: Math.max(0, ...names.map(n => n.textContent.trim().length)),
+            total: names.length,
+            nowrap: names.filter(n => ell(n).ws === 'nowrap').length,
+            ellipsis: names.filter(n => ell(n).to === 'ellipsis').length,
+            truncated: names.filter(n => ell(n).truncated).length,
+            badClip: names.filter(n => ell(n).badClip).length,
+            domLost: names.filter(n => ell(n).domLost).length,
+            titleLost: names.filter(n => ell(n).titleLost).length,
+            longest: Math.max(0, ...names.map(n => ell(n).len)),
           };
         }""")
         expect_rows = len([f for f in files if str(Path(f["path"]).parent) == deepest])
@@ -213,8 +235,17 @@ def main() -> int:
         check("长中文名不把右侧操作列挤出视口",
               tbl["maxRight"] <= tbl["vw"] + 1 and tbl["docSW"] <= tbl["vw"] + 1,
               f"maxRight={tbl['maxRight']} docSW={tbl['docSW']} vw={tbl['vw']}")
-        check("名称列完整折行、无裁切", tbl["nameOverflow"] == 0,
-              f"溢出单元格 {tbl['nameOverflow']} 个，最长 {tbl['longest']} 字")
+        check("名称单行省略口径生效（nowrap + ellipsis）",
+              tbl["total"] > 0 and tbl["nowrap"] == tbl["total"]
+              and tbl["ellipsis"] == tbl["total"],
+              f"nowrap {tbl['nowrap']}/{tbl['total']}，ellipsis {tbl['ellipsis']}/{tbl['total']}")
+        check("超长名只在省略号容器内截断、不溢出邻列",
+              tbl["badClip"] == 0,
+              f"截断 {tbl['truncated']} 个，越界截断 {tbl['badClip']} 个，最长 {tbl['longest']} 字")
+        check("DOM 文本未丢字（与 data-full 一致）", tbl["domLost"] == 0,
+              f"丢字 {tbl['domLost']} 个")
+        check("悬停可看完整名（title 覆盖全名）", tbl["titleLost"] == 0,
+              f"缺 title {tbl['titleLost']} 个")
         check("行内操作入口保留", tbl["btnCount"] > 0, str(tbl["btnCount"]))
 
         print("\n---------- 4. 勾选后工具条不跳位 ----------")

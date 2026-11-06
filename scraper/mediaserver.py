@@ -21,16 +21,27 @@ from __future__ import annotations
 import json
 import logging
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 PAGE_SIZE = 500
+# 全库索引要分页拉很多次（2160 条就是 5 个请求）。连续用「单独刮削」
+# 或手动选帧时，每次都重建一遍纯属浪费；路径→ID 这层短时间内不会变，
+# 给零散操作留一个很短的复用窗口。正式批量任务仍每次拉新鲜索引。
+INDEX_REUSE_TTL = 30.0
+INDEX_REUSE_MAX = 8
+# 批量刷新的并发上限。逐条串行时 733 个文件就是 733 次网络往返，光等待
+# 就能拖好几分钟；6 路足够明显提速，又不至于把单台 Emby / Jellyfin 打爆。
+# 还想更保守的话，refresh_paths(pause=...) 可额外限制全局请求间隔。
+REFRESH_WORKERS = 6
 # 三种鉴权写法，按成功率排序
 AUTH_STYLES = ("media_browser", "x_emby", "query")
 
@@ -87,6 +98,9 @@ class MediaServerClient:
         self.kind = kind if kind in ("jellyfin", "emby") else "auto"
         self.auth_style: str | None = None
         self._ssl = ssl._create_unverified_context() if insecure else None
+        self._index_lock = threading.Lock()
+        self._index_cache: dict[str, dict] | None = None
+        self._index_ts = 0.0
 
     # ------------------------------------------------------------------
     # 底层请求
@@ -215,12 +229,22 @@ class MediaServerClient:
                 return _norm_path(str(remote_prefix)).rstrip("/") + local[len(prefix):]
         return local
 
-    def path_index(self, with_images: bool = False) -> dict[str, dict]:
+    def path_index(self, with_images: bool = False,
+                   max_age: float = 0.0) -> dict[str, dict]:
         """拉取全部视频条目，返回 path → {id, has_image}。
 
         键做了两种处理：原样 + 去掉 ``.strm`` 后缀，因为不同版本对 strm 条目
         记录的 Path 可能带后缀也可能不带，两种都能查到更稳。
+
+        ``max_age`` 只给**不带图片状态**的索引用：连续零散刷新时短时复用，
+        省掉重复分页请求；回查图片（``with_images=True``）永远拉新鲜数据。
         """
+        if not with_images and max_age > 0:
+            with self._index_lock:
+                if (self._index_cache is not None
+                        and time.monotonic() - self._index_ts < max_age):
+                    return dict(self._index_cache)
+
         fields = "Path,ImageTags" if with_images else "Path"
         index: dict[str, dict] = {}
         start = 0
@@ -249,6 +273,10 @@ class MediaServerClient:
                 break
             start += PAGE_SIZE
         log.info("媒体服务器索引完成，共 %s 个视频条目", len(index))
+        if not with_images:
+            with self._index_lock:
+                self._index_cache = dict(index)
+                self._index_ts = time.monotonic()
         return index
 
     def refresh_item(self, item_id: str) -> None:
@@ -281,6 +309,9 @@ class MediaServerClient:
     def scan_library(self) -> None:
         """触发一次全库扫描（新文件、新图片会被重新识别）。"""
         self._request("/Library/Refresh", "POST")
+        # 库里可能多了新条目，别再拿旧的路径表去匹配
+        with self._index_lock:
+            self._index_cache = None
 
     def notify_dirs(self, local_dirs: list[str]) -> int:
         """告诉服务器「这些目录的内容变了」，让它重新读这一层的图片。
@@ -306,15 +337,23 @@ class MediaServerClient:
     # ------------------------------------------------------------------
 
     def refresh_paths(self, local_paths: list[str], pause: float = 0.0) -> dict:
-        """按本地路径批量刷新图片。"""
+        """按本地路径批量刷新图片。
+
+        多条路径时用有上限的并发发出刷新请求；同一个媒体服务器条目被
+        多条路径命中（例如 ``.strm`` 后缀变体）只刷一次。``pause`` 可
+        额外限制全局最小请求间隔，返回值和统计口径与原先逐条版本一致。
+        """
         if not local_paths:
             return {"matched": 0, "refreshed": 0, "missing": [], "failed": []}
 
-        index = self.path_index()
-        matched = refreshed = 0
+        # 连续点「单独刮削」/手动选帧时，每条都重建一次全库索引很浪费；
+        # 零散操作短时复用，批量任务保持每次取新鲜数据
+        reuse = INDEX_REUSE_TTL if len(local_paths) <= INDEX_REUSE_MAX else 0.0
+        index = self.path_index(max_age=reuse)
+        matched = 0
         missing: list[str] = []
-        failed: list[str] = []
-
+        # item_id → 命中它的本地路径（同一条目只发一次刷新请求）
+        by_id: dict[str, list[str]] = {}
         for local_path in local_paths:
             remote = self.map_path(str(local_path))
             entry = index.get(remote) or index.get(_strip_strm(remote))
@@ -322,14 +361,49 @@ class MediaServerClient:
                 missing.append(remote)
                 continue
             matched += 1
-            try:
-                self.refresh_item(entry["id"])
-                refreshed += 1
-            except MediaServerError as exc:
-                failed.append(f"{Path(remote).name}: {exc}")
-                log.warning("刷新失败：%s", exc)
-            if pause:
-                time.sleep(pause)
+            by_id.setdefault(str(entry["id"]), []).append(remote)
+
+        refreshed = 0
+        failed: list[str] = []
+        if by_id:
+            ids = list(by_id)
+            workers = min(REFRESH_WORKERS, len(ids))
+            gate = threading.Lock()
+            next_at = [0.0]
+
+            def _pace() -> None:
+                if pause <= 0:
+                    return
+                # 锁内只排期、锁外再睡：并发仍然生效，但总体速率受 pause 约束
+                with gate:
+                    now = time.monotonic()
+                    wait = max(0.0, next_at[0] - now)
+                    next_at[0] = max(now, next_at[0]) + pause
+                if wait:
+                    time.sleep(wait)
+
+            def _refresh(item_id: str):
+                _pace()
+                try:
+                    self.refresh_item(item_id)
+                    return None
+                except MediaServerError as exc:
+                    return exc
+
+            # pool.map 按输入顺序产出，failed 顺序稳定；线程名便于排查
+            with ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="ws-refresh") as pool:
+                for item_id, exc in zip(ids, pool.map(_refresh, ids)):
+                    remotes = by_id[item_id]
+                    if exc is None:
+                        refreshed += len(remotes)
+                        continue
+                    for remote in remotes:
+                        failed.append(f"{Path(remote).name}: {exc}")
+                    log.warning("刷新失败：%s", exc)
+            if len(ids) > INDEX_REUSE_MAX:
+                log.info("批量刷新：%s 条路径 → %s 个条目，并发 %s",
+                         matched, len(ids), workers)
 
         if missing:
             log.warning(

@@ -407,10 +407,11 @@
     white-space: nowrap; flex: none;
   }
   /* 任务列表顶上那条媒体库横条：和文件管理面包屑同一条（库名 + 「媒体库」标签）。
-     有多个库时变成一排可点的标签，点谁就只看谁的。 */
+     有多个库时变成一排可点的标签，点谁就只看谁的。库名过长就地省略，
+     挤不出第二行；完整库名悬停 .libbtn 可看。 */
   #taskLibBar .libname {
     color: var(--accent-ink); font-weight: 500; padding: 2px var(--s2);
-    display: inline-flex; align-items: center; gap: var(--s2);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   /* 可点的库名：任务列表横条整块可点，文件管理面包屑里挂在库名后面那个小箭头 */
   .libbtn {
@@ -420,7 +421,7 @@
     font-size: var(--fs-sm); font-weight: 600; max-width: 460px; min-width: 0;
   }
   .libbtn:hover { background: var(--surface-4); border-color: var(--line); }
-  .libbtn .n { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .libbtn .n { color: var(--text-3); font-weight: 400; font-variant-numeric: tabular-nums; flex: none; }
   .caret { color: var(--text-3); font-size: 9px; line-height: 1; padding-left: 2px; }
   .libcrumb .caret {
     cursor: pointer; padding: 2px 5px; border-radius: var(--r-xs);
@@ -478,24 +479,27 @@
   .gwrap .grow { flex: 1; }
   .gbtn {
     display: flex; align-items: center; gap: var(--s2); min-width: 0; height: auto;
+    flex: 0 1 auto; max-width: 100%;
     padding: 0; border: 0; background: transparent; color: var(--text);
     font-size: var(--fs-sm); font-weight: 600; text-align: left; justify-content: flex-start;
   }
   .gbtn:hover:not(:disabled) { background: transparent; color: var(--accent-ink); }
   .gcaret { color: var(--text-3); font-size: 9px; width: 10px; display: inline-block; transition: transform var(--dur) var(--ease); }
   .gopen .gcaret { transform: rotate(90deg); }
-  /* 分组行的文件夹名同样折行显示全名；右侧计数 / 进度交给 flex 推到行尾 */
-  .gname { min-width: 0; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
-           word-break: break-word; }
+  /* 分组行的文件夹名回到真正的名称列里：列宽就是边界，超了就地省略，
+     和文件行同一列、同宽对齐；进度条 / 计数在右侧单独一格，不受名字影响 */
+  .gname { min-width: 0; flex: 0 1 auto; line-height: 1.4; white-space: nowrap;
+           overflow: hidden; text-overflow: ellipsis; }
   .gsub {
     color: var(--text-3); font-weight: 400; font-size: var(--fs-2xs);
-    max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0; flex: 0 1 auto; max-width: 420px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .gbar { width: 180px; height: 5px; border-radius: var(--r-pill); background: var(--surface-4); overflow: hidden; flex: none; }
   .gbar i { display: block; height: 100%; background: var(--accent); transition: width .3s var(--ease); }
   .gbar i.full { background: var(--ok); }
-  .gnum { color: var(--text-2); font-size: var(--fs-2xs); }
-  .gbadge { font-size: var(--fs-2xs); padding: 1px var(--s2); border-radius: var(--r-pill); white-space: nowrap; }
+  .gnum { color: var(--text-2); font-size: var(--fs-2xs); flex: none; }
+  .gbadge { font-size: var(--fs-2xs); padding: 1px var(--s2); border-radius: var(--r-pill); white-space: nowrap; flex: none; }
   .gbadge.run { color: var(--accent-ink); background: var(--accent-soft); }
   .gbadge.fail { color: var(--err-ink); background: var(--err-soft); }
   .gbadge.wait { color: var(--text-2); background: var(--surface-4); }
@@ -529,14 +533,20 @@
   tbody tr:hover td { background: var(--surface-2); }
   tbody tr.sel td { background: rgba(26, 113, 255, .08); }
   tbody tr.sel:hover td { background: rgba(26, 113, 255, .12); }
-  /* 名称不做省略：长文件名在列内折行，全名完整可读，用行高换横向空间。
-     anywhere 保证一长串无空格的英文 / 数字 / 标点也能断行，不会撑破格子。 */
-  .name { width: 100%; min-width: 0; color: var(--text); font-weight: 500;
-          line-height: 1.45; white-space: normal; overflow-wrap: anywhere;
-          word-break: break-word; }
-  /* 副标题是所属目录，属于辅助信息，仍保持单行；完整路径在 title 里 */
-  .name .path { color: var(--text-3); font-size: var(--fs-2xs); display: block; font-weight: 400;
-                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 名称一律单行：超出列宽就截断并以省略号结尾，行高恒定、列宽不被内容撑开，
+     右侧操作区也不会被挤走。flex 里只有名字文本可收缩，后面的「手选」标签、
+     刮削标题始终留在行内可见。完整名称放在 title / data-full 里，悬停即可看全名；
+     DOM 里的文本仍然完整，勾选、搜索、目录树这些读名字的逻辑不受影响。 */
+  .name { width: 100%; min-width: 0; max-width: 100%; color: var(--text); font-weight: 500;
+          line-height: 1.45; display: flex; align-items: baseline; gap: 6px; }
+  .name .nm { min-width: 0; flex: 0 1 auto; overflow: hidden; white-space: nowrap;
+              text-overflow: ellipsis; }
+  .name .tag { flex: none; }
+  /* 副标题（所属目录 / 刮削标题）跟在名字后面，前面加个点分隔；同样可收缩省略 */
+  .name .path { color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400;
+                min-width: 0; flex: 0 1 auto; overflow: hidden; white-space: nowrap;
+                text-overflow: ellipsis; }
+  .name .path::before { content: '· '; color: var(--text-4); }
   .num { color: var(--text-2); white-space: nowrap; }
   /* 状态胶囊：底色 + 描边，比纯色文字更容易一眼分辨 */
   .st { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2xs);
@@ -555,9 +565,9 @@
   .dirrow .st.dirst { font-variant-numeric: tabular-nums; }
   /* 文件管理的文件夹行也按目录树排：缩进由 --ind 控制（每层 20px，和任务列表一样），
      左侧一条小横线表示从属。箭头只管就地展开，点名字仍然是进入那一层 */
-  /* 文件夹行：名字折不下了就让计数整块换到下一行，别把右边几列顶出视口 */
+  /* 文件夹行：名字过长就地省略，计数始终留在同一行，别把右边几列顶出视口 */
   .fwrap {
-    display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); min-width: 0;
+    display: flex; align-items: center; flex-wrap: nowrap; gap: var(--s2); min-width: 0;
     position: relative; padding-left: var(--ind, 0px);
   }
   .fwrap.nest::before {
@@ -575,9 +585,9 @@
   tr.dirrow.fopen .fcaret .gcaret { transform: rotate(90deg); }
   /* 没有子目录的层留个空位，箭头列才不会参差不齐 */
   .fcaret.blank { visibility: hidden; }
-  /* 长目录名折行完整显示；计数是辅助信息，保持单行 */
-  .dirrow .fwrap .dir { min-width: 0; max-width: 100%; line-height: 1.45;
-                        white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+  /* 长目录名单行省略；计数是辅助信息，flex:none 保证它不被挤掉 */
+  .dirrow .fwrap .dir { flex: 0 1 auto; min-width: 0; max-width: 100%; line-height: 1.45;
+                        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dirrow .fwrap .cnt { flex: none; }
   /* 多层文件夹提示：Emby 里那一层会变成「文件夹条目」，只认 folder.jpg。
      缺的时候用琥珀色提醒（可修），补好了就用中性灰收掉注意力。 */
@@ -670,12 +680,17 @@
             padding: var(--s2) var(--gutter); border-bottom: 1px solid var(--line-soft);
             background: var(--surface-2); font-size: var(--fs-xs); flex: none; min-height: 38px; }
   .crumb { color: var(--text-2); cursor: pointer; padding: 2px var(--s2); border-radius: var(--r-xs);
-           transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
+           transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+           /* 单段路径名过长就截断省略，别把面包屑撑成超高的一行；完整路径悬停可见 */
+           max-width: 320px; display: inline-flex; align-items: center; }
+  .crumb .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crumb .caret { flex: none; }
   .crumb:hover { background: var(--surface-4); color: var(--text); }
   .crumb.last { color: var(--accent-ink); font-weight: 500; }
   .crumb-sep { color: var(--text-4); }
   .dir { color: var(--accent-ink); cursor: pointer; display: inline-flex; align-items: center; gap: var(--s2);
-         font-weight: 500; }
+         font-weight: 500; min-width: 0; }
+  .dir .nm { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dir:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
   .dir .cnt { color: var(--text-3); font-size: var(--fs-2xs); font-weight: 400; }
   .check { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
@@ -1243,8 +1258,8 @@
      响应式：1280 收窄表格 / 1024 双列变单列 / 760 顶栏折行 / 480 手机
      ========================================================================== */
   @media (max-width: 1280px) {
-    /* 名称折行后，把备注 / 操作两列让出约 130px 给名称列：
-       1024 下长名字也只要两三行，右侧列依旧整表可见 */
+    /* 名称单行省略后，把备注 / 操作两列让出约 130px 给名称列：
+       1024 下长名字也能多露几个字，右侧列依旧整表可见 */
     .pane[data-pane="tasks"] .c-note, .pane[data-pane="files"] .c-note { width: 150px; }
     .pane[data-pane="tasks"] .c-acts, .pane[data-pane="files"] .c-acts { width: 156px; }
     .gsub { max-width: 300px; }
@@ -2984,7 +2999,7 @@ function nodeRowHtml(n, open, baseDepth) {
     <td><input class="check" type="checkbox" data-gpick="${esc(n.path)}"
                title="选中这个文件夹（含子目录）里的所有任务"${checked ? ' checked' : ''}></td>
     <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
-    <td colspan="8"><div class="gwrap${indent ? ' nest' : ''}" style="--ind:${indent}px">
+    <td><div class="gwrap${indent ? ' nest' : ''}" style="--ind:${indent}px">
       <button class="gbtn" data-toggle="${esc(n.path)}" title="展开 / 收起这个文件夹">
         <span class="gcaret">▶</span>
         <svg class="gicon" width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -2992,10 +3007,12 @@ function nodeRowHtml(n, open, baseDepth) {
              stroke-linejoin="round" style="flex:none">
           <path d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
         </svg>
-        <span class="gname" title="${esc(n.path)}">${esc(n.name || n.path)}</span>
+        <span class="gname" title="${esc(n.name || n.path)}&#10;${esc(n.path)}" data-full="${esc(n.name || n.path)}">${esc(n.name || n.path)}</span>
         ${pinned ? '<span class="tagpin">刚选择</span>' : ''}
         ${sub}
       </button>
+    </div></td>
+    <td colspan="7"><div class="gwrap grow-row">
       <span class="grow"></span>
       <div class="gbar"><i class="${pct >= 100 ? 'full' : ''}" style="width:${pct}%"></i></div>
       <span class="gnum">${n.done}/${n.total}</span>
@@ -3090,8 +3107,8 @@ function itemRowHtml(it, opts = {}) {
       : `<input class="check" type="checkbox" data-tpick="${esc(it.path)}"${
           picked ? ' checked' : ''}>`}</td>
     <td><span class="st ${st}">${STATUS_TEXT[st] || st}</span></td>
-    <td><div class="name" title="${esc(it.path)}"${
-      opts.pad ? ` style="padding-left:${opts.pad}px"` : ''}>${esc(name)}${
+    <td><div class="name" title="${esc(name)}&#10;${esc(it.path)}" data-full="${esc(name)}"${
+      opts.pad ? ` style="padding-left:${opts.pad}px"` : ''}><span class="nm">${esc(name)}</span>${
       it.frame_at ? `<span class="tag">手选 ${fmtDur(it.frame_at)}</span>` : ''}
       ${opts.inside ? '' : `<span class="path">${esc(dir)}</span>`}</div></td>
     <td class="num">${fmtDur(it.duration) || '<span class="nothing">—</span>'}</td>
@@ -3644,7 +3661,7 @@ function renderCrumbs(data) {
     const isLib = i === 0 && (data.roots || []).length >= 1;
     const caret = isLib ? '<span class="caret" data-libmenu="files" title="切换媒体库">▼</span>' : '';
     return `<span class="crumb${last ? ' last' : ''}${isLib ? ' libcrumb' : ''}"
-                  data-path="${esc(c.path)}">${esc(c.name)}${caret}</span>`;
+                  data-path="${esc(c.path)}" title="${esc(c.path)}"><span class="nm">${esc(c.name)}</span>${caret}</span>`;
   });
   // 站在扫描根上时它就是「媒体库」，和任务列表里那一行的标签对得上
   const lib = data.parent ? '' : '<span class="taglib">媒体库</span>';
@@ -3867,7 +3884,7 @@ function dirRowHtml(d, indent) {
         ? `<button class="fcaret" data-subtoggle="${esc(d.path)}"
                    title="${open ? '收起' : '就地展开'}这一层"><span class="gcaret">▶</span></button>`
         : '<span class="fcaret blank"></span>'}
-      <span class="dir" data-dir="${esc(d.path)}" title="进入 ${esc(d.name)}">${icon}${esc(d.name)}</span>
+      <span class="dir" data-dir="${esc(d.path)}" title="${esc(d.name)}&#10;进入这个文件夹" data-full="${esc(d.name)}">${icon}<span class="nm">${esc(d.name)}</span></span>
       <span class="cnt">${d.count ? d.count + ' 个视频' : ''}${
         subs ? `${d.count ? ' · ' : ''}含 ${subs} 个子目录` : ''}</span>
     </div></td>
@@ -3919,7 +3936,7 @@ function renderFiles(data) {
       : (ftag ? '' : '<span class="nothing">—</span>');
     rows.push(`<tr data-path="${esc(f.path)}" class="${checked ? 'sel' : ''}">
       <td><input class="check" type="checkbox" data-pick="${esc(f.path)}" ${checked}></td>
-      <td><div class="name" title="${esc(f.path)}">${esc(f.name)}${
+      <td><div class="name" title="${esc(f.name)}&#10;${esc(f.path)}" data-full="${esc(f.name)}"><span class="nm">${esc(f.name)}</span>${
         f.frame_at ? `<span class="tag">手选 ${fmtDur(f.frame_at)}</span>` : ''}
         ${f.title && f.title !== f.name ? `<span class="path">${esc(f.title)}</span>` : ''}</div></td>
       <td class="num">${fmtBytes(f.size)}</td>

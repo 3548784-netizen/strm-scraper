@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import stat as stat_mod
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -1370,12 +1372,12 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             log.info("[单独跳过] %s（产物齐全）", stem[:60])
             return
 
-        store.mark_ok(path, result.title, result.duration)
         try:
             size, mtime = signature(Path(path))
-            store.touch_signature(path, size, mtime)
         except OSError:
-            pass
+            size, mtime = None, None
+        # 状态和签名一次写完，少一次事务提交
+        store.mark_ok(path, result.title, result.duration, size, mtime)
         log.info("[单独完成] %s | %.1fs | 海报 %s 背景 %s NFO %s",
                  result.title[:60], result.elapsed,
                  _size_of(result.sizes.get("poster")),
@@ -1685,32 +1687,52 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         queued: list[str] = []
         ready: list[str] = []
         rejected = 0
+        # 路径校验很轻，先收齐；真正费时的是后面的磁盘探测
+        sources: list[Path] = []
         for raw in paths:
             try:
-                source = _within_roots(raw)
+                sources.append(_within_roots(raw))
             except HTTPException:
                 rejected += 1
-                continue
-            if not source.is_file():
+
+        def probe(source: Path) -> tuple[str, bool, bool, int, float]:
+            """一次 stat 同时拿到签名与「是不是普通文件」。
+
+            还要看 4 个产物在不在，网络盘上串行做几百个文件光 I/O 等待
+            就得几十秒；这里并发跑，pool.map 会保持输入顺序。
+            """
+            try:
+                info = source.stat()
+            except OSError:
+                return (str(source), False, False, 0, 0.0)
+            if not stat_mod.S_ISREG(info.st_mode):
+                return (str(source), False, False, 0, 0.0)
+            complete = (not force) and _products_ready(source)
+            return (str(source), True, complete,
+                    info.st_size, round(info.st_mtime, 3))
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            probed = list(pool.map(probe, sources))
+        for path, ok, _complete, _size, _mtime in probed:
+            if not ok:
                 rejected += 1
-                continue
-            path = str(source)
-            if not force and _products_ready(source):
-                # 产物齐全：不重跑、不覆盖，状态保持「成功」
-                item = store.get(path)
-                if item is None:
-                    try:
-                        size, mtime = signature(source)
-                    except OSError:
-                        size, mtime = 0, 0.0
-                    store.ensure([(path, size, mtime)])
-                    item = store.get(path)
-                if item is not None and item.status not in ("ok", "skipped"):
-                    store.mark_skipped(path, "产物齐全，跳过")
-                ready.append(path)
-                continue
-            store.reset_one(path)
-            queued.append(path)
+
+        rows = [(p, s, m) for p, ok, _c, s, m in probed if ok]
+        ready = [p for p, ok, c, _s, _m in probed if ok and c]
+        queued = [p for p, ok, c, _s, _m in probed if ok and not c]
+        ready_set = set(ready)
+
+        # 原来是逐个 get / ensure / mark_skipped / reset_one，每个都带一次
+        # commit：勾 700 个文件就是 700 次 fsync，NAS 上能卡好几分钟。
+        # 这里把同批改动并成 3 个事务，SQL 语义和逐条版本完全一致。
+        known = store.get_many(r[0] for r in rows)
+        store.ensure([r for r in rows if r[0] in ready_set and r[0] not in known])
+        store.mark_skipped_many(
+            (p for p in ready
+             if p not in known or known[p].status not in ("ok", "skipped")),
+            "产物齐全，跳过",
+        )
+        store.reset_many(queued)
 
         tail = f"，{len(ready)} 个产物已齐全跳过" if ready else ""
         if not queued:

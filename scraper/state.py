@@ -21,14 +21,34 @@ CREATE TABLE IF NOT EXISTS items (
     attempts  INTEGER NOT NULL DEFAULT 0,
     updated   REAL    NOT NULL DEFAULT 0,
     frame_at  REAL    NOT NULL DEFAULT 0,
-    added     REAL    NOT NULL DEFAULT 0
+    added     REAL    NOT NULL DEFAULT 0,
+    -- 失败项到期才能重新入队；0 表示不等待 / 不再自动重试
+    next_retry REAL   NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
+-- idx_items_retry 放到 _migrate() 里建：老库还没补 next_retry 列时，
+-- 在 SCHEMA 阶段建这个索引会直接报 "no such column"
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 115 直链台账：strm → 播放地址。任务和记录被删掉也不清这里，
+-- 「已有连接保持有效」比「列表干净」重要。
+CREATE TABLE IF NOT EXISTS strm_links (
+    path        TEXT PRIMARY KEY,
+    url         TEXT NOT NULL DEFAULT '',
+    host        TEXT NOT NULL DEFAULT '',
+    signature   TEXT NOT NULL DEFAULT '',
+    state       TEXT NOT NULL DEFAULT 'fresh',  -- fresh / stale / invalid
+    verified_at REAL NOT NULL DEFAULT 0,
+    expires_at  REAL NOT NULL DEFAULT 0,
+    fail_count  INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT NOT NULL DEFAULT '',
+    updated     REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_links_state ON strm_links(state);
 
 -- 文件夹封面的「指定来源」：某一层用哪张图当封面，这里记一笔。
 -- 不记的话每次补封面都会退回「子树里按名字排第一张」，合集类目录就总会
@@ -73,6 +93,8 @@ class Item:
     frame_at: float = 0.0
     # 加入任务列表的时间，用来按「添加时间」排序（updated 每次处理都会变）
     added: float = 0.0
+    # 到期才能重新派发（失败退避 / 队列满退回）；0 表示随时可跑
+    next_retry: float = 0.0
 
     @property
     def name(self) -> str:
@@ -106,8 +128,13 @@ class StateStore:
                 "ALTER TABLE items ADD COLUMN added REAL NOT NULL DEFAULT 0"
             )
             self._conn.execute("UPDATE items SET added = updated WHERE added = 0")
+        if "next_retry" not in columns:
+            self._conn.execute(
+                "ALTER TABLE items ADD COLUMN next_retry REAL NOT NULL DEFAULT 0"
+            )
         # 索引要在补列之后建（老库没有这一列时建索引会直接报错）
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_items_added ON items(added)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_items_retry ON items(status, next_retry)")
         self._conn.create_function("fname", 1, _sql_basename)
 
     def close(self) -> None:
@@ -148,13 +175,13 @@ class StateStore:
             if size is None:
                 self._conn.execute(
                     "UPDATE items SET status='ok', reason='', title=?, duration=?, "
-                    "attempts=attempts+1, updated=? WHERE path=?",
+                    "attempts=attempts+1, next_retry=0, updated=? WHERE path=?",
                     (title, duration, time.time(), path),
                 )
             else:
                 self._conn.execute(
                     "UPDATE items SET status='ok', reason='', title=?, duration=?, "
-                    "size=?, mtime=?, attempts=attempts+1, updated=? WHERE path=?",
+                    "size=?, mtime=?, attempts=attempts+1, next_retry=0, updated=? WHERE path=?",
                     (title, duration, size, mtime or 0.0, time.time(), path),
                 )
             self._conn.commit()
@@ -162,26 +189,109 @@ class StateStore:
     def mark_skipped(self, path: str, reason: str = "产物已存在") -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE items SET status='skipped', reason=?, updated=? WHERE path=?",
+                "UPDATE items SET status='skipped', reason=?, next_retry=0, updated=? WHERE path=?",
                 (reason, time.time(), path),
             )
             self._conn.commit()
 
-    def mark_failed(self, path: str, reason: str) -> None:
+    def mark_failed(self, path: str, reason: str, retry_after: float = 0.0) -> None:
+        """标记失败；``retry_after`` > 0 时记下到期时间，到期才会重新入队。
+
+        0 表示不再自动重试（永久错误 / 已达到最大次数），任务仍留在列表里，
+        用户可以在网页上手动重试。
+        """
+        due = time.time() + retry_after if retry_after and retry_after > 0 else 0.0
         with self._lock:
             self._conn.execute(
                 "UPDATE items SET status='failed', reason=?, attempts=attempts+1, "
-                "updated=? WHERE path=?",
-                (reason[:400], time.time(), path),
+                "next_retry=?, updated=? WHERE path=?",
+                (reason[:400], due, time.time(), path),
             )
             self._conn.commit()
 
+    def defer_one(self, path: str, seconds: float) -> None:
+        """请求没发出去（排队满 / 等待超时）：退回队列，**不计失败次数**。"""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET status='pending', reason='', next_retry=? WHERE path=?",
+                (time.time() + max(1.0, seconds), path),
+            )
+            self._conn.commit()
+
+    @staticmethod
+    def _scope_list(only: Iterable[str] | None) -> list[str] | None:
+        """None = 整库；集合（哪怕为空）= 只看这些路径。"""
+        if only is None:
+            return None
+        return [p for p in dict.fromkeys(only) if p]
+
+    def requeue_due(self, max_attempts: int = 5,
+                    only: Iterable[str] | None = None) -> int:
+        """把**已到期且没超次数**的失败项放回 pending，一次事务完成。
+
+        这是「失败可恢复且不放大请求量」的关键：原来每轮任务开头
+        ``reset(('failed',))`` 会把所有失败项一次性放回队首，等于在下一轮
+        开始时重放一次失败高峰。
+
+        ``only`` 给定时只恢复范围内的路径。范围任务若把范围外的失败项也
+        翻成 pending，虽然不会被本轮派发，但状态已经变了——「只跑监控范围」
+        就成了假的，用户会在别的目录里看到莫名的状态跳动。
+        """
+        now = time.time()
+        limit = max(1, int(max_attempts))
+        scope = self._scope_list(only)
+        head = ("UPDATE items SET status='pending', reason='', next_retry=0 "
+                "WHERE status='failed' AND next_retry>0 AND next_retry<=? "
+                "AND attempts<?")
+        with self._lock:
+            if scope is not None and not scope:
+                return 0
+            if scope is None:
+                cur = self._conn.execute(head, (now, limit))
+                self._conn.commit()
+                return cur.rowcount
+            total = 0
+            for start in range(0, len(scope), 400):
+                chunk = scope[start:start + 400]
+                marks = ",".join("?" for _ in chunk)
+                total += self._conn.execute(
+                    head + f" AND path IN ({marks})",
+                    (now, limit, *chunk)).rowcount
+            self._conn.commit()
+            return total
+
+    def retry_counts(self, only: Iterable[str] | None = None) -> dict[str, int]:
+        """等退避 / 已到期的数量；范围任务只数范围内的，别为范围外的空等。"""
+        now = time.time()
+        scope = self._scope_list(only)
+        out = {"waiting": 0, "due": 0}
+        parts = {
+            "waiting": ("status='pending' AND next_retry>?", (now,)),
+            "due": ("status='failed' AND next_retry>0 AND next_retry<=?", (now,)),
+        }
+        with self._lock:
+            if scope is not None and not scope:
+                return out
+            for key, (where, args) in parts.items():
+                sql = "SELECT COUNT(*) FROM items WHERE " + where
+                if scope is None:
+                    out[key] = self._conn.execute(sql, args).fetchone()[0]
+                    continue
+                for start in range(0, len(scope), 400):
+                    chunk = scope[start:start + 400]
+                    marks = ",".join("?" for _ in chunk)
+                    out[key] += self._conn.execute(
+                        sql + f" AND path IN ({marks})",
+                        (*args, *chunk)).fetchone()[0]
+        return out
+
     def reset(self, statuses: tuple[str, ...] = ("failed",)) -> int:
-        """把指定状态重置为 pending，用于全量重刮或重试失败项。"""
+        """把指定状态重置为 pending，用于全量重刮或用户手动重试失败项。"""
         marks = ",".join("?" for _ in statuses)
         with self._lock:
             cur = self._conn.execute(
-                f"UPDATE items SET status='pending', reason='' WHERE status IN ({marks})",
+                f"UPDATE items SET status='pending', reason='', next_retry=0 "
+                f"WHERE status IN ({marks})",
                 statuses,
             )
             self._conn.commit()
@@ -190,7 +300,8 @@ class StateStore:
     def reset_one(self, path: str) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE items SET status='pending', reason='' WHERE path=?", (path,)
+                "UPDATE items SET status='pending', reason='', next_retry=0 WHERE path=?",
+                (path,),
             )
             self._conn.commit()
 
@@ -202,35 +313,43 @@ class StateStore:
 
     def _update_many(self, sql: str, paths: Iterable[str],
                      prefix: tuple = ()) -> int:
-        """共用的批量 UPDATE：分块只是绕开 SQLite 的绑定参数上限。"""
+        """共用的批量 UPDATE：分块只是绕开 SQLite 的绑定参数上限。
+
+        返回**真正被改到的行数**，不是传入的路径数。路径不存在（或状态本来
+        就一样）时不能虚报成功——`/api/links/retry` 会把个数显示给用户。
+        """
         wanted = [p for p in dict.fromkeys(paths) if p]
         if not wanted:
             return 0
         with self._lock:
+            before = self._conn.total_changes
             for start in range(0, len(wanted), 400):
                 chunk = wanted[start:start + 400]
                 self._conn.executemany(sql, (prefix + (p,) for p in chunk))
             self._conn.commit()
-        return len(wanted)
+            return self._conn.total_changes - before
 
     def reset_many(self, paths: Iterable[str]) -> int:
         """批量重置为 pending（等价于对每个路径调用一次 reset_one）。"""
         return self._update_many(
-            "UPDATE items SET status='pending', reason='' WHERE path=?", paths
+            "UPDATE items SET status='pending', reason='', next_retry=0 WHERE path=?",
+            paths,
         )
 
     def mark_skipped_many(self, paths: Iterable[str],
                           reason: str = "产物已存在") -> int:
         """批量标记「产物齐全，跳过」。"""
         return self._update_many(
-            "UPDATE items SET status='skipped', reason=?, updated=? WHERE path=?",
+            "UPDATE items SET status='skipped', reason=?, next_retry=0, "
+            "updated=? WHERE path=?",
             paths, (reason, time.time()),
         )
 
     def mark_running_many(self, paths: Iterable[str]) -> int:
         """一次派发多条时批量改状态，别为每条任务单独 commit。"""
         return self._update_many(
-            "UPDATE items SET status='running', reason='' WHERE path=?", paths
+            "UPDATE items SET status='running', reason='', next_retry=0 WHERE path=?",
+            paths,
         )
 
     def touch_signature(self, path: str, size: int, mtime: float) -> None:
@@ -320,6 +439,79 @@ class StateStore:
             )
             self._conn.commit()
 
+    # ---------- 115 直链台账 ----------
+
+    def link_get(self, path: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM strm_links WHERE path=?", (path,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def link_upsert(self, path: str, url: str, host: str, signature: str,
+                    ttl_seconds: float) -> None:
+        """登记 / 更新一条直链，重置为 fresh 但**保留失败次数**供排查。"""
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO strm_links(path, url, host, signature, state, "
+                "verified_at, expires_at, fail_count, last_error, updated) "
+                "VALUES(?,?,?,?,'fresh',?,?,0,'',?) "
+                "ON CONFLICT(path) DO UPDATE SET url=excluded.url, host=excluded.host, "
+                "signature=excluded.signature, state='fresh', "
+                "verified_at=excluded.verified_at, expires_at=excluded.expires_at, "
+                "last_error='', updated=excluded.updated",
+                (path, url, host, signature, now, now + max(0.0, ttl_seconds), now),
+            )
+            self._conn.commit()
+
+    def link_mark(self, path: str, state: str, error: str,
+                  ttl_seconds: float, ok: bool) -> None:
+        """回写一次真实请求的结果；只改状态，绝不删除 url。"""
+        now = time.time()
+        ttl = max(0.0, float(ttl_seconds or 0))
+        with self._lock:
+            if ok:
+                self._conn.execute(
+                    "UPDATE strm_links SET state='fresh', verified_at=?, expires_at=?, "
+                    "fail_count=0, last_error='', updated=? WHERE path=?",
+                    (now, now + ttl, now, path),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE strm_links SET state=?, fail_count=fail_count+1, "
+                    "last_error=?, updated=? WHERE path=?",
+                    (state, (error or "")[:300], now, path),
+                )
+            self._conn.commit()
+
+    def link_stats(self) -> dict:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT state, COUNT(*) FROM strm_links GROUP BY state"
+            ).fetchall()
+            hosts = self._conn.execute(
+                "SELECT COUNT(DISTINCT host) FROM strm_links"
+            ).fetchone()[0]
+        result = {state: count for state, count in rows}
+        for key in ("fresh", "stale", "invalid"):
+            result.setdefault(key, 0)
+        result["total"] = sum(result[k] for k in ("fresh", "stale", "invalid"))
+        result["hosts"] = hosts
+        return result
+
+    def link_list(self, limit: int = 50, state: str = "") -> list[dict]:
+        sql = "SELECT * FROM strm_links"
+        args: list = []
+        if state:
+            sql += " WHERE state=?"
+            args.append(state)
+        sql += " ORDER BY updated DESC LIMIT ?"
+        args.append(max(1, min(500, int(limit))))
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
     def _set(self, path: str, **fields) -> None:
         if not fields:
             return
@@ -356,20 +548,23 @@ class StateStore:
         return result
 
     def next_pending(self, limit: int, only: Iterable[str] | None = None) -> list[Item]:
-        """取待处理队列。失败过 3 次的排到最后，避免反复卡同一个。
+        """取待处理队列。失败过多次的排到最后；未到重试时间的不取。
 
         ``only`` 给定时只看这些路径：文件管理里只勾了一个文件夹，就只跑
         这个文件夹里的文件，不能顺手把整库的待处理都拉起来。
+        ``next_retry`` 让「退回队列 / 等退避」的任务安静地躺着，不占派发额度。
         """
         scope = [p for p in dict.fromkeys(only or ()) if p] if only is not None else []
         if only is not None and not scope:
             return []
+        now = time.time()
         with self._lock:
             if not scope:
                 rows = self._conn.execute(
                     "SELECT * FROM items WHERE status='pending' "
+                    "AND (next_retry=0 OR next_retry<=?) "
                     "ORDER BY attempts ASC, updated ASC LIMIT ?",
-                    (limit,),
+                    (now, limit),
                 ).fetchall()
                 return [_row_to_item(r) for r in rows]
             found = []
@@ -377,8 +572,9 @@ class StateStore:
                 chunk = scope[start:start + 400]
                 marks = ",".join("?" for _ in chunk)
                 found.extend(self._conn.execute(
-                    f"SELECT * FROM items WHERE status='pending' AND path IN ({marks})",
-                    chunk,
+                    f"SELECT * FROM items WHERE status='pending' AND path IN ({marks}) "
+                    f"AND (next_retry=0 OR next_retry<=?)",
+                    (*chunk, now),
                 ).fetchall())
         found.sort(key=lambda r: (r["attempts"], r["updated"]))
         return [_row_to_item(r) for r in found[:limit]]
@@ -520,6 +716,10 @@ class StateStore:
         for key in ("pending", "running", "ok", "skipped", "failed"):
             result.setdefault(key, 0)
         result["total"] = sum(result.values())
+        # 正在等退避 / 等连接槽位的任务：没丢，只是暂时不派发
+        retry = self.retry_counts()
+        result["retry_waiting"] = retry["waiting"]
+        result["retry_due"] = retry["due"]
         return result
 
     # ---------- meta ----------
@@ -577,4 +777,5 @@ def _row_to_item(row: sqlite3.Row) -> Item:
         updated=row["updated"],
         frame_at=row["frame_at"] if "frame_at" in keys else 0.0,
         added=row["added"] if "added" in keys else row["updated"],
+        next_retry=row["next_retry"] if "next_retry" in keys else 0.0,
     )

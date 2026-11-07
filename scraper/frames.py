@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageStat
 
-from . import specs, throttle
+from . import links, specs, throttle
 from .probe import find_binary
 
 log = logging.getLogger(__name__)
@@ -115,21 +115,28 @@ def capture(source: str, seconds: float, output: Path, timeout: int = 60,
     floor = min_bytes if min_bytes is not None else (
         MIN_FRAME_BYTES if width <= 0 else 128)
 
-    code, err = _run_ffmpeg(cmd, timeout, abort)
-    if code == -1:
-        log.debug("抓帧超时 %ss @%.1fs", timeout, seconds)
-        _drop(output)
-        return False
-    if code != 0:
-        log.debug("ffmpeg 退出码 %s @%.1fs：%s", code, seconds,
-                  (err or b"").decode("utf-8", "replace").strip()[:300])
-    if code != 0 or not _valid(output, floor):
-        # 报错里带 429 / 503 / 504 就是被限流了，交给全局退避点
-        throttle.GUARD.report((err or b"").decode("utf-8", "replace"))
-        _drop(output)
-        return False
-    throttle.GUARD.ok()
-    return True
+    # 每一次 ffmpeg 都是一次真实的网盘连接，统一去全局闸门领票；
+    # 暂停 / 取消（abort）在排队阶段就能生效，请求根本不会发出去。
+    with links.lease(source, abort) as ticket:
+        code, err = _run_ffmpeg(cmd, timeout, abort)
+        if code == -1:
+            ticket.note(False, "timeout")
+            log.debug("抓帧超时 %ss @%.1fs", timeout, seconds)
+            _drop(output)
+            return False
+        err_text = (err or b"").decode("utf-8", "replace")
+        if code != 0:
+            log.debug("ffmpeg 退出码 %s @%.1fs：%s", code, seconds,
+                      err_text.strip()[:300])
+        if code != 0 or not _valid(output, floor):
+            # 报错里带 429 / 503 / 504 / 403 就是被限流了，交给全局退避点
+            throttle.GUARD.report(err_text)
+            ticket.note(False, err_text)
+            _drop(output)
+            return False
+        throttle.GUARD.ok()
+        ticket.note(True)
+        return True
 
 
 def capture_at(source: str, seconds: float, output: Path, timeout: int = 60,
@@ -139,10 +146,16 @@ def capture_at(source: str, seconds: float, output: Path, timeout: int = 60,
     手动选帧走这条路，用户点了哪一秒就要哪一秒，不能像自动选帧那样悄悄
     换到别的位置。
     """
+    hits_before = throttle.GUARD.status()["hits"]
     if capture(source, seconds, output, timeout=timeout, fast_seek=True,
                width=width, abort=abort):
         return True
     if _aborted(abort) or seconds <= 1.0:
+        return False
+    # 刚才是被源站限流（403 / 429 / 5xx）而不是定位不准。这时候再从头解码
+    # 重试只会又撞一次墙，还白等一整个超时——直接交回上层等退避，别把
+    # 「偶尔抓不下来」拖成「主帧 30 秒不出图」。
+    if throttle.GUARD.status()["hits"] != hits_before:
         return False
     return capture(source, seconds, output, timeout=timeout, fast_seek=False,
                    width=width, abort=abort)

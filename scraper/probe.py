@@ -7,10 +7,11 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import throttle
+from . import links, throttle
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +76,19 @@ def find_binary(name: str) -> str:
 
 
 def resolve_source(path: str | Path) -> str:
-    """strm 文件返回其中记录的 URL，其它类型原样返回。
+    """取一个媒体文件的播放地址。
+
+    strm 走 :mod:`links` 的持久连接台账：同一条直链粘住复用，只有文件内容
+    变了才重新解析。没装配台账时（离线脚本 / 自检）退化成直接读文件，行为
+    和以前完全一致。
+    """
+    if links.configured():
+        return links.resolve_source(path)
+    return resolve_source_file(path)
+
+
+def resolve_source_file(path: str | Path) -> str:
+    """直接从磁盘解析，不查台账。台账内部与离线工具用这个。
 
     strm 是纯文本，第一行有效内容就是播放地址。有的工具会写成多行或带 BOM，
     这里取第一条以 http/https/rtsp 开头的行。
@@ -137,8 +150,9 @@ def _classify_error(stderr: str, url: str) -> str:
     return f"探测失败：{tail[:160]}"
 
 
-def probe(source: str, timeout: int = 20) -> MediaInfo:
-    """对本地文件或网络地址做一次探测。"""
+def probe(source: str, timeout: int = 20,
+          abort: threading.Event | None = None) -> MediaInfo:
+    """对本地文件或网络地址做一次探测。网络请求统一走全局闸门。"""
     ffprobe = find_binary("ffprobe")
     cmd = [
         ffprobe,
@@ -155,23 +169,30 @@ def probe(source: str, timeout: int = 20) -> MediaInfo:
     creation = 0
     if os.name == "nt":  # 不弹黑框
         creation = 0x08000000
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=timeout + 10,
-            creationflags=creation,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ProbeError(f"探测超时（{timeout} 秒），网络地址可能已失效") from exc
-    except FileNotFoundError as exc:
-        raise ProbeError("ffprobe 未安装或不可执行") from exc
+    # 网络源先去全局闸门领票：批量队列 / 选帧 / 单条刮削共用一份额度。
+    # 退避期内会在这里排队，而不是立刻再撞一次网盘。
+    with links.lease(source, abort) as ticket:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=timeout + 10,
+                creationflags=creation,
+            )
+        except subprocess.TimeoutExpired as exc:
+            ticket.note(False, "timeout")
+            raise ProbeError(f"探测超时（{timeout} 秒），网络地址可能已失效") from exc
+        except FileNotFoundError as exc:
+            ticket.note(False, "ffprobe 未安装或不可执行")
+            raise ProbeError("ffprobe 未安装或不可执行") from exc
 
-    stderr = proc.stderr.decode("utf-8", "replace")
-    if proc.returncode != 0:
-        # 被限流就先记一笔，让调度线程歇一会儿（这里不阻塞，网页请求照常返回）
-        throttle.GUARD.report(stderr)
-        raise ProbeError(_classify_error(stderr, source))
+        stderr = proc.stderr.decode("utf-8", "replace")
+        if proc.returncode != 0:
+            # 被限流就先记一笔，让调度线程歇一会儿（这里不阻塞，网页请求照常返回）
+            throttle.GUARD.report(stderr)
+            ticket.note(False, stderr)
+            raise ProbeError(_classify_error(stderr, source))
+        ticket.note(True)
 
     try:
         data = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")

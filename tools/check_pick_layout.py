@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""选帧界面自适应铺满回归：多视口 / 缩放等效尺寸下不裁切、不重叠、不出现意外滚动条。
+"""选帧界面居中卡片回归：多视口 / 缩放等效尺寸下不铺满、不裁切、不重叠、不出现意外滚动条。
 
     python tools/check_pick_layout.py --base http://127.0.0.1:6687
 
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import urllib.parse
 import urllib.request
@@ -101,29 +102,46 @@ def in_view(r: dict, m: dict) -> bool:
 
 
 def find_media(base: str) -> str | None:
-    """找一个真的能抽帧的 .strm，没有就返回 None（布局断言仍可跑）。"""
-    media = ROOT / ".devdata" / "media"
-    if not media.is_dir():
-        return None
-    for f in sorted(media.rglob("*.strm")):
-        url = f"{base}/api/frames/plan?count=4&path={urllib.parse.quote(str(f))}"
-        try:
-            with urllib.request.urlopen(url, timeout=10) as r:
-                if r.status == 200:
-                    return str(f)
-        except Exception:
+    """找一个真的能抽帧的 .strm；根目录取自服务端配置，别写死本地路径。
+
+    写死 ``.devdata/media`` 时，只要 devserver 换了个 --data，就会拿空路径
+    打开面板并记一笔 400，把「布局全绿」误报成失败。
+    """
+    roots: list[Path] = []
+    try:
+        with urllib.request.urlopen(f"{base}/api/config", timeout=10) as r:
+            cfg = json.load(r)
+        roots = [Path(x) for x in (cfg.get("scan", {}).get("roots") or [])]
+    except Exception:
+        pass
+    roots.append(ROOT / ".devdata" / "media")   # 兼容老环境
+    for root in roots:
+        if not root.is_dir():
             continue
+        for f in sorted(root.rglob("*.strm")):
+            url = f"{base}/api/frames/plan?count=4&path={urllib.parse.quote(str(f))}"
+            try:
+                with urllib.request.urlopen(url, timeout=10) as r:
+                    if r.status == 200:
+                        return str(f)
+            except Exception:
+                continue
     return None
 
 
 def source_checks(src: str) -> None:
     print("\n---------- 1. 源码层：尺寸约束与交互入口 ----------")
     check("不再有 920px 居中固定宽度", "max-width: 920px" not in src)
-    check("弹窗按容器拉伸铺满", "place-items: stretch" in src
-          and "grid-template-rows: minmax(0, 1fr)" in src)
-    check("保留 8px 遮罩热区以维持点外部关闭",
-          "padding: var(--s2); place-items: stretch" in src)
-    check("卡片宽高跟随父容器", "width: 100%; height: 100%; max-width: none" in src)
+    check("弹窗恢复居中、不再拉伸铺满", "place-items: stretch" not in src
+          and "place-items: center" in src)
+    check("卡片有明确宽高上限，四周留出可点的遮罩",
+          "width: min(1180px, 100%); height: min(84vh, 820px)" in src
+          and "#pickModal { padding: var(--s5); }" in src)
+    pick_css = src.split(".modal-card.pick {", 1)[1].split("}", 1)[0]
+    check("不再全屏铺满 / 保留圆角边框",
+          "width: 100%; height: 100%" not in pick_css
+          and "border: 0" not in pick_css
+          and "min(1180px, 100%)" in pick_css)
     check("内容区纵向 flex 吃剩余高度", "flex: 1; min-height: 0; overflow: hidden;" in src)
     check("侧栏宽度随视口 clamp", "clamp(176px, 17vw, 320px)" in src)
     check("舞台不再写死 48vh / 200px 下限",
@@ -141,11 +159,12 @@ def source_checks(src: str) -> None:
 
 def layout_checks(m: dict, tag: str) -> None:
     c, b, f, main, stage = m["card"], m["body"], m["foot"], m["main"], m["stage"]
-    # 8px 安全边距只用于保留「点遮罩关闭」，卡片本身仍占满整个可用区域
-    check(f"{tag}：卡片铺满可用区域、四周无多余留白",
-          0 <= c["x"] <= 10 and 0 <= c["y"] <= 10
-          and m["vw"] - c["w"] <= 20 and m["vh"] - c["h"] <= 20
-          and abs(right(c) - m["vw"]) <= 10 and abs(bottom(c) - m["vh"]) <= 10,
+    # 卡片居中且不铺满：四周都要留出可见遮罩，点外部才能关掉
+    check(f"{tag}：卡片居中、四周留遮罩（不铺满全屏）",
+          c["x"] >= 8 and c["y"] >= 8
+          and m["vw"] - right(c) >= 8 and m["vh"] - bottom(c) >= 8
+          and abs((c["x"] + c["w"] / 2) - m["vw"] / 2) <= 2
+          and abs((c["y"] + c["h"] / 2) - m["vh"] / 2) <= 2,
           f"{c['x']},{c['y']} {c['w']}x{c['h']} / {m['vw']}x{m['vh']}")
     check(f"{tag}：标题栏 / 内容区 / 底栏依次排布不重叠",
           bottom(m["head"]) <= b["y"] + 1 and bottom(b) <= f["y"] + 1
@@ -178,15 +197,21 @@ def layout_checks(m: dict, tag: str) -> None:
           f"apply={m['apply']} zoom={m['zoom']} strip={m['strip']}")
     # 极矮窗口里标题 / 底栏 / 胶片条是固定高度，用「舞台占内容区高度」衡量更稳，
     # 不受窗口宽高比影响；同时打印占整屏面积供对照
+    # 极矮窗口里固定区块挤掉了大部分高度，绝对下限跟着视口缩放：
+    # 768x480 时舞台约 124px 已是可用的全部空间，仍要占内容区 40% 以上
+    floor = min(180, m["vh"] * 0.22)
     h_ratio = stage["h"] / max(1, b["h"])
     check(f"{tag}：主舞台充分利用可用面积",
-          stage["h"] >= 180 and h_ratio >= 0.40,
-          f"{stage['w']}x{stage['h']}，占内容区高度 {h_ratio:.0%}，"
+          stage["h"] >= floor and h_ratio >= 0.40,
+          f"{stage['w']}x{stage['h']}，下限 {floor:.0f}px，占内容区高度 {h_ratio:.0%}，"
           f"占整屏 {stage['w']*stage['h']/(m['vw']*m['vh']):.0%}")
     if m["sideShown"]:
-        check(f"{tag}：两张预览随侧栏放大且没被压扁",
-              m["cropView"]["w"] > 120 and m["cropView"]["h"] > 120
-              and m["poster"]["h"] > 100,
+        # 矮窗口下预览图跟着缩放，别拿大屏的 120px 去要求它
+        preview_floor = 120 if m["vh"] >= 600 else 80
+        check(f"{tag}：两张预览随侧栏缩放且没被压扁",
+              m["cropView"]["w"] > preview_floor
+              and m["cropView"]["h"] > preview_floor * 0.8
+              and m["poster"]["h"] > preview_floor * 0.8,
               f"cropView={m['cropView']['w']}x{m['cropView']['h']} poster.h={m['poster']['h']}")
     if not m["boxHidden"]:
         check(f"{tag}：取景框完整落在舞台内",
@@ -248,12 +273,20 @@ def main() -> int:
 
         print("\n---------- 3. 自适应与数据状态 ----------")
         a, z = measured["1920x1080"], measured["1280x800"]
-        check("窗口变宽时主舞台跟着变宽", a["stage"]["w"] > z["stage"]["w"] + 150,
-              f"{z['stage']['w']} -> {a['stage']['w']}")
-        check("窗口变高时主舞台跟着变高", a["stage"]["h"] > z["stage"]["h"] + 150,
+        # 卡片宽到 1180px 就封顶了：再宽的视口只会让侧栏按 clamp 变宽，
+        # 主舞台反而略窄。这里验的是「封顶后不溢出、两块都不被挤没」。
+        check("宽视口下卡片封顶 1180px、主舞台与侧栏都不溢出",
+              a["card"]["w"] <= 1180 and z["card"]["w"] <= 1180
+              and a["stage"]["w"] >= 700 and z["stage"]["w"] >= 700
+              and a["stage"]["w"] + a["side"]["w"] <= a["card"]["w"]
+              and z["stage"]["w"] + z["side"]["w"] <= z["card"]["w"],
+              f"card {z['card']['w']}->{a['card']['w']}, "
+              f"stage {z['stage']['w']}->{a['stage']['w']}, "
+              f"side {z['side']['w']}->{a['side']['w']}")
+        check("窗口变高时主舞台跟着变高", a["stage"]["h"] > z["stage"]["h"] + 100,
               f"{z['stage']['h']} -> {a['stage']['h']}")
         check("预览列与预览图跟着容器长大",
-              a["side"]["w"] > z["side"]["w"] and a["cropView"]["h"] > z["cropView"]["h"] + 100,
+              a["side"]["w"] > z["side"]["w"] and a["cropView"]["h"] > z["cropView"]["h"] + 50,
               f"side {z['side']['w']}->{a['side']['w']}, view {z['cropView']['h']}->{a['cropView']['h']}")
         last_state = pg.evaluate("""() => typeof PICK === 'undefined' ? null
             : ({crop: {...PICK.crop}, zoom: PICK.zoom, t: PICK.t, mode: PICK.cropMode})""")
@@ -269,8 +302,10 @@ def main() -> int:
                 "width": 1440, "height": 900, "deviceScaleFactor": dpr, "mobile": False})
             pg.wait_for_timeout(260)
             m = pg.evaluate(MEASURE)
-            check(f"DPR {dpr}: 卡片仍铺满、容器不溢出、无意外滚动条",
-                  m["vw"] - m["card"]["w"] <= 20
+            check(f"DPR {dpr}: 卡片仍居中不铺满、容器不溢出、无意外滚动条",
+                  m["card"]["x"] >= 8 and m["vw"] - right(m["card"]) >= 8
+                  and m["card"]["y"] >= 8 and m["vh"] - bottom(m["card"]) >= 8
+                  and abs((m["card"]["x"] + m["card"]["w"] / 2) - m["vw"] / 2) <= 2
                   and all(no_overflow(m, k) for k in ("card", "body", "main", "side"))
                   and m["overflow"]["strip"]["sh"] <= m["overflow"]["strip"]["ch"] + 1
                   and m["overflow"]["html"]["sw"] <= m["vw"] + 1

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import frames, nfo, picker, probe, throttle
+from . import frames, links, nfo, picker, probe, throttle
 from .config import Config
 from .media import (Target, artifacts, build_target, product_state, scan_rows,
                     signature, split_by_products)
@@ -39,12 +39,33 @@ def process(cfg: Config, target: Target, frame_at: float = 0.0,
             abort: threading.Event | None = None, force: bool = False) -> ScrapeResult:
     """处理一个 strm：探测 → 抓帧 → 出图 → 写 NFO。
 
+    包一层是为了把「这次到底连没连上网盘」回写到直链台账。暂停 / 取消
+    （CaptureAborted）和请求没发出去（LinkDeferred）都不算连接失效，不能
+    因此把一条本来好好的直链标成过期——否则下一批任务会集体去刷新它。
+
     ``frame_at`` 大于 0 时表示用户在网页上手动选过帧，直接抓那一秒，
     不再按比例采样自动挑选。``abort`` 被 set 时立刻中断正在跑的 ffmpeg
     并抛 :class:`frames.CaptureAborted`，让「暂停 / 取消」即时生效。
     ``force`` 为真时忽略「产物已齐全」，全部重做并覆盖旧文件（单次有效，
     不改全局的 overwrite 设置）。
     """
+    try:
+        result = _process(cfg, target, frame_at, abort, force)
+    except (frames.CaptureAborted, links.LinkDeferred):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        links.note_result(target.source, False, str(exc))
+        raise
+    # 产物齐全直接跳过时根本没连网盘，别把一条可能早已过期的直链
+    # 误标成「刚验证过」
+    if result.reason != "产物已存在，跳过":
+        links.note_result(target.source, True, "")
+    return result
+
+
+def _process(cfg: Config, target: Target, frame_at: float = 0.0,
+             abort: threading.Event | None = None,
+             force: bool = False) -> ScrapeResult:
     started = time.monotonic()
     overwrite = force or cfg.scrape.overwrite == "always"
     want_thumb = cfg.scrape.thumb.enabled
@@ -62,7 +83,7 @@ def process(cfg: Config, target: Target, frame_at: float = 0.0,
     # 上一次撞到限流的话，这里先等它到期；等待期间点暂停能立刻退出
     if not throttle.GUARD.wait(abort):
         raise frames.CaptureAborted("任务已暂停")
-    info = probe.probe(url, timeout=cfg.scan.probe_timeout)
+    info = probe.probe(url, timeout=cfg.scan.probe_timeout, abort=abort)
     title = nfo.display_title(target.stem)
 
     need_image = (
@@ -353,10 +374,13 @@ class Runner:
                 "scanned": self.scanned,
                 "active": sorted(self.current),
                 "concurrency": self.cfg.scan.concurrency,
+                "effective_concurrency": min(self.cfg.scan.concurrency,
+                                             links.SETTINGS.batch_size),
                 "elapsed": round(elapsed, 1),
                 "last_error": self.last_error,
                 "last_message": self.last_message,
                 "throttle": throttle.GUARD.status(),
+                "links": links.status(),
                 "stats": self.store.stats(),
             }
 
@@ -464,8 +488,12 @@ class Runner:
             reset = self.store.reset(("ok", "skipped", "failed"))
             log.info("全量模式：重置 %s 个已有记录", reset)
         else:
-            # 增量：失败的自动重试；成功的只要产物缺失也会重新入队
-            self.store.reset(("failed",))
+            # 增量：只有「退避到期且没超次数」的失败项才重新入队。
+            # 原来是 reset(("failed",)) 把整批失败项一次性放回队首，等于在
+            # 下一轮开始时重放一次失败高峰，正好会把网盘再撞一次。
+            due = self.store.requeue_due(links.retry_max_attempts(), self._scope())
+            if due:
+                log.info("失败重试：%s 个任务退避到期，已放回队列", due)
             # 记录被删过 / 换了数据目录、而产物齐全的文件：不登记——
             # 「删除任务」就是从列表里移除，别让下一轮自动化扫描又把它们
             # 加回来（那样用户删完记录点一次「立即执行」，列表就复活一遍）。
@@ -526,13 +554,21 @@ class Runner:
         所以「继续」之后能原样重跑；取消则连同进行中的一起作废。
         """
         cfg = self.cfg
-        workers = max(1, cfg.scan.concurrency)
+        # 范围任务里派发、退避恢复、等待计数要用同一个范围；范围在每轮循环
+        # 开头重新取，因为文件管理可能在跑的过程中 add_scope() 追加文件。
+        # 批量在途上限：scan.concurrency 是线程数，links.batch_size 是本轮
+        # 允许同时「在途」的任务数，两者取小。突发几千个 strm 时先全部落在
+        # 持久队列里，再按这个窗口慢慢放行，不会因为线程多就一起冲出去。
+        workers = max(1, min(cfg.scan.concurrency, links.SETTINGS.batch_size))
         ok_paths: list[str] = []
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ws-worker")
         pending: set = set()
+        last_requeue = 0.0
+        idle_until = 0.0
 
         try:
             while not self._stop.is_set():
+                scope = self._scope()
                 if self._paused.is_set():
                     with self._lock:
                         if self.state != "paused":
@@ -546,23 +582,47 @@ class Runner:
                     log.info("任务继续，剩余 %s 个待处理", self.store.count("pending"))
                     continue
 
+                # 退避到期的失败项在一轮任务里也能被接住，但每秒最多查一次，
+                # 不会变成每轮循环都刷一遍库
+                now_mono = time.monotonic()
+                if now_mono - last_requeue >= 1.0:
+                    last_requeue = now_mono
+                    self.store.requeue_due(links.retry_max_attempts(), scope)
+
                 need = workers - len(pending)
                 if need:
                     # 一次取一批、一次改状态：逐条 next_pending(1) +
                     # mark_running 在大批量时就是几千次查询和事务提交
-                    batch = self.store.next_pending(need, only=self._scope())
+                    batch = self.store.next_pending(need, only=scope)
                     if batch:
                         self.store.mark_running_many(i.path for i in batch)
                         for item in batch:
                             with self._lock:
                                 self.current[item.path] = time.time()
                             pending.add(executor.submit(self._work, item))
+                        gap = links.SETTINGS.batch_interval_ms
+                        if gap:
+                            time.sleep(gap / 1000.0)
 
                 if not pending:
                     # 队列看起来空了，但文件管理那边可能刚塞进新的待处理（
                     # 「已加入队列」），所以再问一次，别让它们干等下一次开始
-                    if self.store.next_pending(1, only=self._scope()):
+                    if self.store.next_pending(1, only=scope):
                         continue
+                    # 还有「等退避 / 等连接槽位」的任务：它们没丢，只是暂时
+                    # 不派发。等一小会儿接到期的；等不到就结束本轮，下一轮
+                    # 照样会从库里把它们捡起来。
+                    retry = self.store.retry_counts(scope)
+                    if retry["due"] and \
+                            self.store.requeue_due(links.retry_max_attempts(), scope):
+                        continue
+                    waiting = retry["waiting"]
+                    if waiting:
+                        if not idle_until:
+                            idle_until = time.monotonic()
+                        if time.monotonic() - idle_until < 60.0:
+                            time.sleep(0.5)
+                            continue
                     break
 
                 done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
@@ -599,6 +659,24 @@ class Runner:
             log.info("[中断] %s | %s，已退回待处理", target.stem[:60],
                      "任务已取消" if self._cancelled else "任务已暂停",
                      extra={"item": item.path})
+            return ""
+        except links.LinkAborted:
+            # 还在排队等网盘连接槽位就被暂停：请求没发出去，直接退回
+            with self._lock:
+                self.current.pop(item.path, None)
+            self.store.reset_one(item.path)
+            log.info("[排队中断] %s | 未发出请求，已退回待处理", target.stem[:60],
+                     extra={"item": item.path})
+            return ""
+        except links.LinkDeferred as exc:
+            # 队列满 / 排队超时：任务原样留在持久队列，不计失败、不占额度。
+            # 给一个短退避，避免几百个任务在同一秒又一起回来排队。
+            delay = links.retry_delay(1, "transient")
+            self.store.defer_one(item.path, delay)
+            with self._lock:
+                self.current.pop(item.path, None)
+            log.info("[排队] %s | %s，%.0f 秒后重新派发", target.stem[:60],
+                     exc, delay, extra={"item": item.path})
             return ""
         except (probe.ProbeError, frames.FrameError) as exc:
             result = ScrapeResult(ok=False, reason=str(exc))
@@ -639,10 +717,21 @@ class Runner:
             with self._lock:
                 self.succeeded += 1
         else:
-            self.store.mark_failed(item.path, result.reason)
+            # 失败不等于「立刻再来一次」：限流类要退得更久，永久错误和
+            # 已到次数上限的不再自动重试，都留在列表里等人工处理。
+            attempts = item.attempts + 1
+            kind = links.classify(result.reason)
+            max_try = links.retry_max_attempts()
+            if kind == "permanent" or max_try <= 0 or attempts >= max_try:
+                delay = 0.0
+                result.reason += "（不再自动重试，可在网页上手动重试）"
+            else:
+                delay = links.retry_delay(attempts, kind)
+            self.store.mark_failed(item.path, result.reason, retry_after=delay)
             with self._lock:
                 self.failed += 1
-            log.warning("[失败] %s | %s", target.stem[:60], result.reason,
+            log.warning("[失败] %s | %s%s", target.stem[:60], result.reason,
+                        f"，{delay:.0f} 秒后重试" if delay else "",
                         extra={"item": item.path})
 
         with self._lock:

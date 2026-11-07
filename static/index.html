@@ -820,17 +820,13 @@
     background: var(--accent-soft); color: var(--accent-ink); margin-left: var(--s2);
     vertical-align: middle; white-space: nowrap;
   }
-  /* 选帧是「工作区」而不是小卡片：铺满弹窗的可用区域，四周不再留遮罩空白。
-     卡片是纵向 flex，中间内容区吃剩余高度；尺寸只由容器决定，窗口变大变小 /
-     浏览器缩放时各区块一起伸缩，不会出现页面级滚动条。 */
-  #pickModal {
-    /* 8px 安全边距只用来保留「点外部关闭」这个既有交互，不是内容留白 */
-    padding: var(--s2); place-items: stretch;
-    grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
-  }
+  /* 选帧是「弹窗」而不是全屏工作区：居中卡片、四周留遮罩，点外面就能关。
+     宽高都给明确上限，内容区才有确定的剩余高度可用 flex:1 吃掉；窗口变小
+     时按视口收缩，不会出现页面级滚动条。 */
+  #pickModal { padding: var(--s5); }
   .modal-card.pick {
-    width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0;
-    border: 0; border-radius: 0;
+    width: min(1180px, 100%); height: min(84vh, 820px);
+    max-width: none; min-width: 0; min-height: 0;
     display: flex; flex-direction: column;
   }
   .modal-card.pick > .modal-head,
@@ -992,13 +988,29 @@
   /* 胶片条铺满左列宽度；缩略图随视口略放大，一行能看到的帧数也跟着变多 */
   .pick-strip { display: flex; gap: var(--s2); overflow-x: auto; flex: none;
                 padding: var(--s2) 0 var(--s1); min-height: 84px; }
-  .pick-strip figure { margin: 0; flex: none; width: clamp(104px, 8vw, 148px); cursor: pointer; }
+  .pick-strip figure { margin: 0; flex: none; width: clamp(104px, 8vw, 148px);
+                       cursor: pointer; position: relative; }
+  /* 还没抓到的格子转个小圈，抓失败的格子直接给「重试」：空黑框看不出是在等还是挂了 */
+  .pick-strip figure.pending::before {
+    content: ''; position: absolute; left: 50%; top: 42%; width: 14px; height: 14px;
+    margin: -7px; border-radius: 50%; border: 2px solid var(--line);
+    border-top-color: var(--accent); animation: amane-spin .8s linear infinite;
+    pointer-events: none;
+  }
+  .pick-strip figure.failed::after {
+    content: '点击重试'; position: absolute; left: 50%; top: 42%;
+    transform: translate(-50%, -50%); white-space: nowrap;
+    font-size: var(--fs-2xs); color: var(--text-2);
+    background: var(--bg-deep); border: 1px solid var(--line);
+    padding: 2px 6px; border-radius: var(--r-xs); pointer-events: none;
+  }
   .pick-strip img {
     width: 100%; aspect-ratio: 16 / 9; height: auto;
     object-fit: cover; border-radius: var(--r-xs); display: block;
     border: 1px solid var(--line); background: var(--bg-deep);
     transition: border-color var(--dur) var(--ease), opacity var(--dur) var(--ease);
   }
+  .pick-strip img[data-src] { opacity: .4; }
   .pick-strip figure.on img { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
   .pick-strip figcaption { font-size: var(--fs-2xs); color: var(--text-3); text-align: center; margin-top: 3px; }
   .pick-foot { flex-wrap: wrap; gap: var(--s3); }
@@ -1696,6 +1708,46 @@
         </div>
       </div>
 
+
+      <div class="set-card" id="setLinksCard">
+        <div class="set-head">
+          <h3>115 网盘连接与节奏</h3>
+          <span class="set-sub">短时间涌入大量 strm 时按这个节奏排队，尽量不触发网盘风控</span>
+          <span class="grow"></span>
+          <span class="set-sub" id="setLinkStatus">—</span>
+        </div>
+        <div class="set-body">
+          <div class="set-grid">
+            <label class="switch"><input type="checkbox" id="setLinkEnabled"> 启用统一连接闸门</label>
+            <label class="fld"><span>全局并发（路）</span>
+              <input id="setLinkInflight" type="number" min="1" max="64" step="1">
+              <small>探测 / 抓帧 / 选帧 加起来同时最多几个网盘连接</small></label>
+            <label class="fld"><span>单域名并发（路）</span>
+              <input id="setLinkPerHost" type="number" min="1" max="64" step="1"></label>
+            <label class="fld"><span>每分钟请求数</span>
+              <input id="setLinkRate" type="number" min="1" max="100000" step="1">
+              <small>令牌桶速率，突发额度自动取全局并发数</small></label>
+            <label class="fld"><span>请求最小间隔（毫秒）</span>
+              <input id="setLinkGap" type="number" min="0" max="60000" step="50"></label>
+            <label class="fld"><span>单轮在途任务数</span>
+              <input id="setLinkBatch" type="number" min="1" max="10000" step="1">
+              <small>与「并发数」取小；其余任务留在持久队列里</small></label>
+            <label class="fld"><span>失败重试基准（秒）</span>
+              <input id="setLinkRetry" type="number" min="1" max="86400" step="5">
+              <small>指数退避 + 抖动，限流类失败退得更久</small></label>
+            <label class="fld"><span>最大重试次数</span>
+              <input id="setLinkAttempts" type="number" min="0" max="100" step="1"></label>
+            <label class="fld"><span>直链有效期（分钟）</span>
+              <input id="setLinkTtl" type="number" min="1" max="100000" step="30">
+              <small>过期只标记，不删除、不批量复验</small></label>
+          </div>
+          <p class="set-note">连接台账记在状态库里：一条 strm 的直链只在首次或文件变化时解析，
+            重启、任务删除、批量任务涌入都不会让它失效。失败任务到期才重新入队，
+            不会因为点一次「立即执行」就把整批失败重放出去。更多参数与行为约定见
+            <code>docs/115-links.md</code>。</p>
+          <div class="msg-line" id="linkDetail">—</div>
+        </div>
+      </div>
 
       <div class="set-card">
         <div class="set-head">
@@ -4532,9 +4584,14 @@ const PICK = {
   zoom: 1, pan: { x: 0, y: 0 }, base: null,
 };
 
-function frameUrl(path, t, width) {
-  let url = `/api/frames/frame?t=${Number(t).toFixed(2)}&path=${encodeURIComponent(path)}`;
+/* 区分浏览器标签页：两个窗口同时选同一部片时，别互相取消对方的抓帧 */
+const PICK_TAB = Math.random().toString(36).slice(2, 10);
+
+function frameUrl(path, t, width, fast) {
+  let url = `/api/frames/frame?t=${Number(t).toFixed(2)}&path=${encodeURIComponent(path)}`
+    + `&sid=${PICK_TAB}`;
   if (width) url += `&width=${width}`;
+  if (fast) url += '&fast=1';   // 候选缩略图走快速通道，不退化成慢速解码定位
   return url;
 }
 
@@ -4705,6 +4762,7 @@ function setCropMode(mode, redraw) {
 }
 
 async function openPicker(path) {
+  abortFrameRequest();          // 换文件时别让上一个文件的 ffmpeg 还占着槽位
   PICK.path = path;
   PICK.duration = 0;
   PICK.t = 0;
@@ -4767,6 +4825,7 @@ async function openPicker(path) {
     : (PICK.duration > 0 ? PICK.duration * 0.45
       : ((plan.candidates || [])[0] || {}).t || 0);
   selectFrame(start, true);
+  loadStrip();   // 不等主帧：两条线同时开工，谁先好谁先显示
 }
 
 function renderStrip(cands) {
@@ -4775,41 +4834,100 @@ function renderStrip(cands) {
     box.innerHTML = '<span class="nothing">没有可用时间点</span>';
     return;
   }
-  // 先只放占位：网络源（115 网盘）一次并发十几张会直接限流，主帧都抢不到带宽。
-  // 等主帧出来后由 loadStrip() 一张张补齐。
+  // 先只放占位。网络源（115 网盘）一次并发十几张会限流，所以由 loadStrip()
+  // 用 3 路小并发补齐，而不是 12 个请求一起打出去；服务端也留了专门的槽位配额。
   stripSeq++;
-  box.innerHTML = cands.map(c => `<figure data-t="${c.t}">
-      <img alt="" data-src="${esc(frameUrl(PICK.path, c.t, 260))}">
+  box.innerHTML = cands.map(c => `<figure class="pending" data-t="${c.t}">
+      <img alt="" data-src="${esc(frameUrl(PICK.path, c.t, 260, true))}">
       <figcaption>${esc(c.label)}</figcaption>
     </figure>`).join('');
   box.querySelectorAll('figure').forEach(fig => {
-    fig.addEventListener('click', () => selectFrame(parseFloat(fig.dataset.t), true));
+    fig.addEventListener('click', () => {
+      if (fig.classList.contains('failed')) retryStripImage(fig);
+      selectFrame(parseFloat(fig.dataset.t), true);
+    });
   });
 }
 
 let stripSeq = 0;
 let stripRunning = false;
+const STRIP_WORKERS = 3;       // 与服务端 THUMB_PARALLEL 对齐
+const STRIP_TIMEOUT = 45000;  // 源站限流时服务端会排队，单张留足时间别误判失败
+const STRIP_RETRY_DELAY = 800; // 首波被拒后等服务端降成单路再补一次
 
+/* 单张缩略图：成功/失败/超时都要 settle；头一次失败自动补一次。
+   私有直链源常把「同时打出去的第一批」整批拒掉，服务端随后降成单路串行，
+   等一下再试基本都能补回来，不必让人一格格手点「点击重试」。 */
+function loadOne(im, seq, attempt = 0) {
+  const src = im.dataset.src;
+  const fig = im.closest('figure');
+  if (!src) return Promise.resolve();
+  return new Promise(done => {
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      probe.onload = probe.onerror = null;
+      if (seq !== stripSeq || !im.isConnected) return done();
+      if (!ok && attempt < 1) {
+        im.dataset.src = src.split('&r=')[0] + '&r=' + Date.now();
+        setTimeout(() => loadOne(im, seq, attempt + 1).then(done), STRIP_RETRY_DELAY);
+        return;
+      }
+      im.removeAttribute('data-src');
+      if (fig) fig.classList.remove('pending');
+      if (ok) {
+        im.src = src;
+        im.style.opacity = '';
+        if (fig) fig.classList.remove('failed');
+      } else {
+        im.style.opacity = .16;
+        if (fig) fig.classList.add('failed');
+      }
+      done();
+    };
+    const probe = new Image();
+    const timer = setTimeout(() => finish(false), STRIP_TIMEOUT);
+    probe.onload = () => finish(true);
+    probe.onerror = () => finish(false);
+    probe.src = src;
+  });
+}
+
+/* 3 路并发补缩略图：原来严格串行，12 张就得等 12 次往返，网络一抖就是半分钟 */
 async function loadStrip() {
   if (stripRunning) return;
   stripRunning = true;
   try {
     const seq = stripSeq;
     const imgs = [...document.querySelectorAll('#pickStrip img[data-src]')];
-    for (const im of imgs) {
-      if (seq !== stripSeq || !im.isConnected) return;   // 换了文件 / 关了面板
-      const src = im.dataset.src;
-      if (!src) continue;
-      await new Promise(done => {
-        const probe = new Image();
-        probe.onload = () => { im.src = src; im.removeAttribute('data-src'); done(); };
-        probe.onerror = () => { im.style.opacity = .16; im.removeAttribute('data-src'); done(); };
-        probe.src = src;
-      });
-    }
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < imgs.length) {
+        if (seq !== stripSeq) return;
+        const im = imgs[cursor++];
+        if (im.dataset.src && im.isConnected) await loadOne(im, seq);
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(STRIP_WORKERS, imgs.length) }, worker));
   } finally {
     stripRunning = false;
   }
+}
+
+/* 点失败的格子重试这一张；带 r= 绕开浏览器缓存，服务端会重新抓一次 */
+function retryStripImage(fig) {
+  const im = fig.querySelector('img');
+  if (!im) return;
+  fig.classList.remove('failed');
+  fig.classList.add('pending');
+  im.removeAttribute('src');
+  im.style.opacity = '';
+  im.dataset.src = frameUrl(PICK.path, parseFloat(fig.dataset.t), 260, true)
+    + '&r=' + Date.now();
+  loadOne(im, stripSeq);
 }
 
 function markSelection() {
@@ -4855,25 +4973,43 @@ function refitStage() {
 window.addEventListener('resize', refitStage);
 if (window.ResizeObserver) new ResizeObserver(refitStage).observe($('pickStage'));
 
-function showFrame() {
+let frameCtrl = null;
+let frameObjectUrl = null;
+
+function abortFrameRequest() {
+  if (frameCtrl) { frameCtrl.abort(); frameCtrl = null; }
+}
+
+/* 主帧用 fetch + AbortController，而不是 <img src>：拖进度条时旧请求能真的
+   取消掉，服务端会把对应的 ffmpeg 一起停掉，不让过期帧占满并发槽位。 */
+function showFrame(attempt = 0) {
   const seq = ++PICK.seq;
+  abortFrameRequest();
+  const ctrl = new AbortController();
+  frameCtrl = ctrl;
   $('pickStageHint').hidden = false;
   $('pickStageHint').textContent = '抓帧中…';
-  const probeImg = new Image();
-  probeImg.onload = () => {
-    if (seq !== PICK.seq) return;
-    $('pickImg').src = probeImg.src;
-    $('pickStageHint').hidden = true;
-    syncStage();
-    loadStrip();          // 主帧拿到之后再一张张补缩略图
-  };
-  probeImg.onerror = () => {
-    if (seq !== PICK.seq) return;
-    $('pickStageHint').hidden = false;
-    $('pickStageHint').textContent = '这一帧抓不下来，换个时间点再试';
-    loadStrip();
-  };
-  probeImg.src = frameUrl(PICK.path, PICK.t, 0);
+  fetch(frameUrl(PICK.path, PICK.t, 0), { signal: ctrl.signal })
+    .then(res => { if (!res.ok) throw new Error('抓帧失败'); return res.blob(); })
+    .then(blob => {
+      if (seq !== PICK.seq) return;
+      const url = URL.createObjectURL(blob);
+      if (frameObjectUrl) URL.revokeObjectURL(frameObjectUrl);
+      frameObjectUrl = url;
+      $('pickImg').src = url;      // 元素上的 load 事件会触发 syncStage()
+      $('pickStageHint').hidden = true;
+    })
+    .catch(err => {
+      if (seq !== PICK.seq || err.name === 'AbortError') return;
+      $('pickStageHint').hidden = false;
+      // 和缩略图同理：首波并发被源站拒掉后，服务端已降成单路，补一次就好
+      if (attempt < 1) {
+        $('pickStageHint').textContent = '源站忙，正在重试…';
+        setTimeout(() => { if (PICK.seq === seq) showFrame(attempt + 1); }, 900);
+        return;
+      }
+      $('pickStageHint').textContent = '这一帧抓不下来，换个时间点再试';
+    });
 }
 
 let pickTimer = null;
@@ -5094,6 +5230,9 @@ function closePicker() {
   $('pickModal').hidden = true;
   PICK.seq++;
   PICK.path = '';
+  abortFrameRequest();
+  if (frameObjectUrl) { URL.revokeObjectURL(frameObjectUrl); frameObjectUrl = null; }
+  stripSeq++;            // 还在排队的缩略图别再往下加载
   drag = null;
   PICK.zoom = 1;
   PICK.pan = { x: 0, y: 0 };
@@ -5393,6 +5532,37 @@ async function loadSettings() {
   $('setFileHint').style.color = '';
   setMsg('');
   renderSrvEditor();
+  fillLinkSettings(data.links || {});
+  refreshLinkStatus();
+}
+
+/* 115 连接参数：只把常用节奏项放网页，其余在 config.yaml 里配 */
+function fillLinkSettings(lk) {
+  $('setLinkEnabled').checked = lk.enabled !== false;
+  $('setLinkInflight').value = lk.max_inflight ?? 2;
+  $('setLinkPerHost').value = lk.per_host_inflight ?? 2;
+  $('setLinkRate').value = lk.rate_per_minute ?? 60;
+  $('setLinkGap').value = lk.min_gap_ms ?? 300;
+  $('setLinkBatch').value = lk.batch_size ?? 20;
+  $('setLinkRetry').value = lk.retry_base_seconds ?? 30;
+  $('setLinkAttempts').value = lk.retry_max_attempts ?? 5;
+  $('setLinkTtl').value = lk.link_ttl_minutes ?? 360;
+}
+
+/* 实时在途 / 排队 / 降级状态，方便判断是不是被网盘掐了 */
+async function refreshLinkStatus() {
+  let d;
+  try { d = await api('/api/links'); } catch (e) { return; }
+  const g = d.gate || {}, r = d.registry || {}, q = d.queue || {};
+  $('setLinkStatus').textContent = g.enabled
+    ? (g.degraded ? `降级中 · 冷却 ${g.cooldown_remaining}s` : `${g.inflight}/${g.active_limit} 路在途`)
+    : '闸门已关闭';
+  $('linkDetail').textContent =
+    `排队 ${g.waiting ?? 0} · 累计放行 ${g.granted ?? 0} · 退回队列 ${g.deferred ?? 0} · `
+    + `限流命中 ${g.throttle_hits ?? 0} · 台账 ${r.total ?? 0} 条`
+    + `（正常 ${r.fresh ?? 0} / 待观察 ${r.stale ?? 0} / 失效 ${r.invalid ?? 0}）`
+    + ` · 待处理 ${q.pending ?? 0} · 等退避 ${q.retry_waiting ?? 0}`;
+  $('linkDetail').className = 'msg-line show' + (g.degraded ? ' err' : '');
 }
 
 $('btnSrvAdd').addEventListener('click', () => {
@@ -5864,6 +6034,17 @@ function settingsPayload(roots) {
       write_fanart: $('setFanartOn').checked,
       thumb: $('setThumbOn').checked,
     },
+    links: {
+      enabled: $('setLinkEnabled').checked,
+      max_inflight: Number($('setLinkInflight').value),
+      per_host_inflight: Number($('setLinkPerHost').value),
+      rate_per_minute: Number($('setLinkRate').value),
+      min_gap_ms: Number($('setLinkGap').value),
+      batch_size: Number($('setLinkBatch').value),
+      retry_base_seconds: Number($('setLinkRetry').value),
+      retry_max_attempts: Number($('setLinkAttempts').value),
+      link_ttl_minutes: Number($('setLinkTtl').value),
+    },
     servers: collectServers(),
   };
 }
@@ -5879,6 +6060,7 @@ async function saveSettings(btn) {
     renderSrvEditor();
     srvCache = '';
     pollStatus();
+    refreshLinkStatus();
     loadAutomation();       // 媒体库目录可能改了，自动化的监控范围要跟着重算
     if (S.tab === 'tasks') loadTasks(true);
     if (S.tab === 'files') { S.files.sig = ''; loadFiles(true); }

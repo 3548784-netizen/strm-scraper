@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """真实素材只读验收：接入 --media-root 指向的媒体库，验证全格式开箱即用、
-已有产物识别、长名布局、工具条稳定、选帧铺满，并确认整轮零写入。
+已有产物识别、长名布局、工具条稳定、选帧居中卡片，并确认整轮零写入。
 
     python tools/devserver.py --media-root "D:/Desktop/test strm" \
         --data .devdata_real --port 6691 --media-port 6692
@@ -279,7 +279,7 @@ def main() -> int:
         check("按钮文案恒定、不追加 (N)",
               "(" not in t1["label"], t1["label"])
 
-        print("\n---------- 5. 真实条目上的选帧界面铺满 ----------")
+        print("\n---------- 5. 真实条目上的选帧居中卡片 ----------")
         sample = next(f["path"] for f in files if str(Path(f["path"]).parent) == deepest)
         pg.evaluate("p => openPicker(p)", sample)
         pg.wait_for_timeout(900)
@@ -288,9 +288,10 @@ def main() -> int:
             pg.wait_for_timeout(220)
             m = pg.evaluate(MEASURE)
             c, bd, f, st = m["card"], m["body"], m["foot"], m["stage"]
-            check(f"{tag}：选帧卡片铺满、四周无多余留白",
-                  0 <= c["x"] <= 10 and 0 <= c["y"] <= 10
-                  and m["vw"] - c["w"] <= 20 and m["vh"] - c["h"] <= 20,
+            check(f"{tag}：选帧卡片居中、四周留遮罩（不铺满全屏）",
+                  c["x"] >= 8 and c["y"] >= 8
+                  and m["vw"] - (c["x"] + c["w"]) >= 8
+                  and m["vh"] - (c["y"] + c["h"]) >= 8,
                   f"{c['x']},{c['y']} {c['w']}x{c['h']} / {m['vw']}x{m['vh']}")
             check(f"{tag}：标题/内容/底栏、舞台/控件/胶片条不重叠",
                   bottom(m["head"]) <= bd["y"] + 1 and bottom(bd) <= f["y"] + 1

@@ -298,10 +298,17 @@ def part_ui(base: str) -> None:
                 break
             page.wait_for_timeout(500)
         check("实时监听中" in text, "任务卡上标出了实时监听状态", text[:160])
-        # 删掉，别把夹具库弄脏
+        # 删掉，别把夹具库弄脏。删除时要顺带拆掉 watchdog 的监听，
+        # 接口实测约 1 秒；固定等 1.2 秒在慢机器上会误判成「没删掉」，
+        # 改成等卡片真的消失（最多 15 秒），超时才判失败。
         page.on("dialog", lambda d: d.accept())
         page.click('.auto-card [data-act="del"]')
-        page.wait_for_timeout(1200)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            card = page.query_selector(".auto-card")
+            if card is None or "界面检查用" not in page.inner_text("#autoList"):
+                break
+            page.wait_for_timeout(200)
         check(page.query_selector(".auto-card") is None
               or "界面检查用" not in page.inner_text("#autoList"),
               "任务已删除", page.inner_text("#autoList")[:120])

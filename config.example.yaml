@@ -84,9 +84,9 @@ scrape:
     width: 1920
     height: 1080
 
-  # 16:9 缩略图，写 <名称>-thumb.jpg。Emby 的列表视图会用，可选。
+  # 16:9 缩略图，写 <名称>-thumb.jpg。Emby 的列表视图会用；默认开启。
   thumb:
-    enabled: false
+    enabled: true
     width: 1000
     height: 562
 
@@ -100,6 +100,64 @@ scrape:
   overwrite: missing
 
   jpeg_quality: 92
+
+# ---------------------------------------------------------------------------
+# 115 网盘直链：连接台账 + 请求节奏
+# strm 里写的是一条带签名的播放直链。刮一个 strm 至少要连网盘 3 次
+# （ffprobe 1 次 + 抓 2 帧），批量任务一涌进来最容易触发风控。
+# 完整行为约定与验证要点见 docs/115-links.md。
+# 网页「设置 → 115 连接与节奏」也能改，保存后立即生效，不用重启。
+links:
+  enabled: true
+
+  # --- 节奏：全进程共用一份额度（批量队列 / 网页选帧 / 单条刮削都算） ---
+  # 同时发往网盘的请求上限。115 按瞬时连接数掐人，2 路比较稳
+  max_inflight: 2
+  # 同一个域名 / 转直链服务同时几路
+  per_host_inflight: 2
+  # 令牌桶：每分钟最多发起多少次新请求，burst 是允许的瞬时突发额度
+  rate_per_minute: 60
+  burst: 2
+  # 两次发起请求之间的最小间隔（毫秒）
+  min_gap_ms: 300
+  # 排队等槽位的上限。超出的任务原样退回持久队列，不算失败、不发请求
+  queue_max: 2000
+  # 单个请求最多排队多久（秒），超时退回队列稍后重排
+  acquire_timeout: 180
+  # 本机 / 测试媒体服务不占网盘额度（按 host 匹配，不带端口）
+  bypass_hosts: [127.0.0.1, localhost, ::1]
+
+  # --- 撞到 403 / 429 / 5xx 之后 ---
+  # 自动降到单路并保持冷却这么久，连续成功 recover_every 次才回升一档
+  cooldown_seconds: 60
+  degrade_gap_ms: 800
+  recover_every: 8
+
+  # --- 直链台账 ---
+  # 直链缓存多久算「可能过期」。过期只标记 stale，仍然继续复用，
+  # 绝不因为批量任务开始就集体重新校验（那才是最容易撞风控的动作）
+  link_ttl_minutes: 360
+  # true = 粘住已有连接：重启、过期、任务删除都不会让它失效
+  sticky: true
+  # 可选：直链失效时调一次刷新钩子拿新地址。留空表示以 strm 文件为准。
+  # 支持 {path} / {url} 占位；返回 {"url":"https://..."} 或一行纯 URL。
+  refresh_url: ""
+  refresh_token: ""
+  refresh_on_error: true
+  # 每分钟最多发多少次刷新请求，防止一批失效链接同时刷新
+  verify_budget_per_minute: 6
+
+  # --- 批量任务 ---
+  # 单轮在途任务上限（与 scan.concurrency 取小），以及两次派发的最小间隔
+  batch_size: 20
+  batch_interval_ms: 0
+
+  # --- 失败恢复 ---
+  # 指数退避 + 抖动：同一批任务不会在同一秒一起醒来重试
+  retry_base_seconds: 30
+  retry_max_seconds: 1800
+  retry_jitter: 0.30
+  retry_max_attempts: 5
 
 # Emby 和 Jellyfin 都支持，可以同时配多台，刮完会分别刷新。
 # 不配也能用，只是生成完文件后要自己在服务器上点一次刷新。

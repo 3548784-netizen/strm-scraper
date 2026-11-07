@@ -76,23 +76,36 @@ def snapshot(directory: Path) -> dict[str, str]:
 
 
 def states(c: Client, directory: Path) -> dict[str, str]:
-    j = c.get("/api/items?limit=2000")
-    out = {}
-    for it in j.get("items", []):
-        try:
-            p = Path(it["path"])
-        except Exception:
-            continue
-        if p.parent == directory:
-            out[p.name] = it.get("status")
-    return out
+    """翻页拿全任务列表再过滤（size 上限 200，limit 参数并不存在）。"""
+    out: dict[str, str] = {}
+    page = 1
+    while True:
+        j = c.get(f"/api/items?page={page}&size=200")
+        rows = j.get("items", [])
+        for it in rows:
+            try:
+                p = Path(it["path"])
+            except Exception:
+                continue
+            if p.parent == directory:
+                out[p.name] = it.get("status")
+        if len(rows) < 200:
+            return out
+        page += 1
 
 
 def drop_records(c: Client, directory: Path) -> None:
     """只删测试目录里的任务记录，模拟用户「从任务列表移除已完成项」。"""
-    j = c.get("/api/items?limit=2000")
-    paths = [it["path"] for it in j.get("items", [])
-             if Path(it["path"]).parent == directory]
+    page = 1
+    paths: list[str] = []
+    while True:
+        j = c.get(f"/api/items?page={page}&size=200")
+        rows = j.get("items", [])
+        paths.extend(it["path"] for it in rows
+                     if Path(it["path"]).parent == directory)
+        if len(rows) < 200:
+            break
+        page += 1
     if paths:
         c.post("/api/items/delete", {"paths": paths, "purge": False})
 
@@ -202,6 +215,12 @@ def main() -> int:
     args = ap.parse_args()
     c = Client(args.base)
 
+    # 缩略图现在是默认开启，而「产物齐全」判定包含 thumb；本脚本测的复用
+    # 语义只关心海报 / 背景图 / NFO，先把它关掉，免得齐全夹具被误判成缺产物。
+    st = c.get("/api/settings")
+    st.setdefault("scrape", {})["thumb"] = False
+    c.post("/api/settings", st)
+
     root = Path(args.root).resolve() if args.root else Path(
         c.get("/api/config")["scan"]["roots"][0]).resolve()
     print(f"服务 {args.base} | 媒体库 {root}")
@@ -251,6 +270,7 @@ def main() -> int:
           all(st.get(f"{n}.strm") in ("ok", "skipped") for n in "AC"), str(st))
 
     print("\n========== 4. 再重复触发整批 ==========")
+    wait_idle(c, 60)   # B 的刮削可能还在收尾，busy 时 scrape 会拒绝重复触发
     r4 = c.post("/api/files/scrape",
                 {"paths": [p["A"], p["B"], p["C"]], "now": False})
     check("再次批量：没有需要重跑的条目",
@@ -262,16 +282,19 @@ def main() -> int:
     print("\n========== 5. 整库增量：删除的记录不再被登记回来 ==========")
     drop_records(c, d)
     wait_idle(c, 20)
-    before_p = c.get("/api/status").get("processed", 0)
+    st_before5 = states(c, d)
     r5 = c.post("/api/task/start?full=false")
     check("整库增量启动成功", r5.get("ok") is True, str(r5))
     wait_idle(c, 40)
-    after_p = c.get("/api/status").get("processed", 0)
+    # processed 是「本轮任务」的计数，库里还有别的真实素材时本来就会大于 0，
+    # 拿它断言「齐全文件没入队」会误报；只比对夹具目录里的记录有没有变化。
+    p5 = c.get("/api/status").get("processed", 0)
+    st5 = states(c, d)
     check("整库增量：齐全文件没有进入刮削队列",
-          after_p - before_p == 0, f"processed {before_p} -> {after_p}")
+          st5 == st_before5,
+          f"before={st_before5} after={st5} 本轮 processed={p5}")
     check("整库增量：产物仍未被覆盖",
           all(snapshot(d).get(k) == v for k, v in base_snap.items()))
-    st5 = states(c, d)
     check("整库增量：删过的记录保持缺失（列表不再复活）",
           all(st5.get(f"{n}.strm") is None for n in "ABC"), str(st5))
 

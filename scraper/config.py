@@ -66,14 +66,53 @@ DEFAULTS: dict[str, Any] = {
         "poster": {"width": 1000, "height": 1500, "mode": "crop"},
         # 16:9 横版背景图，两家都推荐 1920×1080
         "fanart": {"width": 1920, "height": 1080},
-        # 16:9 缩略图，写 <名称>-thumb.jpg，Emby 的列表视图会用
-        "thumb": {"enabled": False, "width": 1000, "height": 562},
+        # 16:9 缩略图，写 <名称>-thumb.jpg，Emby 的列表视图直接用；默认开启
+        "thumb": {"enabled": True, "width": 1000, "height": 562},
         "write_nfo": True,
         "write_poster": True,
         "write_fanart": True,
         # missing: 只在缺失时生成；always: 覆盖已有文件
         "overwrite": "missing",
         "jpeg_quality": 92,
+    },
+    # 115 网盘直链的连接台账与请求节奏。网盘按「瞬时并发连接数」掐人，
+    # 短时间涌入几千个 strm 时不能让批量队列、网页选帧、单条刮削各跑各的。
+    # 详见 docs/115-links.md。
+    "links": {
+        "enabled": True,
+        # 全进程同时发往网盘的请求上限（ffprobe / ffmpeg 都算）
+        "max_inflight": 2,
+        # 同一个域名/中转服务同时几路
+        "per_host_inflight": 2,
+        # 令牌桶：每分钟最多发起多少次新请求，突发额度 burst
+        "rate_per_minute": 60,
+        "burst": 2,
+        # 两次发起请求之间的最小间隔（毫秒）
+        "min_gap_ms": 300,
+        # 排队等待槽位的上限（0 = 不限）；超出的任务退回持久队列，不算失败
+        "queue_max": 2000,
+        "acquire_timeout": 180,
+        # 本机 / 测试媒体服务不占网盘额度
+        "bypass_hosts": ["127.0.0.1", "localhost", "::1"],
+        # 撞到 403 / 429 / 5xx 后降到单路并冷却这么久，连续成功才回升
+        "cooldown_seconds": 60,
+        "degrade_gap_ms": 800,
+        "recover_every": 8,
+        # 直链台账：过期只标记 stale，绝不批量复验；刷新钩子按预算调用
+        "link_ttl_minutes": 360,
+        "sticky": True,
+        "refresh_url": "",
+        "refresh_token": "",
+        "refresh_on_error": True,
+        "verify_budget_per_minute": 6,
+        # 批量任务：单轮在途上限与两次派发之间的间隔
+        "batch_size": 20,
+        "batch_interval_ms": 0,
+        # 失败恢复：指数退避 + 抖动，到期才重新入队
+        "retry_base_seconds": 30,
+        "retry_max_seconds": 1800,
+        "retry_jitter": 0.30,
+        "retry_max_attempts": 5,
     },
     # Emby / Jellyfin 可以配多台，刮完自动刷新各自的图片缓存
     "servers": [],
@@ -195,9 +234,13 @@ class FanartConfig:
 
 @dataclass
 class ThumbConfig:
-    enabled: bool = False
+    enabled: bool = True
     width: int = 1000
     height: int = 562
+    # 用户在网页里动过缩略图开关（或配置已被迁移过）。旧默认是关，升级时
+    # 只把「没人动过的 false」迁成 true；动过的（包括特意关掉的）保持原样。
+    # 默认 True：新代码构造出来的配置都算「已表态」，save() 不会写出假 false。
+    enabled_explicit: bool = True
 
 
 @dataclass
@@ -213,6 +256,37 @@ class ScrapeConfig:
     write_fanart: bool = True
     overwrite: str = "missing"
     jpeg_quality: int = 92
+
+
+@dataclass
+class LinksConfig:
+    """115 网盘直链的节奏与维护参数。完整说明见 docs/115-links.md。"""
+
+    enabled: bool = True
+    max_inflight: int = 2
+    per_host_inflight: int = 2
+    rate_per_minute: float = 60.0
+    burst: int = 2
+    min_gap_ms: int = 300
+    queue_max: int = 2000
+    acquire_timeout: float = 180.0
+    bypass_hosts: list[str] = field(
+        default_factory=lambda: ["127.0.0.1", "localhost", "::1"])
+    cooldown_seconds: float = 60.0
+    degrade_gap_ms: int = 800
+    recover_every: int = 8
+    link_ttl_minutes: int = 360
+    sticky: bool = True
+    refresh_url: str = ""
+    refresh_token: str = ""
+    refresh_on_error: bool = True
+    verify_budget_per_minute: int = 6
+    batch_size: int = 20
+    batch_interval_ms: int = 0
+    retry_base_seconds: float = 30.0
+    retry_max_seconds: float = 1800.0
+    retry_jitter: float = 0.30
+    retry_max_attempts: int = 5
 
 
 @dataclass
@@ -279,6 +353,7 @@ class LogConfig:
 class Config:
     scan: ScanConfig = field(default_factory=ScanConfig)
     scrape: ScrapeConfig = field(default_factory=ScrapeConfig)
+    links: LinksConfig = field(default_factory=LinksConfig)
     servers: list[ServerConfig] = field(default_factory=list)
     web: WebConfig = field(default_factory=WebConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
@@ -318,7 +393,11 @@ class Config:
             if changed:
                 # 改完顺手写回文件：迁移只在内存生效的话，每次启动都会重复
                 # 提示同一件事，用户还会以为设置没保存
-                _persist_migrations(candidate, changed)
+                flat = [c for c in changed if c[1] != "thumb.enabled"]
+                if flat:
+                    _persist_migrations(candidate, flat)
+                if any(c[1] == "thumb.enabled" for c in changed):
+                    _rewrite_thumb_enabled(candidate)
 
         raw = _apply_env(raw)
         cfg = _from_dict(cls, raw)
@@ -356,6 +435,7 @@ class Config:
         return {
             "scan": _to_dict(self.scan),
             "scrape": _to_dict(self.scrape),
+            "links": _to_dict(self.links),
             "servers": _to_dict(self.servers),
             "web": _to_dict(self.web),
             "storage": _to_dict(self.storage),
@@ -420,6 +500,62 @@ class Config:
             notes.append("scan.concurrency 小于 1，已改为 1")
             self.scan.concurrency = 1
 
+        # 115 节奏参数：写错也不能把闸门变成「无限并发 + 无限速率」，
+        # 否则一涌进来的 strm 会直接把账号顶到风控上
+        for key, low, high in (
+            ("max_inflight", 1, 64),
+            ("per_host_inflight", 1, 64),
+            ("burst", 1, 64),
+            ("min_gap_ms", 0, 60000),
+            ("queue_max", 0, 1000000),
+            ("degrade_gap_ms", 0, 60000),
+            ("recover_every", 1, 1000),
+            ("link_ttl_minutes", 1, 100000),
+            ("verify_budget_per_minute", 0, 10000),
+            ("batch_size", 1, 10000),
+            ("batch_interval_ms", 0, 60000),
+            ("retry_max_attempts", 0, 100),
+        ):
+            value = getattr(self.links, key, None)
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = low
+            if not low <= value <= high:
+                notes.append(f"links.{key}={value} 超出 {low}–{high}，已收回范围内")
+                value = max(low, min(high, value))
+            setattr(self.links, key, value)
+        for key, low, high in (
+            ("rate_per_minute", 0.1, 100000.0),
+            ("acquire_timeout", 1.0, 86400.0),
+            ("cooldown_seconds", 0.0, 86400.0),
+            ("retry_base_seconds", 1.0, 86400.0),
+            ("retry_max_seconds", 1.0, 604800.0),
+            ("retry_jitter", 0.0, 0.9),
+        ):
+            try:
+                value = float(getattr(self.links, key))
+            except (TypeError, ValueError):
+                value = low
+            if not low <= value <= high:
+                notes.append(f"links.{key} 超出范围，已收回")
+                value = max(low, min(high, value))
+            setattr(self.links, key, value)
+        if self.links.retry_max_seconds < self.links.retry_base_seconds:
+            self.links.retry_max_seconds = self.links.retry_base_seconds
+        if self.links.burst > self.links.max_inflight:
+            self.links.burst = self.links.max_inflight
+        if self.links.per_host_inflight > self.links.max_inflight:
+            self.links.per_host_inflight = self.links.max_inflight
+        url = str(self.links.refresh_url or "").strip()
+        if url and not url.lower().startswith(("http://", "https://")):
+            notes.append("links.refresh_url 要以 http:// 或 https:// 开头，已清空")
+            self.links.refresh_url = ""
+        self.links.bypass_hosts = [
+            str(h).strip().lower() for h in (self.links.bypass_hosts or [])
+            if str(h).strip()
+        ]
+
         if not 1 <= self.web.port <= 65535:
             notes.append(f"web.port={self.web.port} 不合法，已改成 6666")
             self.web.port = 6666
@@ -475,6 +611,8 @@ class Config:
             f"roots=[{roots}] mode={self.scan.mode} "
             f"autostart={'on' if self.scan.autostart else 'off'} "
             f"concurrency={self.scan.concurrency} "
+            f"links={'on' if self.links.enabled else 'off'}"
+            f"({self.links.max_inflight}路/{self.links.rate_per_minute:g}次每分) "
             f"interval={self.scan.interval_minutes}min"
             f"({self.scan.schedule_mode}) web={self.web.host}:{self.web.port} "
             f"auth={'on' if self.web.auth.enabled else 'off'}"
@@ -524,6 +662,18 @@ def _migrate_stale_defaults(raw: dict) -> tuple[list[str], list[tuple[str, str, 
             "采样帧数从 5 改成 2（取位置列表两端 0.15 / 0.75）：单文件抓帧次数少 60%，"
             "整库速度快一倍以上，海报质量基本没差别；想更挑剔改回 5 即可"
         )
+    if isinstance(scrape, dict):
+        thumb = scrape.get("thumb")
+        # 只迁「没人动过的 false」：带 explicit 标记的（网页上动过开关）保持原样
+        if (isinstance(thumb, dict) and thumb.get("enabled") is False
+                and not thumb.get("enabled_explicit")):
+            thumb["enabled"] = True
+            thumb["enabled_explicit"] = True
+            changed.append(("scrape", "thumb.enabled", False, True))
+            notes.append(
+                "缩略图默认改为开启（写 <名称>-thumb.jpg，Emby 的列表视图直接用）："
+                "已有文件会在下次扫描时补抓一帧生成；不想要的话在设置里关掉"
+            )
     return notes, changed
 
 
@@ -655,6 +805,60 @@ def _rewrite_extensions(path: Path, items: list[str]) -> bool:
         log.warning("扩展名列表没能写回 %s：%s", path, exc)
         return False
     log.info("已把 %s 的 scan.extensions 扩成支持的全部格式", path)
+    return True
+
+
+# thumb.enabled 是嵌套键，块写法长这样（行内写法是 ``thumb: {enabled: false, ...}``）：
+#   scrape:
+#     thumb:
+#       enabled: false
+_THUMB_BLOCK = re.compile(
+    r"^(?P<ind>[ \t]*)thumb:(?P<head>[^\n]*)\r?\n"
+    r"(?P=ind)(?P<deep>[ \t]+)enabled:[ \t]*false(?P<tail>[^\n]*)",
+    re.M,
+)
+_THUMB_INLINE = re.compile(
+    r"(?P<pre>[ \t]*thumb:[ \t]*\{[^}\n]*?enabled:[ \t]*)false(?P<post>[^}\n]*\})",
+)
+
+
+def _thumb_block_repl(match: "re.Match[str]") -> str:
+    """块写法只换 enabled 那一行的值并补上 explicit 标记，缩进和注释原样保留。"""
+    return (f"{match.group('ind')}thumb:{match.group('head')}\n"
+            f"{match.group('ind')}{match.group('deep')}enabled: true"
+            f"{match.group('tail')}\n"
+            f"{match.group('ind')}{match.group('deep')}enabled_explicit: true")
+
+
+def _rewrite_thumb_enabled(path: Path) -> bool:
+    """缩略图默认值迁移的写回：把 thumb 的 ``enabled: false`` 换成 ``true``。
+
+    ``_persist_migrations`` 按「一行一个标量」定位，接不住 ``thumb:`` 下面
+    嵌套的 ``enabled:``，所以这里单独处理。块写法和行内写法都认，认不出
+    来就放弃（内存里已经是新值了，用户在网页上保存设置时会自然写回）。
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("缩略图默认值没能写回 %s：%s", path, exc)
+        return False
+
+    new_text, hits = _THUMB_BLOCK.subn(_thumb_block_repl, text, count=1)
+    if not hits:
+        new_text, hits = _THUMB_INLINE.subn(
+            r"\g<pre>true, enabled_explicit: true\g<post>", text, count=1)
+    if not hits:
+        log.info("没认出 %s 里 thumb.enabled 的写法，只在内存里生效", path)
+        return False
+
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("缩略图默认值没能写回 %s：%s", path, exc)
+        return False
+    log.info("已把 %s 的缩略图默认开启写回（注释与其它设置未改动）", path)
     return True
 
 

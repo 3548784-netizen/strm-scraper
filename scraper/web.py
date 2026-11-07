@@ -2,6 +2,7 @@
 """网页控制台：登录鉴权 + 进度看板 + 失败排查 + 媒体服务器联动 + 日志查看。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import os
@@ -14,11 +15,13 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
+                               Response)
+from starlette.concurrency import run_in_threadpool
 
 from .auth import (COOKIE_NAME, AuthStore, LoginThrottle, validate_password,
                    validate_username)
-from . import folderart, frames, probe
+from . import folderart, frames, links, probe
 from .config import DEFAULT_CONFIG_PATH, Config, ServerConfig
 from .logs import LogFiles, RingLogHandler, tail_file
 from .media import (IGNORED_NAMES, artifacts, build_target, is_media_file,
@@ -37,6 +40,36 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # 页面本体每次都回源校验：升级镜像后浏览器别拿旧前端（新按钮点不到、样式对不上）
 NO_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
+
+class FrameAbortRegistry:
+    """同一文件、同一标签页的新主帧请求接管旧的抓帧任务。
+
+    只靠 ASGI 的 disconnect 通知不够可靠（客户端发完请求就关连接时，服务端
+    未必收得到）。拖进度条时新请求一到就直接 set 掉旧任务的 abort 事件，
+    ffmpeg 立刻被杀，并发槽位不会被一堆没人要的过期帧占满。
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._events: dict[str, threading.Event] = {}
+
+    def take(self, key: str) -> threading.Event:
+        event = threading.Event()
+        with self._guard:
+            previous = self._events.get(key)
+            if previous is not None:
+                previous.set()
+            self._events[key] = event
+        return event
+
+    def release(self, key: str, event: threading.Event) -> None:
+        with self._guard:
+            if self._events.get(key) is event:
+                self._events.pop(key, None)
+
+
+FRAME_ABORTS = FrameAbortRegistry()
 
 # 缩略图/原图的缓存策略：URL 里带着图片的字节数（重新出图后基本都会变），
 # 所以可以放心长时间缓存——翻页、列表重渲染都不会再打网络。留一天是为了
@@ -63,6 +96,20 @@ def _size_of(value: int | None) -> str:
     if value >= 1024 * 1024:
         return f"{value / 1048576:.1f}MB"
     return f"{value / 1024:.0f}KB"
+
+
+def _mask_url(url: str) -> str:
+    """台账明细里把带签名的直链打码，只留协议、主机和末尾几位。"""
+    if not url:
+        return ""
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.scheme:
+        return "***"
+    # netloc 里可能带 user:pass@（刷新钩子返回的带鉴权地址），一并去掉，
+    # 不要把凭据顺着 /api/links/list 漏到浏览器。
+    netloc = parsed.netloc.rsplit("@", 1)[-1]
+    tail = url[-6:] if len(url) > 12 else ""
+    return f"{parsed.scheme}://{netloc}/…{tail}"
 
 
 # 不需要往下走的目录：隐藏目录、群晖缩略图、Node 依赖、回收站
@@ -621,6 +668,9 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                auth: AuthStore | None = None,
                scheduler: Scheduler | None = None) -> FastAPI:
     app = FastAPI(title="strm-scraper", docs_url="/api/docs", redoc_url=None)
+    # main() 已经装配过；单独调用 create_app 时兜一次（重复调用是幂等的）
+    if not links.configured():
+        links.configure(cfg, store)
     pool = pool or ServerPool(cfg)
     log_files = log_files or LogFiles()
     auth = auth or AuthStore(cfg.web.auth.file, cfg.web.auth.session_hours)
@@ -1143,27 +1193,38 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
         removed = purged = skipped = 0
         errors: list[str] = []
-        for raw in unique:
-            item = store.get(raw)
-            if item and item.status == "running":
-                skipped += 1     # 正在跑的那条删了会被回写状态，等它跑完再删
-                continue
-            if purge:
+        # 一次批量取状态 + 一次事务删完：几千条任务逐条 get()/delete() 就是
+        # 几千次查询和几千次 commit，删除会卡上好几十秒。
+        items = store.get_many(unique)
+        running = {p for p, it in items.items() if it.status == "running"}
+        removable = [p for p in unique if p not in running]
+        skipped = len(running)  # 正在跑的那条删了会被回写状态，等它跑完再删
+
+        if purge and removable:
+            def purge_one(raw: str):
+                """删掉这一个文件的产物，返回（删除数，错误消息）。"""
+                count, errs = 0, []
                 try:
                     inside = _within_roots(raw)
                 except HTTPException:
-                    inside = None    # 扫描目录改过了，只删记录，不碰磁盘
-                if inside is not None:
-                    target = build_target(inside)
-                    for kind in ("poster", "fanart", "thumb", "nfo"):
-                        path = getattr(target, kind)
-                        try:
-                            if path.is_file():
-                                path.unlink()
-                                purged += 1
-                        except OSError as exc:
-                            errors.append(f"{path.name}：{exc}")
-            removed += store.delete([raw])
+                    return 0, []  # 扫描目录改过了，只删记录，不碰磁盘
+                target = build_target(inside)
+                for kind in ("poster", "fanart", "thumb", "nfo"):
+                    path = getattr(target, kind)
+                    try:
+                        if path.is_file():
+                            path.unlink()
+                            count += 1
+                    except OSError as exc:
+                        errs.append(f"{path.name}：{exc}")
+                return count, errs
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for count, errs in pool.map(purge_one, removable):
+                    purged += count
+                    errors.extend(errs)
+
+        removed = store.delete(removable)
 
         log.info("任务列表：移除 %s 条记录，删除 %s 个产物，跳过 %s 条处理中",
                  removed, purged, skipped)
@@ -1349,6 +1410,15 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         result: ScrapeResult | None = None
         try:
             result = process(cfg, build_target(Path(path)), frame_at=frame_at, force=force)
+        except (frames.CaptureAborted, links.LinkAborted):
+            # 被暂停 / 客户端取消：没发出请求，退回待处理
+            store.reset_one(path)
+            return
+        except links.LinkDeferred as exc:
+            # 网盘连接排队满：任务退回队列稍后重排，不是失败也不重试失败次数
+            store.defer_one(path, links.retry_delay(1, "transient"))
+            log.info("[单独排队] %s | %s", stem[:60], exc)
+            return
         except (probe.ProbeError, frames.FrameError) as exc:
             result = ScrapeResult(ok=False, reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - 单条失败不能影响别的任务
@@ -1363,7 +1433,9 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             return
 
         if not result.ok:
-            store.mark_failed(path, result.reason)
+            kind = links.classify(result.reason)
+            delay = links.retry_delay(1, kind) if kind != "permanent" else 0.0
+            store.mark_failed(path, result.reason, retry_after=delay)
             log.warning("[单独失败] %s | %s", stem[:60], result.reason)
             return
 
@@ -1636,27 +1708,39 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         if not kinds:
             raise HTTPException(400, "没有选中要删除的产物类型")
 
-        removed = 0
-        touched = 0
-        errors: list[str] = []
-        for raw in paths:
+        # 并发删产物 + 一次事务重置：几千个文件逐条探测、逐条 commit，
+        # 删除会卡上好几十秒。
+        def clean_one(raw: str):
+            """删掉这一个文件的指定产物，返回（删除数，源路径或 None，错误消息）。"""
+            count, errs = 0, []
             try:
                 source = _within_roots(raw)
             except HTTPException as exc:
-                errors.append(f"{raw}：{exc.detail}")
-                continue
+                return 0, None, [f"{raw}：{exc.detail}"]
             target = build_target(source)
             for kind in kinds:
                 path = getattr(target, kind)
                 try:
                     if path.is_file():
                         path.unlink()
-                        removed += 1
+                        count += 1
                 except OSError as exc:
-                    errors.append(f"{path.name}：{exc}")
-            if reset:
-                store.reset_one(str(source))
-                touched += 1
+                    errs.append(f"{path.name}：{exc}")
+            return count, str(source), errs
+
+        removed = 0
+        touched = 0
+        errors: list[str] = []
+        reset_paths: list[str] = []
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for count, source, errs in pool.map(clean_one, paths):
+                removed += count
+                errors.extend(errs)
+                if reset and source:
+                    reset_paths.append(source)
+                    touched += 1
+        if reset_paths:
+            store.reset_many(reset_paths)
 
         log.info("文件管理：删除 %s 个产物，重置 %s 条记录", removed, touched)
         message = f"已删除 {removed} 个产物文件"
@@ -1747,7 +1831,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         if immediate or len(queued) == 1:
             started = _spawn_single(queued, force=force)
             if not started:
-                return {"ok": False, "started": False,
+                return {"ok": False, "started": False, "skipped": len(ready),
                         "message": "这个文件正在执行中，等它跑完"}
             head = "已开始重刮" if force else "已开始单独刮削"
             return {"ok": True, "started": True, "single": True, "skipped": len(ready),
@@ -2123,25 +2207,59 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         return data
 
     @app.get("/api/frames/frame")
-    def frames_frame(path: str = Query(...), t: float = Query(0, ge=0),
-                     width: int = Query(0, ge=0, le=1920),
-                     crop: str = Query("")):
+    async def frames_frame(request: Request, path: str = Query(...),
+                           t: float = Query(0, ge=0),
+                           width: int = Query(0, ge=0, le=1920),
+                           crop: str = Query(""),
+                           fast: bool = Query(False),
+                           sid: str = Query("")):
         """按时间点抓一帧返回 JPEG；同参数第二次直接走缓存。
 
         ``crop`` 传 ``x,y,w,h``（0–1 的取景框）时返回裁好的那一块，
-        网页端拖框时靠它实时预览。
+        网页端拖框时靠它实时预览。``fast=1`` 是候选缩略图专用通道。
+
+        拖动进度条 / 关掉面板时浏览器会取消旧请求，这里同步把 ffmpeg 停掉：
+        不然那些没人要的帧会占满并发槽，新帧排队到超时，表现就是「越拖越慢、
+        偶尔整排抓不下来」。``sid`` 区分浏览器标签页，免得两个窗口互相取消。
         """
         source = _pickable(path)
         box = _parse_crop(crop)
+        # 只有主帧参与「后来者接管」；缩略图 / 裁切预览各抓各的，互不打断
+        key = f"{source}|{sid}" if (not fast and not box) else ""
+        abort = FRAME_ABORTS.take(key) if key else threading.Event()
+
+        async def watch_disconnect() -> None:
+            while not abort.is_set():
+                if await request.is_disconnected():
+                    abort.set()
+                    return
+                await asyncio.sleep(0.25)
+
+        watcher = asyncio.create_task(watch_disconnect())
         try:
             if box:
-                image = picker.cropped(source, t, box, width)
+                image = await run_in_threadpool(
+                    picker.cropped, source, t, box, width, abort)
             else:
-                image = picker.frame(source, t, width)
+                image = await run_in_threadpool(
+                    picker.frame, source, t, width, bool(fast), abort)
+        except frames.CaptureAborted:
+            log.debug("选帧：%s @%.1fs 已取消，ffmpeg 已停止", source.name, t)
+            return Response(status_code=499)
+        except links.LinkAborted:
+            # 还在等网盘连接槽位就被取消：请求没发出去
+            return Response(status_code=499)
+        except links.LinkDeferred as exc:
+            # 队列满 / 排队超时：明确告诉前端「稍后再试」，别伪装成抓帧失败
+            raise HTTPException(429, str(exc), headers={"Retry-After": "3"}) from exc
         except frames.FrameError as exc:
             raise HTTPException(504, str(exc)) from exc
         except probe.ProbeError as exc:
             raise HTTPException(400, str(exc)) from exc
+        finally:
+            watcher.cancel()
+            if key:
+                FRAME_ABORTS.release(key, abort)
         return FileResponse(image, media_type="image/jpeg",
                             headers={"Cache-Control": "private, max-age=1800"})
 
@@ -2325,7 +2443,61 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             key = server.get("api_key") or ""
             server["api_key"] = (key[:6] + "…" + key[-4:]) if len(key) > 12 else (
                 "已配置" if key else "")
+        # 直链刷新钩子的令牌也是密钥，别顺着配置接口漏到浏览器
+        token = str((data.get("links") or {}).get("refresh_token") or "")
+        if token:
+            data["links"]["refresh_token"] = "已配置"
         return data
+
+    # ---------- 115 连接台账与请求闸门 ----------
+
+    @app.get("/api/links")
+    def links_status():
+        """网盘连接的实时状况：在途/排队/降级、台账分布、生效参数。"""
+        return {"ok": True, **links.status(),
+                "queue": {
+                    "pending": store.count("pending"),
+                    "retry_waiting": store.stats().get("retry_waiting", 0),
+                    "retry_due": store.stats().get("retry_due", 0),
+                }}
+
+    @app.get("/api/links/list")
+    def links_list(limit: int = Query(50, ge=1, le=500),
+                   state: str = Query("")):
+        """台账明细；直链里的签名可能敏感，这里只回 host 和状态。"""
+        rows = store.link_list(limit=limit, state=state)
+        for row in rows:
+            row["url"] = _mask_url(row.get("url") or "")
+        return {"ok": True, "items": rows, "total": len(rows)}
+
+    @app.post("/api/links/retry")
+    def links_retry(payload: dict):
+        """手动把失败任务放回队列（不按退避等待），仍然走同一道闸门。"""
+        data = payload or {}
+        if data.get("all"):
+            count = store.reset(("failed",))
+            return {"ok": True, "requeued": count,
+                    "message": f"已放回 {count} 个失败任务，仍按网盘节奏排队执行"}
+        paths = [str(p) for p in (data.get("paths") or []) if p]
+        if not paths:
+            raise HTTPException(400, "要给 paths 或 all=true")
+        count = store.reset_many(paths)
+        return {"ok": True, "requeued": count,
+                "message": f"已放回 {count} 个任务，仍按网盘节奏排队执行"}
+
+    @app.post("/api/links/refresh")
+    def links_refresh(payload: dict):
+        """手动复验一条直链：受刷新预算限制，不会引发批量复验。"""
+        path = str((payload or {}).get("path") or "")
+        if not path:
+            raise HTTPException(400, "缺少 path")
+        row = store.link_get(path)
+        if not row:
+            raise HTTPException(404, "台账里没有这条 strm")
+        store.link_mark(path, "invalid", "网页手动复验", 0, False)
+        url = links.resolve_source(path)
+        return {"ok": True, "path": path, "url": _mask_url(url),
+                "message": "已按预算复验；没有配刷新钩子时以 strm 文件内容为准"}
 
     # ---------- 设置 ----------
 
@@ -2356,6 +2528,18 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 "write_fanart": cfg.scrape.write_fanart,
                 "thumb": cfg.scrape.thumb.enabled,
                 "images": cfg.image_summary(),
+            },
+            # 网页只暴露常用节奏参数；刷新钩子与白名单在 yaml 里配
+            "links": {
+                "enabled": cfg.links.enabled,
+                "max_inflight": cfg.links.max_inflight,
+                "per_host_inflight": cfg.links.per_host_inflight,
+                "rate_per_minute": cfg.links.rate_per_minute,
+                "min_gap_ms": cfg.links.min_gap_ms,
+                "batch_size": cfg.links.batch_size,
+                "retry_base_seconds": cfg.links.retry_base_seconds,
+                "retry_max_attempts": cfg.links.retry_max_attempts,
+                "link_ttl_minutes": cfg.links.link_ttl_minutes,
             },
             "servers": [_server_public(server) for server in (cfg.servers or [])],
             "account": {
@@ -2566,6 +2750,8 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 setattr(cfg.scrape, key, bool(scrape[key]))
         if "thumb" in scrape:
             cfg.scrape.thumb.enabled = bool(scrape["thumb"])
+            # 网页上动过开关就不再被「旧默认值迁移」覆盖（见 _migrate_stale_defaults）
+            cfg.scrape.thumb.enabled_explicit = True
 
         # ---- 媒体服务器 ----
         raw_servers = data.get("servers")
@@ -2609,7 +2795,34 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 ))
             cfg.servers = fresh
 
+        # ---- 115 连接节奏 ----
+        raw_links = data.get("links")
+        if isinstance(raw_links, dict):
+            if "enabled" in raw_links:
+                cfg.links.enabled = bool(raw_links["enabled"])
+            for key, low, high, label in (
+                ("max_inflight", 1, 64, "网盘全局并发"),
+                ("per_host_inflight", 1, 64, "单域名并发"),
+                ("min_gap_ms", 0, 60000, "请求最小间隔"),
+                ("batch_size", 1, 10000, "单轮在途任务数"),
+                ("retry_max_attempts", 0, 100, "最大重试次数"),
+                ("link_ttl_minutes", 1, 100000, "直链有效期"),
+            ):
+                if key in raw_links:
+                    setattr(cfg.links, key,
+                            _as_int(raw_links[key], low, high, label))
+            if "rate_per_minute" in raw_links:
+                cfg.links.rate_per_minute = float(
+                    _as_int(raw_links["rate_per_minute"], 1, 100000, "每分钟请求数")
+                )
+            if "retry_base_seconds" in raw_links:
+                cfg.links.retry_base_seconds = float(
+                    _as_int(raw_links["retry_base_seconds"], 1, 86400, "重试基准间隔")
+                )
+
         notes = cfg.validate()
+        # 参数改完立刻作用于运行中的闸门，不用重启容器；台账复用同一个 state.db
+        links.configure(cfg, store)
         pool.reset_cache()
         # 定时自动化按新配置重新计时，无需重启容器
         sched.reconfigure()

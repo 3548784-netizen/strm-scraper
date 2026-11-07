@@ -19,6 +19,7 @@ from pathlib import Path
 from . import specs
 from .auth import AuthStore
 from .config import Config
+from .links import configure as configure_links
 from .logs import LogFiles, setup_logging
 from .media import iter_sources
 from .mediaserver import ServerPool
@@ -212,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(cfg, log_files)
 
     store = StateStore(cfg.storage.state_db)
+    # 115 直链台账挂到同一个 state.db 上，闸门参数在这里装配一次
+    configure_links(cfg, store)
     # 上次被 kill / 容器重启时正在跑的文件会停在 running（处理中），
     # 不清理就永远是「处理中」，增量扫描也不会再碰它
     stale = store.reset(("running",))

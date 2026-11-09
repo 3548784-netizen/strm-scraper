@@ -42,7 +42,7 @@ services:
 docker compose up -d
 ```
 
-镜像同时提供 `linux/amd64` 和 `linux/arm64` 两个架构：群晖、极空间、树莓派这些 arm64 的机器直接 `docker compose up -d` 就行，Docker 会自己挑对应架构，不用改 compose 里的镜像名。想钉死某一版，把 `latest` 换成 `v1.1.0` 这样的版本标签。
+镜像同时提供 `linux/amd64` 和 `linux/arm64` 两个架构：群晖、极空间、树莓派这些 arm64 的机器直接 `docker compose up -d` 就行，Docker 会自己挑对应架构，不用改 compose 里的镜像名。想钉死某一版，把 `latest` 换成 `v1.1.1` 这样的版本标签。
 
 浏览器打开 `http://NAS地址:6666`，用 `admin` / `admin` 登录（登录后可在「设置 → 账号」里改）。
 

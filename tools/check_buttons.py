@@ -392,6 +392,26 @@ def main() -> int:
         pg.click("#taskAll")
         pg.wait_for_timeout(200)
 
+        # 版本号：界面从 /api/status 拿，标题旁必须真的显示出来；
+        # 后端没给就不该留一个空壳。这里直接问接口，不信页面里被 stub 过的 fetch。
+        import json as _json
+        import urllib.request as _url
+        with _url.build_opener(_url.ProxyHandler({})).open(
+                args.base.rstrip("/") + "/api/status", timeout=10) as r:
+            api_ver = _json.loads(r.read()).get("version")
+        ver = pg.evaluate("""() => {
+            const e = document.getElementById('appVer');
+            if (!e) return null;
+            const cs = getComputedStyle(e);
+            return {text: e.textContent, hidden: e.hidden, display: cs.display,
+                    w: e.getBoundingClientRect().width, title: e.title};
+        }""")
+        check("标题旁显示版本号，且与 /api/status 一致",
+              bool(api_ver) and bool(ver) and not ver["hidden"]
+              and ver["display"] != "none" and ver["w"] > 0
+              and ver["text"] == "v" + str(api_ver) and bool(ver["title"]),
+              f"api={api_ver} ui={ver}")
+
         check("整轮没有 JS 报错", not errors, str(errors[:3]))
         b.close()
 

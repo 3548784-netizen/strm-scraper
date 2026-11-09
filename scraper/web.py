@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .auth import (COOKIE_NAME, AuthStore, LoginThrottle, validate_password,
                    validate_username)
-from . import folderart, frames, links, probe
+from . import __version__, folderart, frames, links, probe
 from .config import DEFAULT_CONFIG_PATH, Config, ServerConfig
 from .logs import LogFiles, RingLogHandler, tail_file
 from .media import (IGNORED_NAMES, artifacts, build_target, is_media_file,
@@ -930,6 +930,8 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         snapshot["refresh"] = manual_refresh
         snapshot["schedule"] = sched.status()
         snapshot["single"] = {"count": len(single), "paths": sorted(single.paths())}
+        # 标题旁边要显示版本号，报问题时好对版本
+        snapshot["version"] = __version__
         return snapshot
 
     @app.get("/api/items")
@@ -2950,6 +2952,6 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "servers": len(pool.servers())}
+        return {"ok": True, "version": __version__, "servers": len(pool.servers())}
 
     return app

@@ -219,6 +219,14 @@
   }
   .mark svg { width: 19px; height: 19px; }
   h1 { margin: 0; font-size: var(--fs-md); font-weight: 600; letter-spacing: .1px; line-height: 1.3; }
+  /* 版本号：跟在标题后面，弱化到不抢注意力，但报问题时一眼能找到 */
+  h1 .ver {
+    display: inline-block; margin-left: var(--s2); padding: 0 5px;
+    border-radius: var(--r-xs); background: var(--surface-3);
+    color: var(--text-3); font-size: var(--fs-2xs); font-weight: var(--fw-medium);
+    letter-spacing: .2px; vertical-align: 1px; cursor: default;
+    font-variant-numeric: tabular-nums;
+  }
   /* 路径：一行截断，悬停看完整路径 */
   .sub {
     color: var(--text-3); font-size: var(--fs-2xs); margin-top: 2px;
@@ -1352,7 +1360,7 @@
       </svg>
     </div>
     <div>
-      <h1>strm-scraper</h1>
+      <h1>strm-scraper<span class="ver" id="appVer" hidden></span></h1>
       <div class="sub" id="rootInfo">正在连接…</div>
       <div class="sub fmts" id="fmtInfo"
            title="这些格式放进媒体库就会被扫描，不用另外配置；strm 读里面记录的地址，本地视频直接读文件">
@@ -2518,6 +2526,14 @@ function renderStatus(st) {
   $('rootInfo').textContent = (st.roots || []).join('   ·   ') || '未配置扫描目录';
   // 路径太长会被截断，悬停给完整值
   $('rootInfo').setAttribute('title', $('rootInfo').textContent);
+
+  // 版本号由后端带上来，取不到就不显示，不在界面上留一个空壳
+  if (st.version) {
+    const verEl = $('appVer');
+    verEl.textContent = 'v' + st.version;
+    verEl.title = `当前版本 ${st.version} · 升级见 README 里的镜像标签`;
+    verEl.hidden = false;
+  }
 
   const done = st.processed || 0;
   const remain = stats.pending || 0;

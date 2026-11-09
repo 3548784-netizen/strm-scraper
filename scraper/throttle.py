@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 
@@ -29,18 +30,11 @@ DECAY_EVERY = 5
 
 # ffmpeg / ffprobe 报错里出现这些就当作限流信号。只认明确的状态码/短语，
 # 超时和 404 都不算——那些是链接本身的问题，退避也救不回来。
-_PATTERNS = (
-    # 私有直链 / 115 转直链服务是按「瞬时并发连接数」掐人的，撞到了直接回
-    # 403 而不是 429：单发一个请求能成功、一开并发整批 403 就是它。也可能
-    # 是签名过期，但按限流处理只是多歇几秒，不接着撞墙并不会更糟。
-    "403",
+_PHRASES = (
     "forbidden",
     "access denied",
-    "429",
     "too many requests",
-    "503",
     "service unavailable",
-    "504",
     "gateway timeout",
     "gateway time-out",
     # ffmpeg 对 5xx 只输出一句笼统的 "Server returned 5XX Server Error reply"，
@@ -49,12 +43,48 @@ _PATTERNS = (
     "server returned 5",
 )
 
+# 只有这四个状态码算「被限流」：403 是私有直链 / 转直链服务按瞬时并发掐人时
+# 的典型回应，429 / 503 / 504 是标准限流。
+_LIMIT_CODES = ("403", "429", "503", "504")
+
+# 状态码不能按裸数字做子串匹配：URL 或文件名里的「429」并不代表被限流
+# （``/movie.429.mp4`` 返回 404 会被误判成限流，平白退避 5 分钟）。
+# 两步：先把 URL 整段剥掉，再按「语义前缀 + 码」或「独立的码 token」认。
+# 后者兼容 ``403 Forbidden`` / ``HTTP error 429`` 这类没有动词前缀的输出，
+# 同时因为前后都排除了字母和点，``movie.429.mp4`` 不会命中。
+_URL_RE = re.compile(r"[a-z][a-z0-9+.\-]*://\S+", re.I)
+_SEMANTIC_RE = re.compile(
+    r"(?:返回|returned|error|status(?:\s*code)?)[\s:：]*\b([1-5]\d\d)\b", re.I)
+_CODE_RE = re.compile(r"(?<![\w.])([1-5]\d\d)(?![\w.])")
+
+
+def strip_urls(text: str) -> str:
+    """把报错文本里的 URL 整段抹掉，避免路径里的数字参与状态码判定。"""
+    return _URL_RE.sub(" ", text or "")
+
+
+def http_status(text: str) -> str:
+    """取报错文本里明确的 HTTP 状态码；取不到返回空串。
+
+    判定前先剥掉 URL，只认「返回/returned/error/status + 码」或独立成词的
+    三位数，``movie.429.mp4`` 这种不会误伤。
+    """
+    plain = text or ""
+    match = _SEMANTIC_RE.search(plain)
+    if match:
+        return match.group(1)
+    match = _CODE_RE.search(plain)
+    return match.group(1) if match else ""
+
 
 def detect(text: str) -> str:
     """从报错文本里认出限流信号，认不出返回空串。"""
-    low = (text or "").lower()
-    for token in _PATTERNS:
-        if token in low:
+    plain = strip_urls(text).lower()
+    code = http_status(plain)
+    if code in _LIMIT_CODES:
+        return code
+    for token in _PHRASES:
+        if token in plain:
             return token
     return ""
 

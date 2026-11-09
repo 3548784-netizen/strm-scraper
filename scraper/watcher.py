@@ -87,9 +87,12 @@ class Watcher:
         self._pending: dict[str, set[str]] = {}
         self._timers: dict[str, threading.Timer] = {}
         self._state: dict[str, dict] = {}         # task_id -> 界面要显示的状态
-        self._probe_hit = threading.Event()
-        self._probe_dir = ""
-        self._probe_waiting = False
+        # 自检探针：目录 -> 正在等这个目录事件的 Event 集合。
+        # 原来是一份实例级共享状态（_probe_hit / _probe_dir / _probe_waiting），
+        # 两个任务同时自检时会互相覆盖：A 的探针事件可能被 B 收到并判成功，
+        # 或者 B 改了 _probe_dir 让 A 永远等不到自己的事件。按目录分桶后，
+        # 同目录的多个任务共享一次自检，不同目录互不干扰。
+        self._probes: dict[str, set[threading.Event]] = {}
 
     # ---------- 对外 ----------
 
@@ -222,9 +225,7 @@ class Watcher:
             timer.cancel()
         self._pending.pop(tid, None)
         state = self._state.get(tid)
-        if state and not handles:
-            state["active"] = False
-        elif state:
+        if state:
             state["active"] = False
 
     def _wanted(self, name: str) -> bool:
@@ -239,10 +240,11 @@ class Watcher:
             return
         name = os.path.basename(path)
         if name.startswith(PROBE_PREFIX):
+            key = _norm(os.path.dirname(path))
             with self._lock:
-                if (self._probe_waiting
-                        and _norm(os.path.dirname(path)) == self._probe_dir):
-                    self._probe_hit.set()
+                waiting = list(self._probes.get(key) or ())
+            for event in waiting:
+                event.set()
             return
         if not self._wanted(name):
             return
@@ -319,25 +321,28 @@ class Watcher:
 
     def _probe_once(self, directory: str) -> bool:
         probe = Path(directory) / f"{PROBE_PREFIX}-{uuid.uuid4().hex[:8]}.tmp"
+        key = _norm(directory)
+        event = threading.Event()
         with self._lock:
-            self._probe_dir = _norm(directory)
-            self._probe_waiting = True
-            self._probe_hit.clear()
+            self._probes.setdefault(key, set()).add(event)
         try:
-            probe.write_bytes(b"probe")
-        except OSError as exc:
-            log.info("实时监听自检写不了探针文件 %s：%s", probe, exc)
-            return False
-        try:
+            try:
+                probe.write_bytes(b"probe")
+            except OSError as exc:
+                log.info("实时监听自检写不了探针文件 %s：%s", probe, exc)
+                return False
             deadline = time.monotonic() + PROBE_WAIT
             while time.monotonic() < deadline:
-                if self._probe_hit.wait(0.25):
+                if event.wait(0.25):
                     return True
             return False
         finally:
             with self._lock:
-                self._probe_waiting = False
-                self._probe_dir = ""
+                bucket = self._probes.get(key)
+                if bucket is not None:
+                    bucket.discard(event)
+                    if not bucket:
+                        self._probes.pop(key, None)
             try:
                 probe.unlink(missing_ok=True)
             except OSError:

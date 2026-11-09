@@ -142,6 +142,26 @@ def main() -> int:
                   pg.inner_text("#setAccHint"))
             check("无 JS 报错", not errs, " | ".join(errs[:3]))
             check("无 5xx 请求", not bad, " | ".join(bad[:3]))
+
+            print("========== 5. 登录限流不能被伪造来源绕过 ==========")
+            # 直接暴露时 X-Forwarded-For 是客户端自己写的；每条都换一个值，
+            # 如果它还参与限流 key，就永远不会锁定（原实现就是这样）。
+            codes = []
+            for i in range(8):
+                req = urllib.request.Request(
+                    BASE + "/api/login",
+                    data=json.dumps({"username": "admin",
+                                     "password": f"bad{i}"}).encode(),
+                    headers={"Content-Type": "application/json",
+                             "X-Forwarded-For": f"10.9.9.{i}"},
+                    method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        codes.append(resp.status)
+                except urllib.error.HTTPError as exc:
+                    codes.append(exc.code)
+            check("每次换 X-Forwarded-For 仍会触发锁定", 429 in codes, str(codes))
+            check("锁定前只放行阈值内的尝试", codes.count(401) <= 5, str(codes))
             b.close()
     finally:
         proc.terminate()

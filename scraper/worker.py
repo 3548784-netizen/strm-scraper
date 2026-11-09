@@ -250,7 +250,11 @@ class Runner:
             self.last_error = ""
             self.last_message = ""
             self.state = "scanning"
+            # 两套降级都要在任务边界复位：只清 throttle.GUARD 而留着闸门的
+            # _adaptive，撞过一次 403 之后每一轮都从 1 路起步（冷却期内成功
+            # 再多也不回升），小批量任务会一直慢下去。
             throttle.GUARD.reset()
+            links.GATE.reset()
             self._only = {p for p in (only or ()) if p} if only is not None else None
             self._force = bool(force)
             self._register_ready = bool(register_ready)
@@ -483,9 +487,11 @@ class Runner:
         before = self.store.get_many(all_paths)
 
         if full:
-            # 全量：把所有条目重置，连历史失败项一起重来
+            # 全量：把**本轮扫到的**条目重置，连历史失败项一起重来。
+            # 不能整表 reset：已从 scan.roots 移除的旧库记录会被重新入队，
+            # 变成一批永远失败的幽灵项（还会计入统计、污染「重试失败」）。
             added = self.store.ensure(rows)
-            reset = self.store.reset(("ok", "skipped", "failed"))
+            reset = self.store.reset_many(all_paths, ("ok", "skipped", "failed"))
             log.info("全量模式：重置 %s 个已有记录", reset)
         else:
             # 增量：只有「退避到期且没超次数」的失败项才重新入队。
@@ -507,11 +513,11 @@ class Runner:
                     log.info("复用本地产物：%s 个文件产物齐全，记录已删除，不再登记",
                              len(ready))
             added = self.store.ensure(rows)
-            # 一次批量取状态：逐个 get() 几千个文件就是几千次查询
-            known = self.store.get_many(all_paths)
+            # 复用扫描前那次 get_many：本轮新增的条目一定是 pending，不可能
+            # 出现在 stale 里，没必要为了漏掉它们再整表查第二遍（万级库很贵）
             stale: list[str] = []
             for path in all_paths:
-                item = known.get(path)
+                item = before.get(path)
                 if not item or item.status not in ("ok", "skipped"):
                     continue
                 stale.append(path)
@@ -657,6 +663,16 @@ class Runner:
                 self.current.pop(item.path, None)
             self.store.reset_one(item.path)
             log.info("[中断] %s | %s，已退回待处理", target.stem[:60],
+                     "任务已取消" if self._cancelled else "任务已暂停",
+                     extra={"item": item.path})
+            return ""
+        except probe.ProbeAborted:
+            # 探测（ffprobe）进行中被暂停 / 取消：同样的退回流，日志区分一下，
+            # 否则会误以为一直卡在排队上。
+            with self._lock:
+                self.current.pop(item.path, None)
+            self.store.reset_one(item.path)
+            log.info("[探测中断] %s | %s，已退回待处理", target.stem[:60],
                      "任务已取消" if self._cancelled else "任务已暂停",
                      extra={"item": item.path})
             return ""

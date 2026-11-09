@@ -20,6 +20,7 @@ import argparse
 import json
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -31,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scraper.media import signature  # noqa: E402
 from scraper.state import StateStore  # noqa: E402
 from scraper.watcher import Watcher  # noqa: E402
+from scraper import watcher as watcher_mod  # noqa: E402
 
 checked = failed = 0
 
@@ -315,6 +317,55 @@ def part_ui(base: str) -> None:
         browser.close()
 
 
+def part_probe_scope() -> None:
+    """自检探针必须按目录隔离：A 目录的事件不能把 B 目录「验证通过」。
+
+    原来三个探针状态字段（_probe_hit / _probe_dir / _probe_waiting）是实例
+    级共享的，两个任务同时自检时会互相覆盖：要么没监听的目录被判成功（实时
+    监听挂着不工作），要么自己的事件被丢弃、误判失败降级成定时轮询。
+    """
+    print("\n---------- 4. 自检探针按目录隔离 ----------")
+    old_wait = watcher_mod.PROBE_WAIT
+    watcher_mod.PROBE_WAIT = 1.0
+    try:
+        w = Watcher(fake_cfg(), lambda tid, paths: True)
+        dir_a = Path(tempfile.mkdtemp(prefix="watch_probe_a_"))
+        dir_b = Path(tempfile.mkdtemp(prefix="watch_probe_b_"))
+        dir_c = Path(tempfile.mkdtemp(prefix="watch_probe_c_"))
+
+        def fire(directory: Path) -> None:
+            w._on_event(types.SimpleNamespace(
+                is_directory=False,
+                dest_path=str(directory / ".strm-watch-probe-deadbeef.tmp"),
+                src_path=""))
+
+        got: dict[str, bool] = {}
+
+        def probe(tag: str, directory: Path) -> None:
+            got[tag] = w._probe_once(str(directory))
+
+        th = threading.Thread(target=probe, args=("a", dir_a))
+        th.start()
+        time.sleep(0.25)
+        fire(dir_b)          # 别的目录的探针事件
+        th.join(timeout=3)
+        check(got.get("a") is False, "别的目录的事件不会让它「自检通过」",
+              str(got))
+
+        threads = [threading.Thread(target=probe, args=(f"c{i}", dir_c))
+                   for i in range(2)]
+        for t in threads:
+            t.start()
+        time.sleep(0.25)
+        fire(dir_c)
+        for t in threads:
+            t.join(timeout=3)
+        check(got.get("c0") is True and got.get("c1") is True,
+              "同目录多个任务共享一次自检", str(got))
+    finally:
+        watcher_mod.PROBE_WAIT = old_wait
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="", help="控制台地址，给了才跑端到端")
@@ -323,6 +374,7 @@ def main() -> int:
     part_unit()
     part_dedupe()
     part_downgrade()
+    part_probe_scope()
     if args.base:
         part_live(args.base.rstrip("/"))
         part_ui(args.base.rstrip("/"))

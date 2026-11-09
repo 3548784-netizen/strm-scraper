@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import mimetypes
 import os
@@ -71,6 +72,49 @@ class FrameAbortRegistry:
 
 FRAME_ABORTS = FrameAbortRegistry()
 
+
+class SingleRuns:
+    """文件管理里点「刮削」的单条任务：在跑登记 + 各自的取消信号。
+
+    单条任务不进 :class:`Runner` 的状态机（不等批量队列、不占批量并发），
+    所以「暂停 / 取消」需要单独一条通道：把这些 abort 事件 set 掉，探测 /
+    抓帧立刻中断，条目退回待处理。少了这条通道，用户对单条任务没有任何
+    中止手段——接口会回「当前没有可暂停的任务」，按钮也是灰的。
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._runs: dict[str, threading.Event] = {}
+
+    def claim(self, path: str) -> threading.Event | None:
+        """登记一个文件，返回它专属的取消信号；已在跑则返回 None。"""
+        event = threading.Event()
+        with self._guard:
+            if path in self._runs:
+                return None
+            self._runs[path] = event
+        return event
+
+    def release(self, path: str) -> None:
+        with self._guard:
+            self._runs.pop(path, None)
+
+    def abort_all(self) -> int:
+        """中断所有单条任务，返回被中断的个数。"""
+        with self._guard:
+            events = list(self._runs.values())
+        for event in events:
+            event.set()
+        return len(events)
+
+    def paths(self) -> list[str]:
+        with self._guard:
+            return list(self._runs)
+
+    def __len__(self) -> int:
+        with self._guard:
+            return len(self._runs)
+
 # 缩略图/原图的缓存策略：URL 里带着图片的字节数（重新出图后基本都会变），
 # 所以可以放心长时间缓存——翻页、列表重渲染都不会再打网络。留一天是为了
 # 万一重出图后字节数恰好没变，也能自己恢复，不用等用户手动强制刷新。
@@ -82,10 +126,22 @@ PUBLIC_PATHS = {"/login", "/api/login", "/api/auth-info", "/api/health", "/favic
 _KIND_NAMES = {"poster": "海报", "fanart": "背景图", "thumb": "缩略图"}
 
 
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+def _client_ip(request: Request, trust_proxy: bool = False) -> str:
+    """取客户端 IP，作为登录限流的 key。
+
+    ``X-Forwarded-For`` 是客户端可以随便写的。直接暴露（没有反向代理）时
+    无条件相信它，等于把限流做成一次性的——每次换一个头就是「新访客」。
+    只有显式配置 ``web.auth.trust_proxy`` 时才用，而且取**最后一跳**
+    （代理追加的那段）；最左边那段是客户端自己填的，不能当身份。
+    """
+    if trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        hops = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if hops:
+            return hops[-1]
+        real = request.headers.get("x-real-ip", "").strip()
+        if real:
+            return real
     return request.client.host if request.client else "unknown"
 
 
@@ -684,8 +740,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
     sched = scheduler or Scheduler(cfg, runner, store)
     sched.start()
     # 单独执行的条目：文件管理里点某个文件「刮削」，不等批量队列，马上跑
-    single_lock = threading.Lock()
-    single_active: dict[str, float] = {}
+    single = SingleRuns()
 
     def _set_session(response, username: str):
         response.set_cookie(
@@ -745,7 +800,11 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
     def api_login(payload: dict, request: Request):
         if not cfg.web.auth.enabled:
             raise HTTPException(400, "当前没有启用登录")
-        ip = _client_ip(request)
+        # 先看全站熔断：换着 IP 撞库的脚本绕得过单 IP 闸，绕不过这一道
+        wait = throttle.blocked_global()
+        if wait:
+            raise HTTPException(429, f"登录尝试过于频繁，请 {wait} 秒后再试")
+        ip = _client_ip(request, cfg.web.auth.trust_proxy)
         wait = throttle.blocked(ip)
         if wait:
             raise HTTPException(429, f"尝试次数过多，请 {wait} 秒后再试")
@@ -754,6 +813,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         password = str((payload or {}).get("password") or "")
         if not auth.verify(username, password):
             count = throttle.fail(ip)
+            throttle.fail_global()
             log.warning("登录失败：%s（来源 %s，连续 %s 次）", username or "(空)", ip, count)
             raise HTTPException(401, "用户名或密码不正确")
 
@@ -782,7 +842,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             "default_password": auth.default_password,
             "session_hours": auth.session_hours,
             "file": str(auth.path) if cfg.web.auth.enabled else "",
-            "client_ip": _client_ip(request),
+            "client_ip": _client_ip(request, cfg.web.auth.trust_proxy),
         }
 
     @app.post("/api/account")
@@ -795,12 +855,16 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         new_user = str(data.get("username") or "").strip()
         new_pass = str(data.get("new_password") or "")
 
-        ip = _client_ip(request)
+        wait = throttle.blocked_global()
+        if wait:
+            raise HTTPException(429, f"登录尝试过于频繁，请 {wait} 秒后再试")
+        ip = _client_ip(request, cfg.web.auth.trust_proxy)
         wait = throttle.blocked(ip)
         if wait:
             raise HTTPException(429, f"尝试次数过多，请 {wait} 秒后再试")
         if not auth.verify(auth.username, current):
             throttle.fail(ip)
+            throttle.fail_global()
             log.warning("修改账号失败：当前密码不正确（来源 %s）", ip)
             raise HTTPException(400, "当前密码不正确")
         if not new_user and not new_pass:
@@ -865,9 +929,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         snapshot["log_file"] = str(log_files.main) if log_files.main else ""
         snapshot["refresh"] = manual_refresh
         snapshot["schedule"] = sched.status()
-        with single_lock:
-            snapshot["single"] = {"count": len(single_active),
-                                  "paths": sorted(single_active)}
+        snapshot["single"] = {"count": len(single), "paths": sorted(single.paths())}
         return snapshot
 
     @app.get("/api/items")
@@ -1259,8 +1321,18 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     @app.post("/api/task/pause")
     def task_pause():
-        if runner.pause():
-            return {"ok": True, "message": "已暂停，进行中的任务已中断并退回待处理"}
+        # 批量任务和单条任务各有一套在跑登记：批量由 Runner 状态机管，
+        # 单条不进状态机（不等队列），所以这里两边都要停。
+        paused = runner.pause()
+        stopped = single.abort_all()
+        if paused or stopped:
+            if paused and stopped:
+                message = f"已暂停；另有 {stopped} 个单条任务已中断并退回待处理"
+            elif stopped:
+                message = f"已中断 {stopped} 个单条任务，已退回待处理"
+            else:
+                message = "已暂停，进行中的任务已中断并退回待处理"
+            return {"ok": True, "message": message}
         return JSONResponse({"ok": False, "message": "当前没有可暂停的任务"},
                             status_code=409)
 
@@ -1273,8 +1345,16 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     @app.post("/api/task/cancel")
     def task_cancel():
-        if runner.cancel():
-            return {"ok": True, "message": "已取消，进行中的结果作废并退回待处理"}
+        cancelled = runner.cancel()
+        stopped = single.abort_all()
+        if cancelled or stopped:
+            if cancelled and stopped:
+                message = f"已取消；另有 {stopped} 个单条任务已中断并退回待处理"
+            elif stopped:
+                message = f"已中断 {stopped} 个单条任务，已退回待处理"
+            else:
+                message = "已取消，进行中的结果作废并退回待处理"
+            return {"ok": True, "message": message}
         return JSONResponse({"ok": False, "message": "当前没有正在运行的任务"},
                             status_code=409)
 
@@ -1366,50 +1446,57 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
         """
         started: list[str] = []
         for raw in paths:
-            with single_lock:
-                if raw in single_active:
+            abort = single.claim(raw)
+            if abort is None:
+                continue
+            # 登记之后到线程真正起来之间出错（库异常、产物检查失败），必须把
+            # 登记撤掉：否则这个文件此后再点「刮削」都会被当成「已在跑」跳过，
+            # /api/status 的 single.count 也永远归不了零，暂停按钮一直亮着。
+            try:
+                item = store.get(raw)
+                if item and item.status == "running":
+                    single.release(raw)
                     continue
-                single_active[raw] = time.time()
-            item = store.get(raw)
-            if item and item.status == "running":
-                with single_lock:
-                    single_active.pop(raw, None)
+                # 最后一道保险：任务记录被删过、但产物还在磁盘上就别起线程。
+                # 入队那几处已经按产物过滤了，这里防止将来新增入口绕过守卫，
+                # 把可复用的海报 / NFO 又跑一遍。
+                if item is None and not force and _products_ready(Path(raw)):
+                    try:
+                        size, mtime = signature(Path(raw))
+                    except OSError:
+                        size, mtime = 0, 0.0
+                    store.ensure([(raw, size, mtime)])
+                    store.mark_skipped(raw, "产物齐全，跳过")
+                    single.release(raw)
+                    continue
+                # 没扫描过的文件在库里还没有记录，mark_* 都是 UPDATE，不先登记就写不进去
+                if item is None:
+                    try:
+                        size, mtime = signature(Path(raw))
+                    except OSError:
+                        size, mtime = 0, 0.0
+                    store.ensure([(raw, size, mtime)])
+                store.mark_running(raw)
+                threading.Thread(
+                    target=_single_worker,
+                    args=(raw, item.frame_at if item else 0.0, force, abort),
+                    daemon=True, name="ws-single",
+                ).start()
+            except Exception as exc:  # noqa: BLE001 - 单个文件起不来不能拖垮整批
+                single.release(raw)
+                log.warning("[单条] 起线程失败：%s（%s）", raw, exc)
                 continue
-            # 最后一道保险：任务记录被删过、但产物还在磁盘上就别起线程。
-            # 入队那几处已经按产物过滤了，这里防止将来新增入口绕过守卫，
-            # 把可复用的海报 / NFO 又跑一遍。
-            if item is None and not force and _products_ready(Path(raw)):
-                try:
-                    size, mtime = signature(Path(raw))
-                except OSError:
-                    size, mtime = 0, 0.0
-                store.ensure([(raw, size, mtime)])
-                store.mark_skipped(raw, "产物齐全，跳过")
-                with single_lock:
-                    single_active.pop(raw, None)
-                continue
-            # 没扫描过的文件在库里还没有记录，mark_* 都是 UPDATE，不先登记就写不进去
-            if item is None:
-                try:
-                    size, mtime = signature(Path(raw))
-                except OSError:
-                    size, mtime = 0, 0.0
-                store.ensure([(raw, size, mtime)])
-            store.mark_running(raw)
-            threading.Thread(
-                target=_single_worker,
-                args=(raw, item.frame_at if item else 0.0, force),
-                daemon=True, name="ws-single",
-            ).start()
             started.append(raw)
         return started
 
-    def _single_worker(path: str, frame_at: float, force: bool = False) -> None:
+    def _single_worker(path: str, frame_at: float, force: bool,
+                       abort: threading.Event) -> None:
         """线程池之外的独立执行，状态直接写进 state.db，前端轮询就能看到。"""
         stem = Path(path).stem
         result: ScrapeResult | None = None
         try:
-            result = process(cfg, build_target(Path(path)), frame_at=frame_at, force=force)
+            result = process(cfg, build_target(Path(path)), frame_at=frame_at,
+                             abort=abort, force=force)
         except (frames.CaptureAborted, links.LinkAborted):
             # 被暂停 / 客户端取消：没发出请求，退回待处理
             store.reset_one(path)
@@ -1425,8 +1512,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             log.exception("单独刮削异常：%s", path)
             result = ScrapeResult(ok=False, reason=f"未预期的错误：{exc}")
         finally:
-            with single_lock:
-                single_active.pop(path, None)
+            single.release(path)
 
         if result is None:
             store.mark_failed(path, "未执行")
@@ -2487,17 +2573,27 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
     @app.post("/api/links/refresh")
     def links_refresh(payload: dict):
-        """手动复验一条直链：受刷新预算限制，不会引发批量复验。"""
+        """手动刷新一条直链：只动这一条，仍然受刷新预算约束。
+
+        注意不要在这里先把状态写成 ``invalid`` 再去解析：没有刷新钩子时
+        解析会原样返回缓存链接，于是「点一次刷新」就凭空把一条健康的连接
+        钉成失效，而实际上一次请求都没发出去。
+        """
         path = str((payload or {}).get("path") or "")
         if not path:
             raise HTTPException(400, "缺少 path")
-        row = store.link_get(path)
-        if not row:
-            raise HTTPException(404, "台账里没有这条 strm")
-        store.link_mark(path, "invalid", "网页手动复验", 0, False)
-        url = links.resolve_source(path)
-        return {"ok": True, "path": path, "url": _mask_url(url),
-                "message": "已按预算复验；没有配刷新钩子时以 strm 文件内容为准"}
+        result = links.refresh(path)
+        if not result.get("ok"):
+            reason = result.get("reason")
+            code = {"missing": 404, "budget": 429, "disabled": 503}.get(reason, 400)
+            headers = {"Retry-After": "5"} if reason == "budget" else None
+            raise HTTPException(code, result.get("message") or "刷新失败",
+                                headers=headers)
+        return {"ok": True, "path": path,
+                "url": _mask_url(result.get("url") or ""),
+                "changed": bool(result.get("changed")),
+                "state": result.get("state"),
+                "message": result.get("message") or "已刷新"}
 
     # ---------- 设置 ----------
 
@@ -2682,6 +2778,7 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
 
         任何一项不合法都整单拒绝，避免只改了一半的配置留在运行中。
         """
+        draft = copy.deepcopy(cfg)
         data = payload or {}
         scan = data.get("scan") or {}
         scrape = data.get("scrape") or {}
@@ -2702,22 +2799,22 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 cleaned.append(str(path))
             if not cleaned:
                 raise HTTPException(400, "至少要保留一个媒体库目录")
-            cfg.scan.roots = list(dict.fromkeys(cleaned))
+            draft.scan.roots = list(dict.fromkeys(cleaned))
 
         if "recursive" in scan:
-            cfg.scan.recursive = bool(scan.get("recursive"))
+            draft.scan.recursive = bool(scan.get("recursive"))
         if "autostart" in scan:
-            cfg.scan.autostart = bool(scan.get("autostart"))
+            draft.scan.autostart = bool(scan.get("autostart"))
         if "schedule_mode" in scan:
             mode = str(scan.get("schedule_mode") or "").lower()
             if mode not in ("incremental", "full"):
                 raise HTTPException(400, "定时执行方式只能是 incremental / full")
-            cfg.scan.schedule_mode = mode
+            draft.scan.schedule_mode = mode
         if "mode" in scan:
             mode = str(scan.get("mode") or "").lower()
             if mode not in ("auto", "full", "incremental", "manual"):
                 raise HTTPException(400, "扫描模式只能是 auto / full / incremental / manual")
-            cfg.scan.mode = mode
+            draft.scan.mode = mode
         for key, low, high, label in (
             ("concurrency", 1, 16, "并发数"),
             ("timeout", 30, 3600, "单个任务超时"),
@@ -2725,40 +2822,40 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
             ("interval_minutes", 0, 10080, "定时间隔"),
         ):
             if key in scan:
-                setattr(cfg.scan, key, _as_int(scan[key], low, high, label))
+                setattr(draft.scan, key, _as_int(scan[key], low, high, label))
 
         # ---- 刮削 ----
         if "frames" in scrape:
-            cfg.scrape.frames = _as_int(scrape["frames"], 1, 10, "采样帧数")
-        prev_poster_mode = cfg.scrape.poster.mode
+            draft.scrape.frames = _as_int(scrape["frames"], 1, 10, "采样帧数")
+        prev_poster_mode = draft.scrape.poster.mode
         if "poster_mode" in scrape:
             mode = str(scrape.get("poster_mode") or "").lower()
             if mode not in ("crop", "blur", "gradient"):
                 raise HTTPException(400, "海报模式只能是 crop / blur / gradient")
-            cfg.scrape.poster.mode = mode
+            draft.scrape.poster.mode = mode
             # 手动选过就不再被「旧默认值迁移」覆盖（见 Config.validate）
-            cfg.scrape.poster.mode_explicit = True
+            draft.scrape.poster.mode_explicit = True
         if "overwrite" in scrape:
             overwrite = str(scrape.get("overwrite") or "").lower()
             if overwrite not in ("missing", "always"):
                 raise HTTPException(400, "覆盖策略只能是 missing / always")
-            cfg.scrape.overwrite = overwrite
+            draft.scrape.overwrite = overwrite
         if "jpeg_quality" in scrape:
-            cfg.scrape.jpeg_quality = _as_int(scrape["jpeg_quality"], 60, 100, "JPEG 质量")
+            draft.scrape.jpeg_quality = _as_int(scrape["jpeg_quality"], 60, 100, "JPEG 质量")
         for key in ("write_nfo", "write_poster", "write_fanart"):
             if key in scrape:
-                setattr(cfg.scrape, key, bool(scrape[key]))
+                setattr(draft.scrape, key, bool(scrape[key]))
         if "thumb" in scrape:
-            cfg.scrape.thumb.enabled = bool(scrape["thumb"])
+            draft.scrape.thumb.enabled = bool(scrape["thumb"])
             # 网页上动过开关就不再被「旧默认值迁移」覆盖（见 _migrate_stale_defaults）
-            cfg.scrape.thumb.enabled_explicit = True
+            draft.scrape.thumb.enabled_explicit = True
 
         # ---- 媒体服务器 ----
         raw_servers = data.get("servers")
         if raw_servers is not None:
             if not isinstance(raw_servers, list):
                 raise HTTPException(400, "servers 应该是列表")
-            old = {server.name: server for server in (cfg.servers or [])}
+            old = {server.name: server for server in (draft.servers or [])}
             fresh: list[ServerConfig] = []
             seen: set[str] = set()
             for index, item in enumerate(raw_servers):
@@ -2793,13 +2890,13 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                     scan_after=bool(item.get("scan_after")),
                     insecure=bool(item.get("insecure")),
                 ))
-            cfg.servers = fresh
+            draft.servers = fresh
 
         # ---- 115 连接节奏 ----
         raw_links = data.get("links")
         if isinstance(raw_links, dict):
             if "enabled" in raw_links:
-                cfg.links.enabled = bool(raw_links["enabled"])
+                draft.links.enabled = bool(raw_links["enabled"])
             for key, low, high, label in (
                 ("max_inflight", 1, 64, "网盘全局并发"),
                 ("per_host_inflight", 1, 64, "单域名并发"),
@@ -2809,18 +2906,22 @@ def create_app(cfg: Config, store: StateStore, runner: Runner,
                 ("link_ttl_minutes", 1, 100000, "直链有效期"),
             ):
                 if key in raw_links:
-                    setattr(cfg.links, key,
+                    setattr(draft.links, key,
                             _as_int(raw_links[key], low, high, label))
             if "rate_per_minute" in raw_links:
-                cfg.links.rate_per_minute = float(
+                draft.links.rate_per_minute = float(
                     _as_int(raw_links["rate_per_minute"], 1, 100000, "每分钟请求数")
                 )
             if "retry_base_seconds" in raw_links:
-                cfg.links.retry_base_seconds = float(
+                draft.links.retry_base_seconds = float(
                     _as_int(raw_links["retry_base_seconds"], 1, 86400, "重试基准间隔")
                 )
 
-        notes = cfg.validate()
+        notes = draft.validate()
+        # 全部校验通过后才把值搬回正在使用的配置对象。这里不整体替换对象：
+        # Runner / Scheduler / ServerPool / 闸门都持有同一个 cfg 引用，换对象
+        # 会让它们继续读旧值，比不保存更隐蔽。
+        cfg.__dict__.update(draft.__dict__)
         # 参数改完立刻作用于运行中的闸门，不用重启容器；台账复用同一个 state.db
         links.configure(cfg, store)
         pool.reset_cache()

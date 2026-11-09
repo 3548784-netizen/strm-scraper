@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,15 @@ ANALYZE_DURATION = "5M"
 
 class ProbeError(RuntimeError):
     """探测失败，消息里带可读原因。"""
+
+
+class ProbeAborted(links.LinkAborted):
+    """探测进行中被暂停 / 取消：和「请求没发出去」一样处理，不算失败。
+
+    继承 :class:`links.LinkAborted` 是为了让调度线程已经有的一条
+    「退回待处理、不计 attempts」的路径直接生效；单独判一次类型只是为了
+    日志能说清卡在哪一步。
+    """
 
 
 @dataclass
@@ -115,8 +125,14 @@ def resolve_source_file(path: str | Path) -> str:
 
 
 def _classify_error(stderr: str, url: str) -> str:
-    """把 ffprobe 的报错翻译成人能看懂的原因。"""
-    text = stderr.lower()
+    """把 ffprobe 的报错翻译成人能看懂的原因。
+
+    状态码一律走 :func:`throttle.http_status`：它会先剥掉 URL、再按语义/独立
+    token 判定，避免 ``http://host/movie.429.mp4`` 这种路径里的数字把 404
+    误报成「被限流」。
+    """
+    text = throttle.strip_urls(stderr or "").lower()
+    code = throttle.http_status(text)
     host = ""
     match = re.match(r"^[a-z]+://([^/:]+)", url, re.I)
     if match:
@@ -124,21 +140,21 @@ def _classify_error(stderr: str, url: str) -> str:
 
     if "connection refused" in text:
         return f"连接被拒绝：{host} 上没有服务在监听，检查地址或内网穿透"
-    if "429" in text or "too many requests" in text:
+    if code == "429" or "too many requests" in text:
         return f"地址返回 429：{host} 认为请求过于频繁，已自动退避"
-    if "503" in text or "service unavailable" in text:
+    if code == "503" or "service unavailable" in text:
         return f"地址返回 503：{host} 可能正在限流，已自动退避"
-    if "504" in text or "gateway time" in text:
+    if code == "504" or "gateway time" in text:
         return f"地址返回 504：{host} 网关超时，通常是并发太高被限流，已自动退避"
     if "timed out" in text or "timeout" in text:
         return f"连接超时：{host} 响应太慢或不可达"
     if "name or service not known" in text or "getaddrinfo" in text:
         return f"域名解析失败：{host}"
-    if "404" in text or "not found" in text:
+    if code == "404" or "not found" in text:
         return "地址返回 404，文件可能已被删除或移动"
-    if "403" in text or "forbidden" in text:
+    if code == "403" or "forbidden" in text:
         return "地址返回 403，可能需要鉴权或链接已过期"
-    if "401" in text or "unauthorized" in text:
+    if code == "401" or "unauthorized" in text:
         return "地址要求鉴权，检查网盘或中转服务的登录状态"
     if "invalid data" in text or "moov atom" in text:
         return "文件结构异常，可能下载不完整或不是有效视频"
@@ -173,29 +189,71 @@ def probe(source: str, timeout: int = 20,
     # 退避期内会在这里排队，而不是立刻再撞一次网盘。
     with links.lease(source, abort) as ticket:
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                timeout=timeout + 10,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 creationflags=creation,
             )
-        except subprocess.TimeoutExpired as exc:
-            ticket.note(False, "timeout")
-            raise ProbeError(f"探测超时（{timeout} 秒），网络地址可能已失效") from exc
         except FileNotFoundError as exc:
             ticket.note(False, "ffprobe 未安装或不可执行")
             raise ProbeError("ffprobe 未安装或不可执行") from exc
 
-        stderr = proc.stderr.decode("utf-8", "replace")
+        # 用 0.2 秒一片的 communicate 轮询，而不是一次性 run 到底：
+        # ffprobe 卡在慢源上时，「暂停 / 取消」要能立刻杀掉它。原来这里用
+        # subprocess.run(timeout=...)，abort 只在领票阶段生效，暂停要等满
+        # 一个探测超时（默认 8 秒，可配到 600）才生效。
+        deadline = time.monotonic() + timeout + 10
+        while True:
+            if abort is not None and abort.is_set():
+                _kill(proc)
+                raise ProbeAborted("探测阶段任务已暂停")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill(proc)
+                ticket.note(False, "timeout")
+                raise ProbeError(f"探测超时（{timeout} 秒），网络地址可能已失效")
+            try:
+                out, err = proc.communicate(timeout=min(0.2, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        stderr = err.decode("utf-8", "replace")
         if proc.returncode != 0:
             # 被限流就先记一笔，让调度线程歇一会儿（这里不阻塞，网页请求照常返回）
             throttle.GUARD.report(stderr)
             ticket.note(False, stderr)
             raise ProbeError(_classify_error(stderr, source))
+        # 退出码 0 只说明 ffprobe 跑完了，不代表拿到的真是视频：登录页、
+        # 被替换的错误页、截断响应都可能「成功」返回但解析不出内容。
+        # 必须解析校验通过才把这次请求记成成功，否则闸门会拿这种响应当
+        # 健康信号，在 403 冷却后提前把并发升回去。
+        try:
+            info = _parse_info(out, source)
+        except ProbeError as exc:
+            ticket.note(False, str(exc))
+            raise
         ticket.note(True)
+    return info
 
+
+def _kill(proc: subprocess.Popen) -> None:
+    """杀掉探测进程并回收，别留僵尸进程占着管道。"""
     try:
-        data = json.loads(proc.stdout.decode("utf-8", "replace") or "{}")
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.communicate(timeout=2)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
+def _parse_info(stdout: bytes, source: str) -> MediaInfo:
+    """把 ffprobe 的 JSON 输出解析成 MediaInfo，解析不出视频就抛 ProbeError。"""
+    try:
+        data = json.loads(stdout.decode("utf-8", "replace") or "{}")
     except json.JSONDecodeError as exc:
         raise ProbeError("ffprobe 输出无法解析") from exc
 

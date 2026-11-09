@@ -127,6 +127,9 @@ DEFAULTS: dict[str, Any] = {
             "session_hours": 168,
             # 账号文件，密码是加盐哈希，删掉这个文件会重置成 admin / admin
             "file": "/config/auth.json",
+            # 部署在 nginx / 宝塔等反向代理后面时才改成 true，
+            # 否则客户端可以自己写 X-Forwarded-For 绕过登录限流
+            "trust_proxy": False,
         },
     },
     "storage": {"state_db": "/config/state.db"},
@@ -324,6 +327,10 @@ class AuthConfig:
     session_hours: int = 168
     # 账号文件（密码加盐哈希，不含明文）
     file: str = "/config/auth.json"
+    # 部署在反向代理后面时置 true：才相信 X-Forwarded-For / X-Real-IP。
+    # 直接暴露（没有代理）时必须是 false，否则登录限流的 IP 由客户端自己写，
+    # 换一个头就是一次全新尝试，锁定形同虚设。
+    trust_proxy: bool = False
 
 
 @dataclass

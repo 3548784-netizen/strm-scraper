@@ -329,11 +329,25 @@ class StateStore:
             self._conn.commit()
             return self._conn.total_changes - before
 
-    def reset_many(self, paths: Iterable[str]) -> int:
-        """批量重置为 pending（等价于对每个路径调用一次 reset_one）。"""
+    def reset_many(self, paths: Iterable[str],
+                   statuses: tuple[str, ...] | None = None) -> int:
+        """批量重置为 pending（等价于对每个路径调用一次 reset_one）。
+
+        ``statuses`` 给定时只重置这些状态的条目。全量扫描必须带上它：否则
+        已经把某个库从 ``scan.roots`` 里移除之后，旧记录会被整表 reset 重新
+        入队，变成一串永远失败、也删不掉的幽灵项。
+        """
+        if statuses is None:
+            return self._update_many(
+                "UPDATE items SET status='pending', reason='', next_retry=0 "
+                "WHERE path=?",
+                paths,
+            )
+        marks = ",".join("?" for _ in statuses)
         return self._update_many(
-            "UPDATE items SET status='pending', reason='', next_retry=0 WHERE path=?",
-            paths,
+            f"UPDATE items SET status='pending', reason='', next_retry=0 "
+            f"WHERE status IN ({marks}) AND path=?",
+            paths, tuple(statuses),
         )
 
     def mark_skipped_many(self, paths: Iterable[str],
@@ -450,7 +464,12 @@ class StateStore:
 
     def link_upsert(self, path: str, url: str, host: str, signature: str,
                     ttl_seconds: float) -> None:
-        """登记 / 更新一条直链，重置为 fresh 但**保留失败次数**供排查。"""
+        """登记 / 更新一条直链，重置为 fresh 但**保留失败次数**供排查。
+
+        注意它会把 state 洗回 fresh、清掉 last_error。只在「这条链接确实变了」
+        （新文件 / strm 内容变化）时用；只想更新地址、保留失败状态请用
+        :meth:`link_touch`。
+        """
         now = time.time()
         with self._lock:
             self._conn.execute(
@@ -462,6 +481,28 @@ class StateStore:
                 "verified_at=excluded.verified_at, expires_at=excluded.expires_at, "
                 "last_error='', updated=excluded.updated",
                 (path, url, host, signature, now, now + max(0.0, ttl_seconds), now),
+            )
+            self._conn.commit()
+
+    def link_touch(self, path: str, url: str, host: str, signature: str,
+                   ttl_seconds: float) -> None:
+        """只更新地址与签名，**不动 state / last_error / fail_count**。
+
+        ``links.sticky=false`` 的语义是「每次以 strm 原文为准」，台账只用于
+        统计。这时如果照旧走 upsert，每 resolve 一次就把上一条 invalid 洗回
+        fresh，「失效」统计永远接近 0，用户看不到真正废掉的链接。
+        """
+        now = time.time()
+        expires = now + max(0.0, ttl_seconds)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO strm_links(path, url, host, signature, state, "
+                "verified_at, expires_at, fail_count, last_error, updated) "
+                "VALUES(?,?,?,?,'fresh',?,?,0,'',?) "
+                "ON CONFLICT(path) DO UPDATE SET url=excluded.url, host=excluded.host, "
+                "signature=excluded.signature, expires_at=excluded.expires_at, "
+                "updated=excluded.updated",
+                (path, url, host, signature, now, expires, now),
             )
             self._conn.commit()
 

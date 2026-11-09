@@ -518,10 +518,13 @@ with sync_playwright() as p:
           pg.inner_text("#setSaveMsg"))
     check("底部显示写入的配置文件", "config.yaml" in pg.inner_text("#setFileHint"),
           pg.inner_text("#setFileHint"))
-    cfg_file = Path(__file__).resolve().parent.parent / ".devdata" / "config.yaml"
+    # 落盘路径以接口回报的 config_file 为准：用 --base 指向别的实例时，
+    # 数据目录未必是 .devdata，写死路径会把「没写回」误报成失败。
+    cfg_file = Path(cfg.get("config_file") or "")
     text = cfg_file.read_text(encoding="utf-8") if cfg_file.is_file() else ""
     check("已写回 config.yaml", "concurrency: 4" in text,
-          next((l for l in text.splitlines() if "concurrency" in l), "配置文件里没有 concurrency"))
+          next((l for l in text.splitlines() if "concurrency" in l),
+               f"配置文件读不到：{cfg_file}"))
 
     pg.click("#btnSrvAdd"); pg.wait_for_timeout(500)
     rows = pg.query_selector_all("#srvEditor .srv-edit")

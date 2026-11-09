@@ -315,10 +315,19 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     log.info("网页控制台：http://%s:%s", cfg.web.host, cfg.web.port)
+    # uvicorn 默认开 proxy_headers 且只信任 127.0.0.1：本机来源的
+    # X-Forwarded-For 会被它直接改写进 request.client。这道「隐形信任」
+    # 绕过了 web.auth.trust_proxy —— 直接暴露时客户端伪造一个来源头就能
+    # 绕过登录限流。信任与否必须只有一个出口，统一由配置决定。
+    trust_proxy = bool(cfg.web.auth.trust_proxy)
     config = uvicorn.Config(
         app, host=cfg.web.host, port=cfg.web.port,
         log_level="warning", access_log=False,
+        proxy_headers=trust_proxy,
+        forwarded_allow_ips="*" if trust_proxy else "",
     )
+    if not trust_proxy:
+        log.info("未信任反向代理：登录限流按 TCP 来源 IP 计（web.auth.trust_proxy=false）")
     server = uvicorn.Server(config)
     try:
         server.run()

@@ -54,6 +54,15 @@ def new_store() -> StateStore:
     return StateStore(tmp_dir() / "state.db")
 
 
+def _parse_info_fails(raw: bytes) -> bool:
+    """ffprobe 输出解析不出视频时必须抛错，不能当成一次健康的网盘请求。"""
+    try:
+        probe._parse_info(raw, "http://115.example.com/x.mp4")
+    except probe.ProbeError:
+        return True
+    return False
+
+
 def settings(**kw) -> links.Settings:
     base = dict(max_inflight=2, per_host_inflight=2, rate_per_minute=6000,
                 burst=2, min_gap_ms=0, queue_max=0, acquire_timeout=3.0,
@@ -200,6 +209,16 @@ def ledger_checks() -> None:
           reg.resolve(path))
     check("重新解析不新增台账行", store.link_stats()["total"] == 1)
 
+    # sticky=false 的语义是「不粘住缓存」：每次都回到 strm 原文，缓存不参与
+    # 播放地址选择（之前这里写反了，false 也直接返回缓存，开关形同虚设）
+    store.link_upsert(str(path), "http://115.example.com/cached",
+                      "115.example.com", links._signature(path), 60)
+    reg_loose = links.LinkRegistry(store, settings(sticky=False))
+    check("sticky=false 不粘住缓存", reg_loose.resolve(path) == new_url,
+          reg_loose.resolve(path))
+    check("sticky=false 仍把原文写回台账",
+          store.link_get(str(path))["url"] == new_url)
+
     # 刷新钩子：预算内成功换链
     calls = {"n": 0}
     real_urlopen = links.urllib.request.urlopen
@@ -243,6 +262,80 @@ def ledger_checks() -> None:
         links.urllib.request.urlopen = real_urlopen
     store.close()
     throttle.GUARD.reset()
+
+
+def refresh_checks() -> None:
+    print("\n---------- 3b. 网页手动刷新单条直链 ----------")
+    store = new_store()
+    d = tmp_dir()
+    path = d / "电影.B.strm"
+    path.write_text(URL + "\n", encoding="utf-8")
+    reg = links.LinkRegistry(store, settings())
+    reg.resolve(path)
+
+    # 没有刷新钩子时，唯一可信的新信息源就是 strm 文件本身。文件没变就
+    # 什么都不该改——尤其不能先写 invalid：那等于点一次刷新就凭空判定
+    # 一条健康连接失效，之后所有请求还在继续用它。
+    store.link_mark(str(path), "invalid", "上次 404", 0, False)
+    res = reg.refresh(str(path))
+    check("无钩子且文件未变：不改动状态",
+          res["ok"] and not res["changed"]
+          and store.link_get(str(path))["state"] == "invalid", str(res))
+
+    new_url = URL.replace("SECRET", "NEWTOKEN")
+    path.write_text(new_url + "\n", encoding="utf-8")
+    os.utime(path, (time.time() + 3, time.time() + 3))
+    res = reg.refresh(str(path))
+    check("无钩子时按 strm 内容更新",
+          res["ok"] and res["changed"]
+          and store.link_get(str(path))["url"] == new_url, str(res))
+
+    check("刷新不存在的路径给明确结果",
+          reg.refresh(str(d / "nope.strm")).get("reason") == "missing")
+
+    calls = {"n": 0}
+    real_urlopen = links.urllib.request.urlopen
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n):
+            return b'{"url": "https://cdn.115.example/play?token=HOOK"}'
+
+    def fake_urlopen(req, timeout=8):
+        calls["n"] += 1
+        return FakeResp()
+
+    reg_hook = links.LinkRegistry(store, settings(
+        refresh_url="http://127.0.0.1:9999/refresh?path={path}",
+        verify_budget_per_minute=1))
+    links.urllib.request.urlopen = fake_urlopen
+    try:
+        res = reg_hook.refresh(str(path))
+        check("手动刷新走刷新钩子换链",
+              res["ok"] and res["url"].endswith("token=HOOK"), str(res))
+        res2 = reg_hook.refresh(str(path))
+        check("手动刷新同样受预算限制",
+              not res2["ok"] and res2.get("reason") == "budget", str(res2))
+        check("被预算挡住时台账保持原样",
+              store.link_get(str(path))["url"].endswith("token=HOOK"),
+              store.link_get(str(path))["url"])
+
+        # refresh_on_error 关的是「失败后自动换链」，不该连手动刷新一起关掉
+        calls["n"] = 0
+        reg_manual = links.LinkRegistry(store, settings(
+            refresh_url="http://127.0.0.1:9999/refresh?path={path}",
+            refresh_on_error=False, verify_budget_per_minute=2))
+        res3 = reg_manual.refresh(str(path))
+        check("关掉自动换链不影响手动刷新",
+              res3["ok"] and calls["n"] == 1, str(res3))
+    finally:
+        links.urllib.request.urlopen = real_urlopen
+    store.close()
 
 
 def gate_checks() -> None:
@@ -430,6 +523,13 @@ def retry_checks() -> None:
           and links.classify("Server returned 503") == "throttle")
     check("404 / 401 归为永久", links.classify("地址返回 404，文件可能已被删除") == "permanent"
           and links.classify("地址要求鉴权，检查登录状态") == "permanent")
+    check("英文 status 也认", links.classify("Server returned 404 Not Found") == "permanent"
+          and links.classify("HTTP error 401") == "permanent")
+    # 裸数字不能做子串匹配：URL / 文件名里的 404 不代表链接失效，否则一条
+    # 只是超时的片子会被判成永久失败、直接不重试了。
+    check("地址里带 404 不算永久",
+          links.classify("连接超时：/media/movie.404.mp4 响应太慢") == "transient"
+          and links.classify("http://115.example/404/index.m3u8 连接被拒绝") == "transient")
     check("超时归为临时", links.classify("连接超时：xx 响应太慢") == "transient")
     check("永久错误不再自动重试", links.retry_delay(1, "permanent", s) == 0.0)
     d1 = links.retry_delay(1, "transient", s)
@@ -716,6 +816,41 @@ def wiring_checks() -> None:
           or '"links": links.status()' in worker_src)
     check("main 启动时装配台账", "configure_links(cfg, store)" in
           (ROOT / "scraper" / "main.py").read_text(encoding="utf-8"))
+    check("解析通过后才标记请求成功",
+          probe_src.index("ticket.note(True)")
+          > probe_src.index("_parse_info(out, source)"))
+    check("探测阶段可被暂停打断",
+          "subprocess.Popen(" in probe_src
+          and "abort.is_set()" in probe_src
+          and "ProbeAborted" in probe_src)
+    bad_outputs = (b"<html>login</html>", b"", b'{"format": {}, "streams": []}')
+    check("ffprobe 输出不是视频时判定失败",
+          all(_parse_info_fails(raw) for raw in bad_outputs))
+
+    # 单条「立即执行」不在 Runner 状态机里，暂停/取消必须单开一条通道
+    check("单条执行也把取消信号传进 process()",
+          "abort=abort" in web_src and "def _single_worker(" in web_src)
+    check("暂停 / 取消会中止单条任务", "single.abort_all()" in web_src)
+    check("单条在跑时暂停按钮可用",
+          "singleBusy" in html and "single > 0" in html)
+    from scraper.web import SingleRuns
+    runs = SingleRuns()
+    ev = runs.claim("/a.strm")
+    check("同一文件不会被两路单条同时跑", ev is not None
+          and runs.claim("/a.strm") is None)
+    runs.abort_all()
+    check("暂停把单条任务的信号 set 掉", ev.is_set())
+    runs.release("/a.strm")
+    check("释放后登记表清空", len(runs) == 0)
+
+    # 设置保存必须是原子的：校验失败不能留下半套配置
+    check("设置保存走草稿、通过后才落地",
+          "draft = copy.deepcopy(cfg)" in web_src
+          and "cfg.__dict__.update(draft.__dict__)" in web_src)
+    # uvicorn 默认信任本机来源的 X-Forwarded-For，会绕过 web.auth.trust_proxy
+    main_src = (ROOT / "scraper" / "main.py").read_text(encoding="utf-8")
+    check("uvicorn 的代理头信任跟配置走",
+          "proxy_headers=trust_proxy" in main_src)
 
 
 def frame_abort_checks() -> None:
@@ -758,10 +893,140 @@ def frame_abort_checks() -> None:
     throttle.GUARD.reset()
 
 
+def classify_checks() -> None:
+    """限流判定、台账状态保持、范围重置、闸门复位——都是「静默出错」的地方。"""
+    print("\n---------- 11. 限流判定与状态保持 ----------")
+    # 状态码不能裸匹配：URL / 文件名里的数字会把 404 误判成限流，
+    # 进而触发全局退避 5s→300s，一个文件名就能让整批任务停摆。
+    cases = [
+        ("http://h/movie.429.mp4: Server returned 404 Not Found", ""),
+        ("[http @ 0x1] http://h/403.mp4: Server returned 404 Not Found", ""),
+        ("Server returned 429 Too Many Requests", "429"),
+        ("HTTP error 403 Forbidden", "403"),
+        ("403 Forbidden", "403"),
+        ("Server returned 5XX Server Error reply", "5xx"),
+        ("Error number -138 occurred", ""),
+    ]
+    bad = [(text, want, throttle.detect(text)) for text, want in cases
+           if throttle.detect(text) != want]
+    check("限流信号只认语义状态码，不被路径数字误伤", not bad,
+          "; ".join(f"{t[:36]!r}->{got!r}" for t, _w, got in bad))
+    msg = probe._classify_error(
+        "http://h/movie.429.mp4: Server returned 404 Not Found",
+        "http://h/movie.429.mp4")
+    check("错误文案按真实状态码给出（404 不说成 429）",
+          "404" in msg and "429" not in msg, msg)
+
+    # sticky=false 只更新地址、不清状态：否则「失效」统计永远是 0
+    store = new_store()
+    d = tmp_dir()
+    p = d / "keep.strm"
+    p.write_text(URL + "\n", encoding="utf-8")
+    reg = links.LinkRegistry(store, settings(sticky=False))
+    reg.resolve(p)
+    store.link_mark(str(p), "invalid", "地址返回 404", 60, False)
+    reg.resolve(p)
+    row = store.link_get(str(p))
+    check("sticky=false 反复解析不会洗白失效状态",
+          row["state"] == "invalid" and row["last_error"] == "地址返回 404",
+          f"{row['state']} / {row['last_error']}")
+    store.link_touch(str(p), "http://115.example.com/play/new?token=X",
+                     "115.example.com", row["signature"], 60)
+    touched = store.link_get(str(p))
+    check("link_touch 只换地址、保留状态与错误",
+          touched["state"] == "invalid" and touched["last_error"] == "地址返回 404"
+          and "token=X" in touched["url"],
+          f"{touched['state']} / {touched['url']}")
+    # 内容变了才重新登记成 fresh
+    p.write_text("http://115.example.com/play/other?token=NEW\n", encoding="utf-8")
+    time.sleep(0.01)
+    reg.resolve(p)
+    check("strm 内容变化后重新登记为 fresh",
+          store.link_get(str(p))["state"] == "fresh")
+    store.close()
+
+    # 批量重置必须能限定范围：全量扫描不能把已移除目录的记录一起复活
+    store = new_store()
+    paths = [str(tmp_dir() / n) for n in ("a.strm", "b.strm", "c.strm")]
+    store.ensure([(p, 1, 1.0) for p in paths])
+    for p in paths:
+        store.mark_ok(p, "nfo", 1, 1.0)
+    changed = store.reset_many(paths[:2], ("ok", "skipped", "failed"))
+    check("reset_many 只动给定路径", changed == 2, str(changed))
+    check("范围外的记录状态不变",
+          store.get(paths[2]).status == "ok", store.get(paths[2]).status)
+    store.close()
+
+    # 闸门降级必须在任务边界复位，否则撞一次 403 之后每一轮都从 1 路起步
+    worker_src = (ROOT / "scraper" / "worker.py").read_text(encoding="utf-8")
+    check("Runner.start 复位闸门降级状态",
+          "links.GATE.reset()" in worker_src,
+          "worker.py 里没有 links.GATE.reset()")
+    check("闸门状态暴露 adaptive 档位",
+          "adaptive" in links.GATE.status(),
+          str(sorted(links.GATE.status())))
+    check("单域并发不超过全局并发",
+          settings(max_inflight=2, per_host_inflight=8).per_host_inflight == 2,
+          str(settings(max_inflight=2, per_host_inflight=8).per_host_inflight))
+
+
+def probe_abort_checks() -> None:
+    """探测阶段必须能被 abort 立刻打断，而不是等满 timeout。"""
+    print("\n---------- 12. 探测可中断 ----------")
+    import socket
+    # 本机有 ffprobe 才能验真实进程；没有就跳过（CI 里靠 check_formats 那段）
+    local = ROOT.parent / "ffmpeg_bin" / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
+    if local.is_file():
+        os.environ.setdefault("WS_FFPROBE_PATH", str(local))
+    if not probe.find_binary("ffprobe"):
+        print("  --   没装 ffprobe，跳过（探测中断需要真实进程）")
+        return
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    url = f"http://127.0.0.1:{port}/slow.mp4"
+    # 只 accept、不应答：ffprobe 会卡在等响应上，正是「慢源」的场景
+    conns: list = []
+    stop = threading.Event()
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                conn, _addr = srv.accept()
+            except OSError:
+                return
+            conns.append(conn)
+
+    threading.Thread(target=serve, daemon=True).start()
+    abort = threading.Event()
+    threading.Timer(0.4, abort.set).start()
+    started = time.monotonic()
+    aborted = False
+    try:
+        probe.probe(url, timeout=8, abort=abort)
+    except links.LinkAborted:
+        aborted = True
+    except probe.ProbeError:
+        aborted = False
+    elapsed = time.monotonic() - started
+    stop.set()
+    srv.close()
+    for conn in conns:
+        try:
+            conn.close()
+        except OSError:
+            pass
+    check("探测中途 abort 会抛 LinkAborted", aborted)
+    check("探测中断不用等满超时（< 2s）", elapsed < 2.0, f"{elapsed:.2f}s")
+
+
 def main() -> int:
     config_checks()
     address_checks()
     ledger_checks()
+    refresh_checks()
     gate_checks()
     retry_checks()
     state_checks()
@@ -769,6 +1034,8 @@ def main() -> int:
     storm_checks()
     wiring_checks()
     frame_abort_checks()
+    classify_checks()
+    probe_abort_checks()
     print("\n" + "=" * 62)
     if FAIL:
         print(f"结果：{PASS} 项通过，{len(FAIL)} 项失败")

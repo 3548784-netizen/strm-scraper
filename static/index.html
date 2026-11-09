@@ -2503,12 +2503,16 @@ function renderStatus(st) {
 
   setBtnDisabled('btnStart', busy);
   setBtnDisabled('btnFull', busy);
-  setBtnDisabled('btnPause', !(state === 'running' || state === 'scanning' || paused));
+  // 单条「立即执行」不进批量状态机，但同样可以暂停 / 取消：
+  // 只要还有单条任务在跑，这两个按钮就不能是灰的。
+  const singleBusy = single > 0;
+  setBtnDisabled('btnPause',
+    !(state === 'running' || state === 'scanning' || paused || singleBusy));
   $('btnPause').textContent = paused ? '继续任务' : '暂停';
   // 暂停中显示为「继续任务」，用软蓝状态色而不是实心主按钮，避免和「开始任务」抢焦点
   $('btnPause').classList.toggle('on', paused);
   $('btnPause').classList.toggle('ghost', !paused);
-  setBtnDisabled('btnCancel', !busy);
+  setBtnDisabled('btnCancel', !(busy || singleBusy));
   setBtnDisabled('btnRetry', busy);
 
   $('rootInfo').textContent = (st.roots || []).join('   ·   ') || '未配置扫描目录';

@@ -245,12 +245,20 @@ class AuthStore:
 # ----------------------------------------------------------------------
 
 class LoginThrottle:
-    """同一个 IP 连续失败多次就短暂锁定。"""
+    """同一个 IP 连续失败多次就短暂锁定，另加一道与 IP 无关的全站熔断。
 
-    def __init__(self, max_fails: int = 5, window: int = 300) -> None:
+    只按 IP 限流挡不住「每次换一个来源头」的撞库；只按全站限流又会让一个人
+    输错密码把所有人一起锁住。两道都要有：IP 闸 5 次 / 5 分钟，全站闸 30 次 /
+    5 分钟——正常用户几乎不可能触发全站闸，撞库脚本几秒就能撞到。
+    """
+
+    def __init__(self, max_fails: int = 5, window: int = 300,
+                 global_max_fails: int = 30) -> None:
         self.max_fails = max_fails
         self.window = window
+        self.global_max_fails = global_max_fails
         self._fails: dict[str, list[float]] = {}
+        self._global: list[float] = []
 
     def _recent(self, key: str) -> list[float]:
         now = time.time()
@@ -274,3 +282,20 @@ class LoginThrottle:
 
     def reset(self, key: str) -> None:
         self._fails.pop(key, None)
+
+    # ---------- 全站熔断 ----------
+
+    def _recent_global(self) -> list[float]:
+        now = time.time()
+        self._global = [t for t in self._global if now - t < self.window]
+        return self._global
+
+    def blocked_global(self) -> int:
+        stamps = self._recent_global()
+        if len(stamps) >= self.global_max_fails:
+            return max(1, int(self.window - (time.time() - stamps[0])))
+        return 0
+
+    def fail_global(self) -> int:
+        self._global.append(time.time())
+        return len(self._recent_global())

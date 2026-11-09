@@ -48,11 +48,17 @@ _NET_SCHEMES = ("http://", "https://", "rtsp://", "ftp://")
 
 # 判定「链接本身废了」的信号：这类错误重试多少次都不会好，别浪费请求额度
 _PERMANENT = (
-    "404", "not found", "401", "unauthorized", "地址要求鉴权",
+    "not found", "unauthorized", "地址要求鉴权",
     "没有可用的播放地址", "编码无法识别", "没有视频轨道", "不是有效视频",
     "下载不完整", "不支持的协议", "域名解析失败", "找不到 ffprobe",
     "未安装或不可执行", "无法解析", "读取 strm 失败",
 )
+
+# 状态码不能按裸数字做子串匹配：URL 或文件名里的「404」并不代表链接失效
+# （``/movie.404.mp4`` 超时会被误判成永久错误，直接放弃重试）。只在
+# 「返回 / returned / error / status 404」这种状态语义里才认。
+_STATUS_RE = re.compile(
+    r"(?:返回|returned|error|status(?:\s*code)?)[\s:：]*\b(401|404)\b", re.I)
 
 
 class LinkDeferred(RuntimeError):
@@ -126,6 +132,9 @@ class Settings:
         """把明显不合法的值收回来，配置写错也不能把闸门变成无限制。"""
         self.max_inflight = max(1, min(64, int(self.max_inflight or 1)))
         self.per_host_inflight = max(1, min(64, int(self.per_host_inflight or 1)))
+        # 单域并发不能超过全局并发：运行时虽然会 min() 兜底，但 /api/links
+        # 展示出来的组合得自洽，否则用户以为设了 4 路却没生效
+        self.per_host_inflight = min(self.per_host_inflight, self.max_inflight)
         self.rate_per_minute = max(0.1, min(100000.0, float(self.rate_per_minute or 1)))
         self.burst = max(1, min(64, int(self.burst or 1)))
         self.min_gap_ms = max(0, min(60000, int(self.min_gap_ms or 0)))
@@ -415,6 +424,9 @@ class RequestGate:
                 "peak": self._peak,
                 "max_inflight": self.s.max_inflight,
                 "active_limit": self._limit(),
+                # 降级档位（0 = 满速；1..max_inflight = 逐级回升中）。
+                # 只给 degraded 布尔值时，排查「为什么一直很慢」看不出档位。
+                "adaptive": self._adaptive,
                 "per_host_inflight": self.s.per_host_inflight,
                 "per_host": dict(self._per_host),
                 "rate_per_minute": self.s.rate_per_minute,
@@ -476,16 +488,30 @@ class LinkRegistry:
         signature = _signature(p)
         row = self.store.link_get(key)
         if row and row.get("url") and row.get("signature") == signature:
-            if not self.s.sticky or row.get("state") in ("fresh", "stale"):
+            # sticky=False 的意思是「不粘住缓存」：每次都以 strm 原文为准，
+            # 台账只用于统计和手动刷新。这里之前正好写反了（false 也返回
+            # 缓存），让这个开关形同虚设。
+            if self.s.sticky and row.get("state") in ("fresh", "stale"):
                 return row["url"]
-            if row.get("state") == "invalid":
+            if self.s.sticky and row.get("state") == "invalid":
                 fresh = self._maybe_refresh(key, p, row, signature)
                 if fresh:
                     return fresh
                 return row["url"]      # 刷新没额度也不能丢掉已有连接
         url = _read_strm(p)
-        self.store.link_upsert(key, url, host_of(url), signature,
-                               self.s.link_ttl_minutes * 60)
+        same_file = bool(row) and row.get("signature") == signature
+        if same_file and row.get("url") == url:
+            # 台账已经记着同一条地址，sticky=false 也不必每次重写
+            return url
+        if same_file:
+            # 文件没变、只是地址对不上：只更新地址，保留 state / last_error。
+            # 走 upsert 会把 invalid 洗回 fresh，失效统计就永远是 0 了。
+            self.store.link_touch(key, url, host_of(url), signature,
+                                  self.s.link_ttl_minutes * 60)
+        else:
+            # 新文件或 strm 内容变了：这条链接确实是新的，重新登记为 fresh
+            self.store.link_upsert(key, url, host_of(url), signature,
+                                   self.s.link_ttl_minutes * 60)
         return url
 
     def note(self, path: str | Path, ok: bool, error: str = "") -> None:
@@ -510,8 +536,12 @@ class LinkRegistry:
 
     # ---------- 预算内刷新 ----------
 
-    def _take_budget(self) -> bool:
-        if not self.s.refresh_on_error or self.s.verify_budget_per_minute <= 0:
+    def _take_budget(self, auto: bool = True) -> bool:
+        # ``refresh_on_error=False`` 只关掉「失败后自动换链」，不应该连网页上
+        # 手动点一次刷新都一起关掉——那属于两回事。
+        if auto and not self.s.refresh_on_error:
+            return False
+        if self.s.verify_budget_per_minute <= 0:
             return False
         with self._budget_lock:
             now = time.monotonic()
@@ -527,17 +557,8 @@ class LinkRegistry:
             self._refreshes += 1
             return True
 
-    def _maybe_refresh(self, key: str, path: Path, row: dict,
-                       signature: str) -> str:
-        """按预算换一次链；拿不到就返回空串，由调用方继续复用旧链接。
-
-        这里**不再**重新读 strm 文件去和缓存的 URL 比对：文件变了会体现在
-        ``signature`` 上，``resolve()`` 在进到这里之前就已经重新解析过了。
-        若在这里再比一次，刷新钩子刚换来的新签名 URL 会在下一次失败时被
-        误判成「文件里写的不是这个」，悄悄退回 strm 里那条已经过期的旧链。
-        """
-        if not self.s.refresh_url or not self._take_budget():
-            return ""
+    def _hook(self, key: str, row: dict) -> str:
+        """调一次刷新钩子；失败返回空串（不抛异常，不能影响已有连接）。"""
         url = self.s.refresh_url.replace("{path}", urllib.parse.quote(key))
         url = url.replace("{url}", urllib.parse.quote(row["url"] or "", safe=""))
         headers = {"Accept": "application/json, text/plain"}
@@ -553,10 +574,77 @@ class LinkRegistry:
         except (OSError, urllib.error.URLError, ValueError, LinkError) as exc:
             log.info("直链刷新失败（保留原连接）：%s（%s）", key, exc)
             return ""
+        return fresh
+
+    def _maybe_refresh(self, key: str, path: Path, row: dict,
+                       signature: str) -> str:
+        """按预算换一次链；拿不到就返回空串，由调用方继续复用旧链接。
+
+        这里**不再**重新读 strm 文件去和缓存的 URL 比对：文件变了会体现在
+        ``signature`` 上，``resolve()`` 在进到这里之前就已经重新解析过了。
+        若在这里再比一次，刷新钩子刚换来的新签名 URL 会在下一次失败时被
+        误判成「文件里写的不是这个」，悄悄退回 strm 里那条已经过期的旧链。
+        """
+        if not self.s.refresh_url or not self._take_budget():
+            return ""
+        fresh = self._hook(key, row)
+        if not fresh:
+            return ""
         self.store.link_upsert(key, fresh, host_of(fresh), signature,
                                self.s.link_ttl_minutes * 60)
         log.info("直链已刷新：%s", key)
         return fresh
+
+    def refresh(self, key: str) -> dict:
+        """网页上手动刷新**一条**直链，返回结构化结果。
+
+        这里的语义必须比 ``resolve()`` 更保守：手动点一次不该把台账推向
+        「失效」，也不该在没有任何新信息时改动状态。两条确定的信息源：
+
+        * 配了刷新钩子 → 走预算换链，拿不到就保持原状；
+        * 没配钩子 → 重读 strm 文件，内容变了才更新，没变就什么都不做。
+        """
+        row = self.store.link_get(key)
+        if not row:
+            return {"ok": False, "reason": "missing",
+                    "message": "台账里没有这条 strm"}
+        path = Path(key)
+        if path.suffix.lower() != ".strm":
+            return {"ok": False, "reason": "unsupported",
+                    "message": "只有 .strm 文件需要维护直链"}
+        signature = _signature(path)
+
+        if not self.s.refresh_url:
+            try:
+                fresh = _read_strm(path)
+            except Exception as exc:  # noqa: BLE001 - 读文件失败也要给前端一句人话
+                # ProbeError 自带「读取 strm 失败：…」这类可读原因，别套两层
+                return {"ok": False, "reason": "unreadable",
+                        "message": str(exc) or "读取 strm 失败"}
+            if fresh and fresh != row["url"]:
+                self.store.link_upsert(key, fresh, host_of(fresh), signature,
+                                       self.s.link_ttl_minutes * 60)
+                log.info("直链已按 strm 更新：%s", key)
+                return {"ok": True, "changed": True, "url": fresh,
+                        "message": "strm 内容已变化，台账已按文件更新"}
+            return {"ok": True, "changed": False, "url": row["url"],
+                    "state": row.get("state") or "fresh",
+                    "message": "strm 内容与台账一致，未改动"
+                               "（没有刷新钩子，无法验证链接是否仍然可用）"}
+
+        if not self._take_budget(auto=False):
+            return {"ok": False, "reason": "budget",
+                    "message": f"刷新过于频繁（每分钟最多 "
+                               f"{self.s.verify_budget_per_minute} 次），请稍后再试"}
+        fresh = self._hook(key, row)
+        if not fresh:
+            return {"ok": False, "reason": "hook",
+                    "message": "刷新钩子没有返回可用的地址，台账保持不变"}
+        self.store.link_upsert(key, fresh, host_of(fresh), signature,
+                               self.s.link_ttl_minutes * 60)
+        log.info("直链已刷新：%s", key)
+        return {"ok": True, "changed": fresh != row["url"], "url": fresh,
+                "message": "已通过刷新钩子更新直链"}
 
     def stats(self) -> dict:
         out = self.store.link_stats()
@@ -603,8 +691,13 @@ def _read_strm(path: Path) -> str:
 # ----------------------------------------------------------------------
 
 def _is_permanent(text: str) -> bool:
-    low = (text or "").lower()
-    return any(token in low for token in _PERMANENT)
+    # 先剥 URL：路径里的 "404" 不算「链接废了」。这里只认 401 / 404 两种
+    # 永久失败；403 / 429 / 5xx 属于限流，走 throttle 那条线（口径见
+    # throttle.http_status）。
+    low = throttle.strip_urls(text).lower()
+    if any(token in low for token in _PERMANENT):
+        return True
+    return bool(_STATUS_RE.search(low))
 
 
 def classify(reason: str) -> str:
@@ -690,6 +783,15 @@ def note_result(path: str | Path, ok: bool, error: str = "") -> None:
     reg = _REGISTRY
     if reg is not None:
         reg.note(path, ok, error)
+
+
+def refresh(path: str | Path) -> dict:
+    """手动刷新一条直链（网页接口用），台账没装配时给明确结果。"""
+    reg = _REGISTRY
+    if reg is None:
+        return {"ok": False, "reason": "disabled",
+                "message": "直链台账未启用"}
+    return reg.refresh(str(path))
 
 
 def retry_max_attempts() -> int:

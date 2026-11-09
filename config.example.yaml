@@ -148,7 +148,8 @@ links:
   verify_budget_per_minute: 6
 
   # --- 批量任务 ---
-  # 单轮在途任务上限（与 scan.concurrency 取小），以及两次派发的最小间隔
+  # 单轮在途任务上限（与 scan.concurrency 取小），以及两次派发的最小间隔。
+  # 在途上限每轮开始时读取一次：跑动中改这个值，下一轮任务才生效。
   batch_size: 20
   batch_interval_ms: 0
 
@@ -198,6 +199,12 @@ web:
     session_hours: 168
     # 账号文件，密码是加盐哈希；删掉这个文件后重启会重置成 admin / admin
     file: /config/auth.json
+    # 只有跑在反向代理（Nginx / Traefik / Caddy 等）后面才设成 true。
+    # 否则登录限流会把代理的 IP 当成所有访客的来源：要么一个人被锁、全站跟着
+    # 被锁，要么谁也锁不住。直连访问请保持 false —— 此时 X-Forwarded-For /
+    # X-Real-IP 一律不采信，客户端无法用伪造头绕过限流。
+    # 开启后只取 XFF 的**最后一跳**（代理自己追加的那段），不看第一段。
+    trust_proxy: false
 
 storage:
   # 状态库位置，容器内路径，务必落在持久化卷上

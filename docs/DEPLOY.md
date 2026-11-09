@@ -233,6 +233,17 @@ docker exec strm-scraper python -m scraper.main --doctor
 
 同一 IP 连续 5 次密码错误会锁 5 分钟。等一会，或者改完配置重启容器（内存里的计数会清零）。
 
+**挂在 Nginx / 反代后面，一个人输错密码全站都登录不了**
+
+默认 `web.auth.trust_proxy: false`，此时限流按**直连来源**算，`X-Forwarded-For` /
+`X-Real-IP` 一律不采信——否则任何人加个头就能绕过限流。挂在反向代理后面时，
+容器看到的来源全是代理的 IP，于是要么一个人的错误锁掉全体，要么谁也锁不住。
+
+确认流量一定经过你自己的代理后，打开它（`WS_WEB__AUTH__TRUST_PROXY=true`
+或配置里 `web.auth.trust_proxy: true`）。开启后只取 XFF 的**最后一跳**，即代理
+自己追加的那一段，客户端伪造的前缀不起作用。直连访问（没经过代理）请保持
+`false`，否则从本机发起的请求可以自带 XFF 绕过限流。
+
 **容器起来了但扫描不到文件**
 
 `scan.roots` 是容器内路径。挂载 `/vol1/1000/LitePan/strm:/media` 时，配置里必须写 `/media`，不是宿主机路径。

@@ -56,6 +56,12 @@
 * 只有 `state=invalid` 且配置了 `refresh_url` 时，才按 `verify_budget_per_minute`
   的预算发**一次**刷新请求；预算耗尽就直接复用旧链接，绝不排队等刷新。
 * 台账与 `items` 表同库，但**删除任务不会清台账**，「已有连接保持有效」优先于列表干净。
+* `sticky: false` 是**关掉粘住**：`resolve()` 每次都重新读 strm 原文，台账不再参与
+  取址，只用来做统计（`stale` / `invalid` 计数、`/api/links/list`）和手动刷新的入口。
+  代价是每次取址都要多读一次 strm 小文件（签名计算两条路都要做，这部分不算），
+  而 `refresh_on_error` 的**自动
+  换链也不会发生**（`_maybe_refresh` 只在 `sticky: true` 下调用）——失效的片子只会
+  按退避重试到上限。除非 strm 是被别的程序频繁改写的，否则不要关掉它。
 
 ### 2.2 全局请求闸门（`RequestGate`）
 
@@ -73,7 +79,9 @@
 
 * 突发任务：`ensure()` 一次事务写入，全部 `pending`，**不丢、不去重之外的丢弃**。
 * 派发：每轮在途上限 `min(scan.concurrency, links.batch_size)`，批次之间可加
-  `batch_interval_ms`。其余任务留在库里等下一批。
+  `batch_interval_ms`。其余任务留在库里等下一批。**在途上限在每轮开始时读取一次**，
+  跑动中的任务改这个值不会中途收缩/扩张并发，下一轮才生效（避免批次边界上
+  线程池忽大忽小）。
 * 排队满 / 排队超时：`LinkDeferred` —— 请求**没发出去**，任务退回 `pending` 并写
   `next_retry`，**不计 attempts、不算失败、不占网盘额度**。
 * `next_pending()` 只取 `next_retry` 已到期的条目；`requeue_due()` 每秒至多一次把到期
@@ -86,6 +94,11 @@
 | `throttle` | 403 / 429 / 5xx / `access denied` | 退避基数 ×3，指数增长 + 抖动；闸门同时降级冷却 |
 | `permanent` | 404 / 401 / 无视频轨 / 地址不存在 / 协议不支持 | 不自动重试，留在列表里等人工处理 |
 | `transient` | 超时、连接拒绝、其它未知错误 | 普通指数退避 + 抖动 |
+
+状态码只在「返回 404」「Server returned 404」这类**状态语义**里才算永久失败：
+URL 或文件名里带 404（`/movie.404.mp4`）不能作为判据，否则一条只是超时的片子
+会被直接放弃重试。同理，`ffprobe` 退出码为 0 但解析不出视频轨道（登录页、
+被替换的错误页）也不算一次成功的网盘请求，不会让闸门误以为连接已恢复。
 
 `retry_delay = min(retry_max_seconds, base × 2^(attempt-1)) × (1 ± retry_jitter)`，
 其中 `retry_max_seconds` 是**硬上限**：抖动后若超过它，就改成在
@@ -115,11 +128,11 @@
 | `degrade_gap_ms` | `800` | 0–60000 | 降级期间的最小间隔 |
 | `recover_every` | `8` | 1–1000 | 连续成功多少次回升一档 |
 | `link_ttl_minutes` | `360` | 1–100000 | 直链「可能过期」的时间；只标记不删除 |
-| `sticky` | `true` | bool | 粘住已有连接 |
+| `sticky` | `true` | bool | 粘住已有连接；`false` 时每次以 strm 原文为准（见 §5.4） |
 | `refresh_url` / `refresh_token` | 空 | str | 可选刷新钩子（协议见 §6） |
 | `refresh_on_error` | `true` | bool | 失效时是否允许走刷新钩子 |
 | `verify_budget_per_minute` | `6` | 0–10000 | 每分钟最多发多少次刷新请求 |
-| `batch_size` | `20` | 1–10000 | 单轮在途任务上限（与 `scan.concurrency` 取小） |
+| `batch_size` | `20` | 1–10000 | 单轮在途任务上限（与 `scan.concurrency` 取小）；**改动在下一轮任务生效** |
 | `batch_interval_ms` | `0` | 0–60000 | 两次派发之间的间隔 |
 | `retry_base_seconds` | `30` | 1–86400 | 退避基数（限流类 ×3） |
 | `retry_max_seconds` | `1800` | 1–604800 | 退避上限 |
@@ -233,6 +246,9 @@ Authorization: Bearer {refresh_token}   # 配了才带
 * 钩子本身的网络请求不经过 `RequestGate`（它不是网盘连接），超时 8 秒。
 * 刷新成功后更新台账为 `fresh` 并重置失败次数，任务按新链接继续。
 * 网页 `POST /api/links/refresh {"path": "..."}` 可手动触发一次，同样受预算限制。
+  没配钩子时它**只重读 strm 文件**：内容变了就按文件更新，没变就什么都不做，
+  不会把一条健康连接标成失效——「点一次刷新」不等于「复验过一次」。
+  `refresh_on_error: false` 只关掉失败后的自动换链，不影响这个手动入口。
 
 ## 7. HTTP 接口
 
@@ -241,6 +257,6 @@ Authorization: Bearer {refresh_token}   # 配了才带
 | `GET /api/links` | 闸门实时状态（在途 / 排队 / 峰值 / 降级）、台账分布、生效参数、队列计数 |
 | `GET /api/links/list?limit=50&state=stale` | 台账明细，直链已打码 |
 | `POST /api/links/retry` | `{"all": true}` 或 `{"paths": [...]}`，把失败任务放回队列（仍走闸门） |
-| `POST /api/links/refresh` | `{"path": "..."}`，预算内手动复验一条直链 |
+| `POST /api/links/refresh` | `{"path": "..."}`，手动刷新一条直链（有钩子走预算换链，没钩子按 strm 内容更新；缺失 404 / 超预算 429） |
 | `GET /api/status` | 增加 `links` 字段（同 `/api/links`）与 `effective_concurrency` |
 | `GET/POST /api/settings` | `links` 段的常用节奏参数，保存后立即生效 |

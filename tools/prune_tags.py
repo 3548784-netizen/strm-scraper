@@ -43,12 +43,6 @@ GH_TOKEN = os.environ.get("GH_TOKEN", "")
 SHA_PREFIX = "sha-"
 UA = {"User-Agent": "strm-scraper-prune"}
 
-# 已废弃的版本号标签。10-29 那版短暂用过的语义化版本号体系，当天就回滚了，
-# 镜像停在四天前，留着只会让人拉错。它们和某个旧 sha 标签挂在同一个版本上，
-# GHCR 不支持单独摘标签，只能把整条版本一起删。
-# 已经清干净了，这段可以删掉。
-LEGACY_TAGS = {"1.0", "1.0.0", "v1.0.0"}
-
 
 def _req(url: str, headers: dict | None = None, data: bytes | None = None,
          method: str | None = None) -> urllib.request.Request:
@@ -78,14 +72,14 @@ def pick_keep(tags: list[tuple[str, str]], protected: set[str]) -> tuple[set[str
     """tags 是 (名称, 时间) 列表。返回 (要保留的, 要删的)。
 
     保留 = 最近 KEEP 个 sha ∪ 受保护标签（latest、当前提交）。
-    受保护的 sha 也占名额，不会因为「保护」而多留一个。
+    受保护的 sha 若不在最近 KEEP 个之内（给旧提交打版本标签时会这样），
+    会额外多留一个——宁可多留也不能为了凑数去删更新的构建。
     """
     shas = sorted([(n, t) for n, t in tags if n.startswith(SHA_PREFIX)],
                   key=lambda x: x[1], reverse=True)  # 新的在前
     keep = set(protected) | {n for n, _ in shas[:KEEP]}
+    # 只动 sha- 开头的标签：latest、v1.1.0、dev 这类手工标签一律不碰
     drop = [n for n, _ in shas if n not in keep]
-    # 历史废弃的版本号标签也不留（不在保护名单里的才算）
-    drop += [n for n, _ in tags if n in LEGACY_TAGS and n not in protected]
     return keep, drop
 
 
